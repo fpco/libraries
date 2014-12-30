@@ -1,0 +1,106 @@
+{-# LANGUAGE FlexibleContexts #-}
+-- | A work queue, for distributed workloads among multiple local threads.
+--
+-- To distribute workloads to remote nodes, see "Distributed.WorkQueue", which
+-- builds on top of this module.
+module Data.WorkQueue
+    ( WorkQueue
+    , newWorkQueue
+    , closeWorkQueue
+    , withWorkQueue
+    , queueItem
+    , queueItems
+    , checkEmptyWorkQueue
+    , provideWorker
+    ) where
+
+import Control.Applicative         ((<$), (<$>), (<*>), (<|>))
+import Control.Concurrent.STM      (STM, STM, TMVar, TVar, atomically, check,
+                                    modifyTVar, newEmptyTMVar, newTVar,
+                                    readTMVar, readTVar, retry, tryPutTMVar,
+                                    writeTVar)
+import Control.Exception           (SomeException, catch, finally, mask,
+                                    throwIO)
+import Control.Exception.Lifted    (bracket)
+import Control.Monad               (join, void)
+import Control.Monad.Base          (liftBase)
+import Control.Monad.Trans.Control (MonadBaseControl)
+
+-- | A queue of work items to be performed, where each work item is of type
+-- @payload@ and whose computation gives a result of type @result@.
+data WorkQueue payload result = WorkQueue
+    (TVar [(payload, result -> IO ())])
+    (TVar Int) -- active workers
+    (TMVar ())
+
+-- | Create a new, empty, open work queue.
+newWorkQueue :: STM (WorkQueue payload result)
+newWorkQueue = WorkQueue <$> newTVar [] <*> newTVar 0 <*> newEmptyTMVar
+
+-- | Close a work queue, so that all workers will exit.
+closeWorkQueue :: WorkQueue payload result -> STM ()
+closeWorkQueue (WorkQueue _ _ var) = void $ tryPutTMVar var ()
+
+-- | Convenient wrapper for creating a work queue, bracketting, performing some
+-- action, and closing it.
+withWorkQueue :: MonadBaseControl IO m
+              => (WorkQueue payload result -> m a)
+              -> m a
+withWorkQueue = bracket
+    (liftBase $ atomically newWorkQueue)
+    (liftBase . atomically . closeWorkQueue)
+
+-- | Queue a single item in the work queue.
+queueItem :: WorkQueue payload result
+          -> payload -- ^ payload to be computed
+          -> (result -> IO ()) -- ^ action to be performed with its result
+          -> STM ()
+queueItem (WorkQueue var _ _) p f = modifyTVar var ((p, f):)
+
+-- | Queue multiple work items. This is only provided for convenience vs
+-- 'queueItem'; it gives identical atomicity guarantees as calling 'queueItem'
+-- multiple times.
+queueItems :: WorkQueue payload result -> [(payload, (result -> IO ()))] -> STM ()
+queueItems (WorkQueue var _ _) items = modifyTVar var (items ++)
+
+-- | Block until the work queue is empty. That is, until there are no work
+-- items in the queue, and no work items checked out by a worker.
+checkEmptyWorkQueue :: WorkQueue payload result -> STM ()
+checkEmptyWorkQueue (WorkQueue work active _) = do
+    readTVar work >>= (check . null)
+    readTVar active >>= (check . (== 0))
+
+-- | Provide a worker to perform computations. This function will repeatedly
+-- request payloads from the @WorkQueue@, and for each payload perform the
+-- given computation and provide the result back (using the function provided
+-- in 'queueItem'). This function will block if the work queue is empty, and
+-- will only exit after the queue is closed via 'closeWorkQueue'.
+--
+-- While 'provideWorker' must perform actions on the local machine, it can be
+-- leveraged to send payloads to remote machines. This is what the
+-- "Distributed.WorkQueue" module provides.
+provideWorker :: WorkQueue payload result -> (payload -> IO result) -> IO ()
+provideWorker (WorkQueue work active final) onPayload =
+    loop
+  where
+    loop = join $ mask $ \restore -> do
+        mwork <- atomically $ (Just <$> getWork) <|> (Nothing <$ getFinal)
+        case mwork of
+            Nothing -> return $ return ()
+            Just tuple@(payload, onResult) -> (`finally` decOpen) $ do
+                restore (onPayload payload >>= onResult) `catch` \e -> do
+                    atomically $ modifyTVar work (tuple:)
+                    throwIO (e :: SomeException)
+                return loop
+
+    decOpen = atomically $ modifyTVar active (subtract 1)
+
+    getWork = do
+        work' <- readTVar work
+        case work' of
+            [] -> retry
+            x:xs -> do
+                writeTVar work xs
+                modifyTVar active (+ 1)
+                return x
+    getFinal = readTMVar final
