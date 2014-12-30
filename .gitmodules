@@ -1,0 +1,3 @@
+[submodule "vendor/retry"]
+	path = vendor/retry
+	url = git@github.com:manny-fp/retry.git
