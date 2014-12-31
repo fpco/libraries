@@ -26,6 +26,7 @@ import Data.Streaming.Network
 import Data.Streaming.NetworkMessage
 import Data.Text.Read                (decimal)
 import Data.WorkQueue
+import System.Environment            (getProgName)
 
 data ToSlave initialData payload
     = TSInit initialData
@@ -62,11 +63,20 @@ runArgs getInitialData calc inner = liftIO $ do
             , Right (port, "") <- decimal portT -> master lslaves port
         ["slave", host, portT]
             | Right (port, "") <- decimal portT -> slave host port
-        _ -> error
-            "Usage\n\
-            \    dev <local slave count>\n\
-            \    master <local slave count> <port>\n\
-            \    slave <remote host> <remote port>"
+        _ -> do
+            pn <- pack <$> getProgName
+            mapM_ putStrLn
+                [ "Usage:"
+                , ""
+                , pn ++ " dev <local slave count>"
+                , "    Run program locally (no distribution)"
+                , ""
+                , pn ++ " master <local slave count> <port>"
+                , "    Start a master listening on given port"
+                , ""
+                , pn ++ " slave <remote host> <remote port>"
+                , "    Connect to a master on the given host and port"
+                ]
   where
     dev slaves | slaves < 1 = error "Must use at least one slave"
     dev slaves = withWorkQueue $ \queue -> do
