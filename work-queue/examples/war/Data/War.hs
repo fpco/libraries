@@ -22,7 +22,7 @@ import           Control.Monad.Primitive          (PrimMonad, PrimState)
 import           Control.Monad.ST
 import           Data.Data                        (Data, Typeable)
 import           Data.Monoid                      ((<>))
-import           Data.MQueue
+import           Data.Mutable.Deque
 import           Data.Vector                      (Vector)
 import           Data.Vector.Algorithms.Insertion (sort)
 import qualified Data.Vector.Generic              as V
@@ -69,8 +69,10 @@ play :: Deck -- ^ player 1
      -> Deck -- ^ player 2
      -> Winner
 play deck1 deck2 = runST $ do
-    hand1 <- newMQueue deck1
-    hand2 <- newMQueue deck2
+    hand1 <- fmap asUDeque newColl
+    V.forM_ deck1 $ pushBack hand1
+    hand2 <- fmap asUDeque newColl
+    V.forM_ deck2 $ pushBack hand2
     draws <- VM.new 1
     VM.unsafeWrite draws 0 (0 :: Int)
     let draw f = do
@@ -80,8 +82,8 @@ play deck1 deck2 = runST $ do
                 else do
                     VM.unsafeWrite draws 0 $! draws' + 1
 
-                    mx <- popMQueue hand1
-                    my <- popMQueue hand2
+                    mx <- popFront hand1
+                    my <- popFront hand2
                     case (mx, my) of
                         (Nothing, Nothing) -> return Draw
                         (Just _, Nothing) -> return Player1
@@ -93,10 +95,10 @@ play deck1 deck2 = runST $ do
         start' pile1 pile2 = draw $ \x y ->
             case compare x y of
                 LT -> do
-                    mapM_ (pushMQueue hand2) (pile2 $ y : pile1 [x])
+                    mapM_ (pushBack hand2) (pile2 $ y : pile1 [x])
                     start
                 GT -> do
-                    mapM_ (pushMQueue hand1) (pile1 $ x : pile2 [y])
+                    mapM_ (pushBack hand1) (pile1 $ x : pile2 [y])
                     start
                 EQ -> war (3 :: Int) pile1 pile2
 
