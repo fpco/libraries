@@ -48,7 +48,7 @@ closeWorkQueue (WorkQueue _ _ var) = void $ tryPutTMVar var ()
 
 -- | Convenient wrapper for creating a work queue, bracketting, performing some
 -- action, and closing it.
-withWorkQueue :: MonadBaseControl IO m -- FIXME don't we need to checkEmptyWorkQueue?
+withWorkQueue :: MonadBaseControl IO m
               => (WorkQueue payload result -> m a)
               -> m a
 withWorkQueue = bracket
@@ -110,9 +110,18 @@ provideWorker (WorkQueue work active final) onPayload =
                 return x
     getFinal = readTMVar final
 
+-- | Same as 'withLocalSlaves', but with a thread count of 1.
+withLocalSlave :: MonadBaseControl IO m
+               => WorkQueue payload result
+               -> (payload -> IO result)
+               -> m a
+               -> m a
+withLocalSlave queue = withLocalSlaves queue 1
+
 -- | Start a local slave against the given work queue.
 --
--- Any exception thrown by the slave will be rethrown to the inner thread.
+-- Any exception thrown by the slave will be rethrown to the inner thread. This
+-- call will not return until the work queue is empty.
 --
 -- Note that you may run as many local slaves as desired, by nesting calls to
 -- @withLocalSlave@. A convenience function for doing so is 'withLocalSlaves'.
@@ -125,13 +134,6 @@ provideWorker (WorkQueue work active final) onPayload =
 -- Unlike @runSlave@, the calculation function does not take an explicit
 -- @initialData@. Since this computation is run on a local machine, that data
 -- can be provided to the function via currying.
-withLocalSlave :: MonadBaseControl IO m
-               => WorkQueue payload result
-               -> (payload -> IO result)
-               -> m a
-               -> m a
-withLocalSlave queue = withLocalSlaves queue 1
-
 withLocalSlaves :: MonadBaseControl IO m
                 => WorkQueue payload result
                 -> Int -- ^ slave count
@@ -141,7 +143,10 @@ withLocalSlaves :: MonadBaseControl IO m
 withLocalSlaves _ count _ inner | count <= 0 = inner
 withLocalSlaves queue count0 calc inner =
     control $ \runInBase ->
-        let loop 0 = runInBase inner
+        let loop 0 = do
+                x <- runInBase inner
+                atomically $ checkEmptyWorkQueue queue
+                return x
             loop i = fmap getRight $ race slave $ loop $ i - 1
             slave = provideWorker queue calc >> forever (threadDelay maxBound)
             getRight (Left x) = absurd x
