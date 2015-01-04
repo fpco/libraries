@@ -17,6 +17,7 @@ library
   exposed-modules:     Data.WorkQueue
                        Data.Streaming.NetworkMessage
                        Distributed.WorkQueue
+                       Control.Concurrent.ThreadPool
   build-depends:       base
                      , async
                      , binary
@@ -29,6 +30,8 @@ library
                      , transformers-base
                      , vector-binary-instances
                      , void
+                     , mono-traversable
+                     , transformers
   hs-source-dirs:      src
   default-language:    Haskell2010
 
@@ -53,6 +56,7 @@ test-suite test
   hs-source-dirs:      test
   main-is:             Spec.hs
   other-modules:       Data.WorkQueueSpec
+                       Control.Concurrent.ThreadPoolSpec
   build-depends:       base
                      , work-queue
                      , hspec

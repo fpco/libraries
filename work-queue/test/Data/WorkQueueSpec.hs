@@ -18,3 +18,4 @@ spec = do
         forM_ [0..count - 1] $ \i -> do
             x <- V.read v i
             x `shouldBe` i
+    -- FIXME add tests of exceptions being thrown

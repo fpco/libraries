@@ -48,7 +48,7 @@ closeWorkQueue (WorkQueue _ _ var) = void $ tryPutTMVar var ()
 
 -- | Convenient wrapper for creating a work queue, bracketting, performing some
 -- action, and closing it.
-withWorkQueue :: MonadBaseControl IO m
+withWorkQueue :: MonadBaseControl IO m -- FIXME don't we need to checkEmptyWorkQueue?
               => (WorkQueue payload result -> m a)
               -> m a
 withWorkQueue = bracket
