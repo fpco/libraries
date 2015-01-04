@@ -10,7 +10,6 @@
 -- operations in "Data.WorkQueue" to assign items that will be performed.
 module Distributed.WorkQueue
     ( withMaster
-    , withLocalSlave
     , runSlave
     , runArgs
     , DistributedWorkQueueException (..)
@@ -81,15 +80,16 @@ runArgs getInitialData calc inner = liftIO $ do
     dev slaves | slaves < 1 = error "Must use at least one slave"
     dev slaves = withWorkQueue $ \queue -> do
         initialData <- getInitialData
-        addLocalSlaves (calc initialData) slaves (inner initialData) queue
+        withLocalSlaves queue slaves (calc initialData) (inner initialData queue)
 
     master lslaves port = do
         initialData <- getInitialData
-        withMaster
-            (runTCPServer ss)
-            defaultNMSettings
-            initialData
-            (addLocalSlaves (calc initialData) lslaves (inner initialData))
+        withMaster (runTCPServer ss) defaultNMSettings initialData $ \queue ->
+            withLocalSlaves
+                queue
+                lslaves
+                (calc initialData)
+                (inner initialData queue)
       where
         ss = setAfterBind (const $ putStrLn $ "Listening on " ++ tshow port)
                           (serverSettingsTCP port "*")
@@ -98,18 +98,6 @@ runArgs getInitialData calc inner = liftIO $ do
         (clientSettingsTCP port $ fromString $ unpack host)
         defaultNMSettings
         calc
-
-addLocalSlaves :: MonadBaseControl IO m
-               => (payload -> IO result)
-               -> Int
-               -> (WorkQueue payload result -> m a)
-               -> WorkQueue payload result
-               -> m a
-addLocalSlaves calc i0 f queue =
-    loop i0
-  where
-    loop 0 = f queue
-    loop i = withLocalSlave queue calc $ loop $ i - 1
 
 -- | Start running a server in the background to listen for slaves, create a
 -- 'WorkQueue', and assign jobs as necessary.
@@ -155,27 +143,6 @@ withMaster runApp nmSettings initial inner =
             nmWrite nm $ TSPayload payload
             nmRead nm
         nmWrite nm TSDone
-
--- | Start a local slave against the given work queue.
---
--- This function is more efficient than 'runSlave' in that it can share data
--- structures in memory, avoiding network and serialization overhead.
---
--- Unlike 'runSlave', the calculation function does not take an explicit
--- @initialData@. Since this computation is run on a local machine, that data
--- can be provided to the function via currying.
---
--- Note that you may run as many local slaves as desired, by nesting calls to
--- @withLocalSlave@.
-withLocalSlave :: MonadBaseControl IO m
-               => WorkQueue payload result
-               -> (payload -> IO result)
-               -> m a
-               -> m a
-withLocalSlave queue calc inner =
-    control $ \runInBase -> withAsync slave $ const $ runInBase inner
-  where
-    slave = provideWorker queue calc
 
 -- | Run a slave to perform computations for a remote master (started with
 -- 'withMaster').

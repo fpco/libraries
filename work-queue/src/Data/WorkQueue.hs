@@ -12,9 +12,12 @@ module Data.WorkQueue
     , queueItems
     , checkEmptyWorkQueue
     , provideWorker
+    , withLocalSlave
+    , withLocalSlaves
     ) where
 
-import Control.Applicative         ((<$), (<$>), (<*>), (<|>))
+import Control.Applicative         ((*>), (<$), (<$>), (<*>), (<|>))
+import Control.Concurrent.Async    (Concurrently (..))
 import Control.Concurrent.STM      (STM, STM, TMVar, TVar, atomically, check,
                                     modifyTVar, newEmptyTMVar, newTVar,
                                     readTMVar, readTVar, retry, tryPutTMVar,
@@ -24,7 +27,7 @@ import Control.Exception           (SomeException, catch, finally, mask,
 import Control.Exception.Lifted    (bracket)
 import Control.Monad               (join, void)
 import Control.Monad.Base          (liftBase)
-import Control.Monad.Trans.Control (MonadBaseControl)
+import Control.Monad.Trans.Control (MonadBaseControl, control)
 
 -- | A queue of work items to be performed, where each work item is of type
 -- @payload@ and whose computation gives a result of type @result@.
@@ -104,3 +107,39 @@ provideWorker (WorkQueue work active final) onPayload =
                 modifyTVar active (+ 1)
                 return x
     getFinal = readTMVar final
+
+-- | Start a local slave against the given work queue.
+--
+-- Any exception thrown by the slave will be rethrown to the inner thread.
+--
+-- Note that you may run as many local slaves as desired, by nesting calls to
+-- @withLocalSlave@. A convenience function for doing so is 'withLocalSlaves'.
+--
+-- Comparisons to the distributed @runSlave@:
+--
+-- This function is more efficient than @runSlave@ in that it can share data
+-- structures in memory, avoiding network and serialization overhead.
+--
+-- Unlike @runSlave@, the calculation function does not take an explicit
+-- @initialData@. Since this computation is run on a local machine, that data
+-- can be provided to the function via currying.
+withLocalSlave :: MonadBaseControl IO m
+               => WorkQueue payload result
+               -> (payload -> IO result)
+               -> m a
+               -> m a
+withLocalSlave queue = withLocalSlaves queue 1
+
+withLocalSlaves :: MonadBaseControl IO m
+                => WorkQueue payload result
+                -> Int -- ^ slave count
+                -> (payload -> IO result)
+                -> m a
+                -> m a
+withLocalSlaves queue count0 calc inner =
+    control $ \runInBase ->
+        let loop i
+                | i <= 0 = Concurrently (runInBase inner)
+                | otherwise = Concurrently slave *> loop (i - 1)
+            slave = provideWorker queue calc
+         in runConcurrently (loop count0)
