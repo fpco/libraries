@@ -44,5 +44,5 @@ mapTP_ :: (MonoFoldable mono, Element mono ~ a, MonadIO m)
        -> mono
        -> m ()
 mapTP_ (ThreadPool queue) f mono = liftIO $ do
-    oforM_ mono $ \a -> atomically $ queueItem queue (void $ f a) return
+    atomically $ oforM_ mono $ \a -> queueItem queue (void $ f a) return
     atomically $ checkEmptyWorkQueue queue

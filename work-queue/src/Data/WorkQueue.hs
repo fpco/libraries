@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TypeFamilies     #-}
 -- | A work queue, for distributed workloads among multiple local threads.
 --
 -- To distribute workloads to remote nodes, see "Distributed.WorkQueue", which
@@ -14,11 +15,14 @@ module Data.WorkQueue
     , provideWorker
     , withLocalSlave
     , withLocalSlaves
+    , mapQueue
+    , mapQueue_
     ) where
 
 import Control.Applicative         ((*>), (<$), (<$>), (<*>), (<|>))
 import Control.Concurrent          (threadDelay)
 import Control.Concurrent.Async    (race)
+import Control.Concurrent.MVar
 import Control.Concurrent.STM      (STM, STM, TMVar, TVar, atomically, check,
                                     modifyTVar, newEmptyTMVar, newTVar,
                                     readTMVar, readTVar, retry, tryPutTMVar,
@@ -28,8 +32,12 @@ import Control.Exception           (SomeException, catch, finally, mask,
 import Control.Exception.Lifted    (bracket)
 import Control.Monad               (forever, join, void)
 import Control.Monad.Base          (liftBase)
+import Control.Monad.IO.Class
 import Control.Monad.Trans.Control (MonadBaseControl, control)
+import Data.MonoTraversable
+import Data.Traversable
 import Data.Void                   (absurd)
+import Prelude                     hiding (sequence)
 
 -- | A queue of work items to be performed, where each work item is of type
 -- @payload@ and whose computation gives a result of type @result@.
@@ -152,3 +160,22 @@ withLocalSlaves queue count0 calc inner =
             getRight (Left x) = absurd x
             getRight (Right x) = x
          in loop count0
+
+mapQueue :: (MonadIO m, Traversable t)
+         => WorkQueue payload result
+         -> t payload
+         -> m (t result)
+mapQueue queue t = liftIO $ do
+    t' <- forM t $ \a -> do
+        var <- newEmptyMVar
+        atomically $ queueItem queue a $ putMVar var
+        return $ takeMVar var
+    sequence t'
+
+mapQueue_ :: (MonadIO m, MonoFoldable mono, Element mono ~ payload)
+          => WorkQueue payload result
+          -> mono
+          -> m ()
+mapQueue_ queue mono = liftIO $ do
+    atomically $ oforM_ mono $ \a -> queueItem queue a (const $ return ())
+    atomically $ checkEmptyWorkQueue queue
