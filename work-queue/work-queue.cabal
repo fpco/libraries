@@ -28,6 +28,7 @@ library
                      , text
                      , transformers-base
                      , vector-binary-instances
+                     , void
   hs-source-dirs:      src
   default-language:    Haskell2010
 
@@ -46,3 +47,16 @@ executable hpc-example-war
                      , vector-algorithms
                      , work-queue
                      , mutable-containers
+
+test-suite test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Spec.hs
+  other-modules:       Data.WorkQueueSpec
+  build-depends:       base
+                     , work-queue
+                     , hspec
+                     , QuickCheck
+                     , vector
+                     , stm
+  default-language:    Haskell2010

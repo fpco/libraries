@@ -17,7 +17,8 @@ module Data.WorkQueue
     ) where
 
 import Control.Applicative         ((*>), (<$), (<$>), (<*>), (<|>))
-import Control.Concurrent.Async    (Concurrently (..))
+import Control.Concurrent          (threadDelay)
+import Control.Concurrent.Async    (race)
 import Control.Concurrent.STM      (STM, STM, TMVar, TVar, atomically, check,
                                     modifyTVar, newEmptyTMVar, newTVar,
                                     readTMVar, readTVar, retry, tryPutTMVar,
@@ -25,9 +26,10 @@ import Control.Concurrent.STM      (STM, STM, TMVar, TVar, atomically, check,
 import Control.Exception           (SomeException, catch, finally, mask,
                                     throwIO)
 import Control.Exception.Lifted    (bracket)
-import Control.Monad               (join, void)
+import Control.Monad               (forever, join, void)
 import Control.Monad.Base          (liftBase)
 import Control.Monad.Trans.Control (MonadBaseControl, control)
+import Data.Void                   (absurd)
 
 -- | A queue of work items to be performed, where each work item is of type
 -- @payload@ and whose computation gives a result of type @result@.
@@ -136,10 +138,12 @@ withLocalSlaves :: MonadBaseControl IO m
                 -> (payload -> IO result)
                 -> m a
                 -> m a
+withLocalSlaves _ count _ inner | count <= 0 = inner
 withLocalSlaves queue count0 calc inner =
     control $ \runInBase ->
-        let loop i
-                | i <= 0 = Concurrently (runInBase inner)
-                | otherwise = Concurrently slave *> loop (i - 1)
-            slave = provideWorker queue calc
-         in runConcurrently (loop count0)
+        let loop 0 = runInBase inner
+            loop i = fmap getRight $ race slave $ loop $ i - 1
+            slave = provideWorker queue calc >> forever (threadDelay maxBound)
+            getRight (Left x) = absurd x
+            getRight (Right x) = x
+         in loop count0
