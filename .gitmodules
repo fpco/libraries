@@ -1,3 +1,6 @@
 [submodule "vendor/retry"]
 	path = vendor/retry
 	url = git@github.com:manny-fp/retry.git
+[submodule "vendor/mutable-containers"]
+	path = vendor/mutable-containers
+	url = https://github.com/fpco/mutable-containers
