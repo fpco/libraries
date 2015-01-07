@@ -22,7 +22,7 @@ import           Control.Monad.Primitive          (PrimMonad, PrimState)
 import           Control.Monad.ST
 import           Data.Data                        (Data, Typeable)
 import           Data.Monoid                      ((<>))
-import           Data.Mutable.Deque
+import           Data.Mutable
 import           Data.Vector                      (Vector)
 import           Data.Vector.Algorithms.Insertion (sort)
 import qualified Data.Vector.Generic              as V
