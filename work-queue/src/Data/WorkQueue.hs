@@ -70,9 +70,9 @@ queueItem :: WorkQueue payload result
           -> STM ()
 queueItem (WorkQueue var _ _) p f = modifyTVar var ((p, f):)
 
--- | Queue multiple work items. This is only provided for convenience vs
--- 'queueItem'; it gives identical atomicity guarantees as calling 'queueItem'
--- multiple times.
+-- | Queue multiple work items. This is only provided for convenience
+-- and performance vs 'queueItem'; it gives identical atomicity
+-- guarantees as calling 'queueItem' multiple times.
 queueItems :: WorkQueue payload result -> [(payload, (result -> IO ()))] -> STM ()
 queueItems (WorkQueue var _ _) items = modifyTVar var (items ++)
 
@@ -128,8 +128,8 @@ withLocalSlave queue = withLocalSlaves queue 1
 
 -- | Start a local slave against the given work queue.
 --
--- Any exception thrown by the slave will be rethrown to the inner thread. This
--- call will not return until the work queue is empty.
+-- Any exception thrown by a slave will be rethrown. This call will
+-- not return until the work queue is empty.
 --
 -- Note that you may run as many local slaves as desired, by nesting calls to
 -- @withLocalSlave@. A convenience function for doing so is 'withLocalSlaves'.
