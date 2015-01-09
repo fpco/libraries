@@ -1,8 +1,8 @@
 module Control.Concurrent.ThreadPoolSpec (spec) where
 
-import Test.Hspec
 import Control.Concurrent.ThreadPool
 import Data.IORef
+import Test.Hspec
 
 spec :: Spec
 spec = do

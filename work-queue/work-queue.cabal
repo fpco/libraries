@@ -34,6 +34,7 @@ library
                      , transformers
   hs-source-dirs:      src
   default-language:    Haskell2010
+  ghc-options:         -Wall
 
 executable hpc-example-war
   main-is:             best-deck.hs
@@ -50,6 +51,7 @@ executable hpc-example-war
                      , vector-algorithms
                      , work-queue
                      , mutable-containers
+  ghc-options:         -Wall -threaded
 
 test-suite test
   type:                exitcode-stdio-1.0
@@ -63,4 +65,10 @@ test-suite test
                      , QuickCheck
                      , vector
                      , stm
+                     , random
+                     , streaming-commons
+                     , async
+                     , bytestring
+                     , binary
   default-language:    Haskell2010
+  ghc-options:         -Wall -threaded
