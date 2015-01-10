@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies     #-}
+{-# LANGUAGE TupleSections    #-}
 -- | A work queue, for distributed workloads among multiple local threads.
 --
 -- To distribute workloads to remote nodes, see "Distributed.WorkQueue", which
@@ -11,6 +12,7 @@ module Data.WorkQueue
     , withWorkQueue
     , queueItem
     , queueItems
+    , modifyItems
     , checkEmptyWorkQueue
     , provideWorker
     , withLocalSlave
@@ -34,6 +36,7 @@ import Control.Monad               (forever, join, void)
 import Control.Monad.Base          (liftBase)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Control (MonadBaseControl, control)
+import Data.IORef
 import Data.MonoTraversable
 import Data.Traversable
 import Data.Void                   (absurd)
@@ -68,13 +71,19 @@ queueItem :: WorkQueue payload result
           -> payload -- ^ payload to be computed
           -> (result -> IO ()) -- ^ action to be performed with its result
           -> STM ()
-queueItem (WorkQueue var _ _) p f = modifyTVar var ((p, f):)
+queueItem queue p f = modifyItems queue ((p, f):)
 
 -- | Queue multiple work items. This is only provided for convenience
 -- and performance vs 'queueItem'; it gives identical atomicity
 -- guarantees as calling 'queueItem' multiple times.
-queueItems :: WorkQueue payload result -> [(payload, (result -> IO ()))] -> STM ()
-queueItems (WorkQueue var _ _) items = modifyTVar var (items ++)
+queueItems :: WorkQueue payload result -> [(payload, result -> IO ())] -> STM ()
+queueItems queue items = modifyItems queue (items ++)
+
+-- | Atomically modify the list of work items.
+modifyItems :: WorkQueue payload result
+            -> ([(payload, result -> IO ())] -> [(payload, result -> IO ())])
+            -> STM ()
+modifyItems (WorkQueue var _ _) = modifyTVar var
 
 -- | Block until the work queue is empty. That is, until there are no work
 -- items in the queue, and no work items checked out by a worker.
@@ -166,10 +175,14 @@ mapQueue :: (MonadIO m, Traversable t)
          -> t payload
          -> m (t result)
 mapQueue queue t = liftIO $ do
+    -- Stores a dlist of the items to enqueue.
+    itemsRef <- newIORef id
     t' <- forM t $ \a -> do
         var <- newEmptyMVar
-        atomically $ queueItem queue a $ putMVar var
+        modifyIORef itemsRef (((a, putMVar var) :) .)
         return $ takeMVar var
+    items <- readIORef itemsRef
+    atomically $ modifyItems queue items
     sequence t'
 
 mapQueue_ :: (MonadIO m, MonoFoldable mono, Element mono ~ payload)
@@ -177,5 +190,5 @@ mapQueue_ :: (MonadIO m, MonoFoldable mono, Element mono ~ payload)
           -> mono
           -> m ()
 mapQueue_ queue mono = liftIO $ do
-    atomically $ oforM_ mono $ \a -> queueItem queue a (const $ return ())
+    atomically $ queueItems queue $ map (, const $ return ()) $ otoList mono
     atomically $ checkEmptyWorkQueue queue

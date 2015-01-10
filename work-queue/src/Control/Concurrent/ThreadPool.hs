@@ -12,6 +12,7 @@ import Control.Concurrent.STM      (atomically)
 import Control.Monad               (void)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Control
+import Data.IORef
 import Data.MonoTraversable
 import Data.Traversable
 import Data.WorkQueue
@@ -32,10 +33,14 @@ mapTP :: (Traversable t, MonadIO m)
       -> t a
       -> m (t b)
 mapTP (ThreadPool queue) f t = liftIO $ do
+    -- Stores a dlist of the items to enqueue.
+    itemsRef <- newIORef id
     t' <- forM t $ \a -> do
         var <- newEmptyMVar
-        atomically $ queueItem queue (f a >>= putMVar var) return
+        modifyIORef itemsRef (((f a >>= putMVar var, return) :) .)
         return $ takeMVar var
+    items <- readIORef itemsRef
+    atomically $ modifyItems queue items
     sequence t'
 
 mapTP_ :: (MonoFoldable mono, Element mono ~ a, MonadIO m)
@@ -44,5 +49,5 @@ mapTP_ :: (MonoFoldable mono, Element mono ~ a, MonadIO m)
        -> mono
        -> m ()
 mapTP_ (ThreadPool queue) f mono = liftIO $ do
-    atomically $ oforM_ mono $ \a -> queueItem queue (void $ f a) return
+    atomically $ queueItems queue $ map (\a -> (void $ f a, return)) $ otoList mono
     atomically $ checkEmptyWorkQueue queue
