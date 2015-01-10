@@ -26,7 +26,7 @@ import Control.Concurrent          (threadDelay)
 import Control.Concurrent.Async    (race)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM      (STM, STM, TMVar, TVar, atomically, check,
-                                    modifyTVar, newEmptyTMVar, newTVar,
+                                    modifyTVar', newEmptyTMVar, newTVar,
                                     readTMVar, readTVar, retry, tryPutTMVar,
                                     writeTVar)
 import Control.Exception           (SomeException, catch, finally, mask,
@@ -83,7 +83,7 @@ queueItems queue items = modifyItems queue (items ++)
 modifyItems :: WorkQueue payload result
             -> ([(payload, result -> IO ())] -> [(payload, result -> IO ())])
             -> STM ()
-modifyItems (WorkQueue var _ _) = modifyTVar var
+modifyItems (WorkQueue var _ _) = modifyTVar' var
 
 -- | Block until the work queue is empty. That is, until there are no work
 -- items in the queue, and no work items checked out by a worker.
@@ -111,11 +111,11 @@ provideWorker (WorkQueue work active final) onPayload =
             Nothing -> return $ return ()
             Just tuple@(payload, onResult) -> (`finally` decOpen) $ do
                 restore (onPayload payload >>= onResult) `catch` \e -> do
-                    atomically $ modifyTVar work (tuple:)
+                    atomically $ modifyTVar' work (tuple:)
                     throwIO (e :: SomeException)
                 return loop
 
-    decOpen = atomically $ modifyTVar active (subtract 1)
+    decOpen = atomically $ modifyTVar' active (subtract 1)
 
     getWork = do
         work' <- readTVar work
@@ -123,7 +123,7 @@ provideWorker (WorkQueue work active final) onPayload =
             [] -> retry
             x:xs -> do
                 writeTVar work xs
-                modifyTVar active (+ 1)
+                modifyTVar' active (+ 1)
                 return x
     getFinal = readTMVar final
 
