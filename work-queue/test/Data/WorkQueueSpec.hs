@@ -95,6 +95,37 @@ spec = do
         show result `shouldBe` "Left user error (boom!)"
         incCount <- readIORef ref
         incCount `shouldBe` 0
+    it "mapQueue completes even if there are other long running work items" $ do
+        let xs = [(), (), (), ()]
+        done <- newEmptyMVar
+        tid <- forkIO $
+            withWorkQueue $ \queue ->
+                withLocalSlaves queue 2 (\() -> return ()) $ do
+                    -- This task won't finish.
+                    atomically $ queueItem queue () (\() -> threadDelay (1000 * 1000 * 2))
+                    -- However, these tasks will!
+                    putMVar done =<< timeout (1000 * 1000) (mapQueue queue xs)
+
+        mres <- takeMVar done
+        killThread tid
+        case mres of
+            Nothing -> fail "mapQueue timed out"
+            Just res -> res `shouldBe` xs
+    it "mapQueue_ completes even if there are other long running work items" $ do
+        let xs = [(), (), (), ()]
+        done <- newEmptyMVar
+        tid <- forkIO $
+            withWorkQueue $ \queue ->
+                withLocalSlaves queue 2 (\() -> return ()) $ do
+                    -- This task won't finish.
+                    atomically $ queueItem queue () (\() -> threadDelay (1000 * 1000 * 2))
+                    -- However, these tasks will!
+                    putMVar done =<< timeout (1000 * 1000) (mapQueue_ queue xs)
+        mres <- takeMVar done
+        killThread tid
+        case mres of
+            Nothing -> fail "mapQueue timed out"
+            Just () -> return ()
 
 randomTinyDelay :: IO ()
 randomTinyDelay = threadDelay =<< randomRIO (0, 2000)
