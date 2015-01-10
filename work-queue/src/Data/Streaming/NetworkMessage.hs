@@ -4,6 +4,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NoImplicitPrelude          #-}
 {-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
 -- | Pass well-typed messages across a network connection, including heartbeats.
 --
 -- Built on top of "Data.Streaming.Network". This module handles all heartbeat
@@ -103,19 +104,13 @@ data Handshake = Handshake
     deriving (Generic, Show, Read, Eq, Ord, Typeable)
 instance B.Binary Handshake
 
-mkHandshake :: (Typeable iSend, Typeable youSend)
+mkHandshake :: forall iSend youSend m a. (Typeable iSend, Typeable youSend)
             => NMApp iSend youSend m a -> Int -> Handshake
 mkHandshake app hb = Handshake
-    { hsISend = typeRepS (proxyISend app)
-    , hsYouSend = typeRepS (proxyYouSend app)
+    { hsISend = typeRepS (Nothing :: Maybe iSend)
+    , hsYouSend = typeRepS (Nothing :: Maybe youSend)
     , hsHeartbeat = hb
     }
-  where
-    proxyISend :: NMApp iSend youSend m a -> Maybe iSend
-    proxyISend _ = Nothing
-
-    proxyYouSend :: NMApp iSend youSend m a -> Maybe youSend
-    proxyYouSend _ = Nothing
 
 -- | Convert an 'NMApp' into an "Data.Streaming.Network" application.
 runNMApp :: ( MonadBaseControl IO m
