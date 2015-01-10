@@ -50,6 +50,19 @@ spec = do
             server app = appWrite (nmAppData app) "bogus data"
         res <- try $ runClientAndServer client server
         res `shouldBe` Left (DecodeFailure "Unknown encoding for constructor")
+    it "throws HeartbeatFailure when heartbeat intervals are too small" $ do
+        exitedLateRef <- newIORef False
+        let settings = setNMHeartbeat 10 defaultNMSettings
+            both :: NMApp () () IO ()
+            both _ = do
+                threadDelay (1000 * 200)
+                writeIORef exitedLateRef True
+        res <- try $
+            (waitForSocket >> runTCPClient clientSettings (runNMApp settings both)) `race`
+            runTCPServer serverSettings (runNMApp settings both)
+        res `shouldBe` Left HeartbeatFailure
+        exitedLate <- readIORef exitedLateRef
+        exitedLate `shouldBe` False
     --TODO: add test for (DecodeFailure "demandInput: not enough bytes")
 
 expectMismatchedHandshakes :: forall a b c d. (Binary a, Binary b, Binary c, Binary d, Typeable a, Typeable b, Typeable c, Typeable d)
