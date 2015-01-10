@@ -70,5 +70,7 @@ test-suite test
                      , async
                      , bytestring
                      , binary
+                     , network
+                     , enclosed-exceptions
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded

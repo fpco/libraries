@@ -6,6 +6,7 @@ module Data.Streaming.NetworkMessageSpec (spec) where
 import           Control.Concurrent
 import           Control.Concurrent.Async
 import           Control.Exception
+import           Control.Exception.Enclosed (tryAny)
 import           Control.Monad
 import           Data.Binary
 import qualified Data.ByteString as BS
@@ -14,6 +15,7 @@ import           Data.IORef
 import           Data.Streaming.Network
 import           Data.Streaming.NetworkMessage
 import           Data.Typeable
+import qualified Network.Socket as NS
 import           Test.Hspec
 
 spec :: Spec
@@ -70,11 +72,32 @@ runClientAndServer = runClientAndServer'
 runClientAndServer' :: forall a b c d. (Binary a, Binary b, Binary c, Binary d, Typeable a, Typeable b, Typeable c, Typeable d)
                     => NMApp a b IO () -> NMApp c d IO () -> IO ()
 runClientAndServer' client server = void $
-    runTCPClient clientSettings (runNMApp defaultNMSettings client) `race`
+    (waitForSocket >> runTCPClient clientSettings (runNMApp defaultNMSettings client)) `race`
     runTCPServer serverSettings (runNMApp defaultNMSettings server)
 
+-- Repeatedly attempts to connect to the test socket, and returns once
+-- a connection succeeds.
+waitForSocket :: IO ()
+waitForSocket = loop (10 :: Int)
+  where
+    loop 0 = fail "Ran out of waitForSocket retries, indicating that the server from the prior test likely didn't exit."
+    loop n = do
+        eres <- tryAny $ getSocketFamilyTCP host port NS.AF_UNSPEC
+        case eres of
+            Left _ -> do
+                threadDelay (20 * 1000)
+                loop (n - 1)
+            Right (socket, _) ->
+                NS.close socket
+
 serverSettings :: ServerSettings
-serverSettings = serverSettingsTCP 1337 "*"
+serverSettings = serverSettingsTCP port "*"
 
 clientSettings :: ClientSettings
-clientSettings = clientSettingsTCP 1337 "localhost"
+clientSettings = clientSettingsTCP port host
+
+port :: Int
+port = 2015
+
+host :: BS.ByteString
+host = "localhost"
