@@ -12,16 +12,17 @@ import           Data.Binary
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import           Data.IORef
+import           Data.Maybe (isNothing)
 import           Data.Streaming.Network
 import           Data.Streaming.NetworkMessage
 import           Data.Typeable
 import qualified Network.Socket as NS
+import           System.Timeout (timeout)
 import           Test.Hspec
 
 spec :: Spec
 spec = do
     it "sends messages both ways" $ do
-        done <- newEmptyMVar
         let client app = do
                 res <- nmRead app
                 res `shouldBe` (1 :: Int)
@@ -30,9 +31,22 @@ spec = do
                 nmWrite app (1 :: Int)
                 res <- nmRead app
                 res `shouldBe` True
-                putMVar done ()
-        runClientAndServer client server
-        takeMVar done
+        finished <- timeout (1000 * 1000) $
+            runClientAndServer client server
+        when (isNothing finished) $ fail "Client / server needed to be killed"
+    it "successfully transfers a 10MB bytestring both ways" $ do
+        let xs = BS.replicate (10 * 1024 * 1024) 42
+            client app = do
+                res <- nmRead app
+                res `shouldBe` xs
+                nmWrite app xs
+            server app = do
+                nmWrite app xs
+                res <- nmRead app
+                res `shouldBe` xs
+        finished <- timeout (10 * 1000 * 1000) $
+            runClientAndServer client server
+        when (isNothing finished) $ fail "Client / server needed to be killed"
     it "throws MismatchedHandshakes when client -> server types mismatch" $ do
         expectMismatchedHandshakes () True (Just True) ()
     it "throws MismatchedHandshakes when server -> client types mismatch" $ do
