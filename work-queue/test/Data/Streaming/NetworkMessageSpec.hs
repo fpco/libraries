@@ -71,9 +71,7 @@ spec = do
             both _ = do
                 threadDelay (1000 * 200)
                 writeIORef exitedLateRef True
-        res <- try $
-            (waitForSocket >> runTCPClient clientSettings (runNMApp settings both)) `race`
-            runTCPServer serverSettings (runNMApp settings both)
+        res <- try $ runClientAndServer' settings both both
         res `shouldBe` Left HeartbeatFailure
         exitedLate <- readIORef exitedLateRef
         exitedLate `shouldBe` False
@@ -85,7 +83,7 @@ expectMismatchedHandshakes _ _ _ _ = do
     exitedLateRef <- newIORef False
     let client (_ :: NMAppData a b) = writeIORef exitedLateRef True
         server (_ :: NMAppData c d) = writeIORef exitedLateRef True
-    res <- try $ runClientAndServer' client server
+    res <- try $ runClientAndServer' defaultNMSettings client server
     case res of
         Left MismatchedHandshakes {} -> return ()
         _ -> fail $ "Expected MismatchedHandshakes, got " ++ show res
@@ -94,13 +92,13 @@ expectMismatchedHandshakes _ _ _ _ = do
 
 runClientAndServer :: forall a b. (Binary a, Binary b, Typeable a, Typeable b)
                    => NMApp a b IO () -> NMApp b a IO () -> IO ()
-runClientAndServer = runClientAndServer'
+runClientAndServer = runClientAndServer' defaultNMSettings
 
 runClientAndServer' :: forall a b c d. (Binary a, Binary b, Binary c, Binary d, Typeable a, Typeable b, Typeable c, Typeable d)
-                    => NMApp a b IO () -> NMApp c d IO () -> IO ()
-runClientAndServer' client server = void $
-    (waitForSocket >> runTCPClient clientSettings (runNMApp defaultNMSettings client)) `race`
-    runTCPServer serverSettings (runNMApp defaultNMSettings server)
+                    => NMSettings -> NMApp a b IO () -> NMApp c d IO () -> IO ()
+runClientAndServer' settings client server = void $
+    (waitForSocket >> runTCPClient clientSettings (runNMApp settings client)) `race`
+    runTCPServer serverSettings (runNMApp settings server)
 
 -- Repeatedly attempts to connect to the test socket, and returns once
 -- a connection succeeds.
