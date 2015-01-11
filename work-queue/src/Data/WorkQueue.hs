@@ -21,7 +21,7 @@ module Data.WorkQueue
     , mapQueue_
     ) where
 
-import Control.Applicative         ((*>), (<$), (<$>), (<*>), (<|>))
+import Control.Applicative         ((<$), (<$>), (<*>), (<|>))
 import Control.Concurrent          (threadDelay)
 import Control.Concurrent.Async    (race)
 import Control.Concurrent.MVar

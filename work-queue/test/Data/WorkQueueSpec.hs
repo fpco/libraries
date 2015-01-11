@@ -36,7 +36,7 @@ spec = do
     it "mapQueue" $ do
         withWorkQueue $ \queue ->
             withLocalSlaves queue 2 return $ do
-                let xs = [1..100]
+                let xs = [1..100] :: [Int]
                 results <- mapQueue queue xs
                 results `shouldBe` xs
     it "mapQueue_" $ do
@@ -48,8 +48,8 @@ spec = do
         -- in order (but not necessarily always!).
         let calc x = do
                 randomTinyDelay
-                atomicModifyIORef ref (\xs -> (x:xs, ()))
-            xs = [1..100]
+                atomicModifyIORef ref (\xs' -> (x:xs', ()))
+            xs = [1..100] :: [Int]
         withWorkQueue $ \queue -> withLocalSlaves queue 2 calc $ do
             mapQueue_ queue xs
             results <- readIORef ref
@@ -59,7 +59,7 @@ spec = do
         -- sequentially (which will build up the reversed list).
         ref <- newIORef []
         let calc x = randomTinyDelay >> modifyIORef ref (x:)
-            xs = [1..100]
+            xs = [1..100] :: [Int]
         results <- withWorkQueue $ \queue -> withLocalSlave queue calc $ do
             mapQueue_ queue xs
             readIORef ref
@@ -80,7 +80,7 @@ spec = do
                     mapQueue_ queue [()]
         result `shouldBe` Nothing
     it "exceptions halt all slaves" $ do
-        ref <- newIORef 0
+        ref <- newIORef (0 :: Int)
         let calc True = fail "boom!"
             calc False = atomicModifyIORef ref (\x -> (x + 1, ()))
         (result :: Either SomeException ()) <- try $
@@ -105,7 +105,6 @@ spec = do
                     atomically $ queueItem queue () (\() -> threadDelay (1000 * 1000 * 2))
                     -- However, these tasks will!
                     putMVar done =<< timeout (1000 * 1000) (mapQueue queue xs)
-
         mres <- takeMVar done
         killThread tid
         case mres of
@@ -124,7 +123,7 @@ spec = do
         mres <- takeMVar done
         killThread tid
         case mres of
-            Nothing -> fail "mapQueue timed out"
+            Nothing -> fail "mapQueue_ timed out"
             Just () -> return ()
 
 randomTinyDelay :: IO ()

@@ -106,7 +106,7 @@ instance B.Binary Handshake
 
 mkHandshake :: forall iSend youSend m a. (Typeable iSend, Typeable youSend)
             => NMApp iSend youSend m a -> Int -> Handshake
-mkHandshake app hb = Handshake
+mkHandshake _ hb = Handshake
     { hsISend = typeRepS (Nothing :: Maybe iSend)
     , hsYouSend = typeRepS (Nothing :: Maybe youSend)
     , hsHeartbeat = hb

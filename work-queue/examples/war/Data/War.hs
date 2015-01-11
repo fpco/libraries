@@ -18,7 +18,6 @@ module Data.War
     , score
     ) where
 
-import           Control.Monad.Primitive          (PrimMonad, PrimState)
 import           Control.Monad.ST
 import           Data.Data                        (Data, Typeable)
 import           Data.Monoid                      ((<>))
