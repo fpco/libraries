@@ -6,7 +6,6 @@ module Data.Streaming.NetworkMessageSpec (spec) where
 import           Control.Concurrent
 import           Control.Concurrent.Async
 import           Control.Exception
-import           Control.Exception.Enclosed (tryAny)
 import           Control.Monad
 import           Data.Binary
 import qualified Data.ByteString as BS
@@ -16,7 +15,6 @@ import           Data.Maybe (isNothing)
 import           Data.Streaming.Network
 import           Data.Streaming.NetworkMessage
 import           Data.Typeable
-import qualified Network.Socket as NS
 import           System.Timeout (timeout)
 import           Test.Hspec
 
@@ -96,33 +94,18 @@ runClientAndServer = runClientAndServer' defaultNMSettings
 
 runClientAndServer' :: forall a b c d. (Binary a, Binary b, Binary c, Binary d, Typeable a, Typeable b, Typeable c, Typeable d)
                     => NMSettings -> NMApp a b IO () -> NMApp c d IO () -> IO ()
-runClientAndServer' settings client server = void $
-    (waitForSocket >> runTCPClient clientSettings (runNMApp settings client)) `race`
-    runTCPServer serverSettings (runNMApp settings server)
-
--- Repeatedly attempts to connect to the test socket, and returns once
--- a connection succeeds.
-waitForSocket :: IO ()
-waitForSocket = loop (10 :: Int)
-  where
-    loop 0 = fail "Ran out of waitForSocket retries, indicating that the server from the prior test likely didn't exit."
-    loop n = do
-        eres <- tryAny $ getSocketFamilyTCP host port NS.AF_UNSPEC
-        case eres of
-            Left _ -> do
-                threadDelay (20 * 1000)
-                loop (n - 1)
-            Right (socket, _) ->
-                NS.close socket
+runClientAndServer' settings client server = do
+    serverReady <- newEmptyMVar
+    let serverSettings' = setAfterBind (\_ -> putMVar serverReady ()) serverSettings
+    void $
+        (takeMVar serverReady >> runTCPClient clientSettings (runNMApp settings client)) `race`
+        runTCPServer serverSettings' (runNMApp settings server)
 
 serverSettings :: ServerSettings
 serverSettings = serverSettingsTCP port "*"
 
 clientSettings :: ClientSettings
-clientSettings = clientSettingsTCP port host
+clientSettings = clientSettingsTCP port "localhost"
 
 port :: Int
 port = 2015
-
-host :: BS.ByteString
-host = "localhost"
