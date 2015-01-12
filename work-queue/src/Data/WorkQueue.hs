@@ -32,7 +32,7 @@ import Control.Concurrent.STM      (STM, STM, TMVar, TVar, atomically, check,
 import Control.Exception           (SomeException, catch, finally, mask,
                                     throwIO)
 import Control.Exception.Lifted    (bracket)
-import Control.Monad               (forever, join, void)
+import Control.Monad               (forever, join, void, when)
 import Control.Monad.Base          (liftBase)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Control (MonadBaseControl, control)
@@ -170,6 +170,9 @@ withLocalSlaves queue count0 calc inner =
             getRight (Right x) = x
          in loop count0
 
+-- NOTE: changes to 'mapQueue' and 'mapQueue_' should probably also be
+-- made to 'mapTP' and 'mapTP_'
+
 mapQueue :: (MonadIO m, Traversable t)
          => WorkQueue payload result
          -> t payload
@@ -190,5 +193,11 @@ mapQueue_ :: (MonadIO m, MonoFoldable mono, Element mono ~ payload)
           -> mono
           -> m ()
 mapQueue_ queue mono = liftIO $ do
-    atomically $ queueItems queue $ map (, const $ return ()) $ otoList mono
-    atomically $ checkEmptyWorkQueue queue
+    let xs = otoList mono
+    itemsCount <- newIORef (length xs)
+    done <- newEmptyMVar
+    let decrement = do
+            cnt <- atomicModifyIORef itemsCount (\x -> (x - 1, x - 1))
+            when (cnt == 0) $ putMVar done ()
+    atomically $ queueItems queue $ map (, const decrement) xs
+    takeMVar done

@@ -9,7 +9,7 @@ module Control.Concurrent.ThreadPool
 
 import Control.Concurrent.MVar
 import Control.Concurrent.STM      (atomically)
-import Control.Monad               (void)
+import Control.Monad               (void, when)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Control
 import Data.IORef
@@ -26,6 +26,9 @@ withThreadPool :: MonadBaseControl IO m
                -> m a
 withThreadPool threads inner = withWorkQueue $ \queue ->
     withLocalSlaves queue threads id (inner $ ThreadPool queue)
+
+-- NOTE: changes to 'mapTP' and 'mapTP_' should probably also be
+-- made to 'mapQueue' and 'mapQueue_'
 
 mapTP :: (Traversable t, MonadIO m)
       => ThreadPool
@@ -49,5 +52,11 @@ mapTP_ :: (MonoFoldable mono, Element mono ~ a, MonadIO m)
        -> mono
        -> m ()
 mapTP_ (ThreadPool queue) f mono = liftIO $ do
-    atomically $ queueItems queue $ map (\a -> (void $ f a, return)) $ otoList mono
-    atomically $ checkEmptyWorkQueue queue
+    let xs = otoList mono
+    itemsCount <- newIORef (length xs)
+    done <- newEmptyMVar
+    let decrement = do
+            cnt <- atomicModifyIORef itemsCount (\x -> (x - 1, x - 1))
+            when (cnt == 0) $ putMVar done ()
+    atomically $ queueItems queue $ map (\a -> (void $ f a, const decrement)) xs
+    takeMVar done
