@@ -80,3 +80,30 @@ test-suite test
                      , system-fileio
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
+
+benchmark bench
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test, bench
+  main-is:             bench.hs
+  other-modules:       Distributed.WorkQueueSpec
+  build-depends:       base
+                     , work-queue
+                     , hspec
+                     , QuickCheck
+                     , vector
+                     , stm
+                     , random
+                     , streaming-commons
+                     , async
+                     , bytestring
+                     , binary
+                     , network
+                     , enclosed-exceptions
+                     , unix
+                     , split
+                     , classy-prelude
+                     , system-fileio
+                     , criterion
+                     , silently
+  default-language:    Haskell2010
+  ghc-options:         -Wall -threaded

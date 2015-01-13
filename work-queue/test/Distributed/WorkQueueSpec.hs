@@ -27,33 +27,34 @@ data Config = Config
     , checkMasterRan :: Bool
     , checkSlaveRan :: Bool
     , checkAllSlavesRan :: Bool
+    , wrapProcess :: IO () -> IO ()
     , whileRunning :: ProcessID -> IO ProcessID -> IO ()
     }
 
 defaultConfig :: Config
-defaultConfig = Config 1 True True True (\_ startSlave -> startSlave >> return ())
+defaultConfig = Config 1 True True True id (\_ startSlave -> startSlave >> return ())
 
 spec :: Spec
 spec = do
     it "can run tasks on master and slave server" $
-        runXor 0 defaultConfig
+        runXor 0 12 100 defaultConfig
     it "can run tasks on just the master server" $
-        runXor 1 defaultConfig
+        runXor 1 12 100 defaultConfig
             { checkSlaveRan = False
             , checkAllSlavesRan = False
             , whileRunning = \_ _ -> return ()
             }
     it "can run tasks on master and two slave servers" $
-        runXor 2 defaultConfig
+        runXor 2 12 100 defaultConfig
             { whileRunning = \_ startSlave -> startSlave >> startSlave >> return () }
     it "can run tasks only on slaves" $
-        runXor 3 defaultConfig
+        runXor 3 12 100 defaultConfig
             { masterJobs = 0
             , checkMasterRan = False
             , whileRunning = \_ startSlave -> startSlave >> startSlave >> return ()
             }
     it "preserves data despite slaves being started and killed periodically" $
-        runXor 4 defaultConfig
+        runXor 4 12 100 defaultConfig
             { masterJobs = 0
             , checkMasterRan = False
             , checkAllSlavesRan = False
@@ -66,18 +67,23 @@ spec = do
                 void $ randomSlaveSpawner `race` randomSlaveSpawner
             }
 
-runXor :: Int -> Config -> IO ()
-runXor expected config = do
-    let xs = expected : [1..(2^(12 :: Int))-1]
+runXor :: Int -> Int -> Int -> Config -> IO ()
+runXor expected bits chunkSize config = do
+    firstRunRef <- newIORef True
+    let xs = expected : [1..(2^bits)-1]
         initialData = return ()
         calc () input = do
-            -- This thread delay is necessary so that the server
-            -- doesn't start up so fast that the client never gets
-            -- a chance to start.
-            threadDelay (100 * 1000)
+            -- This thread delay is necessary so that the master
+            -- doesn't start up so fast that the client never gets a
+            -- chance to start.  Ideally this would only run for the
+            -- master.
+            firstRun <- readIORef firstRunRef
+            when firstRun $ do
+                threadDelay (100 * 1000)
+                writeIORef firstRunRef False
             return $ foldl' xor zeroBits input
         inner () queue = do
-            subresults <- mapQueue queue (chunksOf 100 xs)
+            subresults <- mapQueue queue (chunksOf chunkSize xs)
             calc () subresults
     result <- forkMasterSlave config initialData calc inner
     result `shouldBe` expected
@@ -117,7 +123,7 @@ forkMasterSlave config initialData calc' inner' = do
             pid <- forkProcess $ withArgs ["slave", "localhost", "2015"] run
             modifyIORef slavesRef (pid:)
             return pid
-        run = runArgs initialData calc inner
+        run = wrapProcess config $ runArgs initialData calc inner
         go = do
             cleanup
             masterPid <- forkProcess $ withArgs ["master", show (masterJobs config), "2015"] run
@@ -146,7 +152,7 @@ forkMasterSlave config initialData calc' inner' = do
 -- Wait for a connection to the test socket to succeed, indicating
 -- that the master is accepting connections.
 waitForSocket :: IO ()
-waitForSocket = loop (10 :: Int)
+waitForSocket = loop (100 :: Int)
   where
     loop 0 = fail "Ran out of waitForSocket retries."
     loop n = do
