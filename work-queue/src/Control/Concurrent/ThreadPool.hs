@@ -36,14 +36,10 @@ mapTP :: (Traversable t, MonadIO m)
       -> t a
       -> m (t b)
 mapTP (ThreadPool queue) f t = liftIO $ do
-    -- Stores a dlist of the items to enqueue.
-    itemsRef <- newIORef id
     t' <- forM t $ \a -> do
         var <- newEmptyMVar
-        modifyIORef itemsRef (((f a >>= putMVar var, return) :) .)
+        atomically $ queueItem queue (f a >>= putMVar var) return
         return $ takeMVar var
-    items <- readIORef itemsRef
-    atomically $ modifyItems queue items
     sequence t'
 
 mapTP_ :: (MonoFoldable mono, Element mono ~ a, MonadIO m)
