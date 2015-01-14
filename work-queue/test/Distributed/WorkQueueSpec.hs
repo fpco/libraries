@@ -61,7 +61,7 @@ spec = do
             , whileRunning = \_ startSlave -> do
                 let randomSlaveSpawner = forever $ do
                         pid <- startSlave
-                        ms <- randomRIO (0, 300)
+                        ms <- randomRIO (150, 300)
                         threadDelay (1000 * ms)
                         signalProcess killProcess pid
                 void $ randomSlaveSpawner `race` randomSlaveSpawner
@@ -79,7 +79,7 @@ runXor expected bits chunkSize config = do
             -- master.
             firstRun <- readIORef firstRunRef
             when firstRun $ do
-                threadDelay (100 * 1000)
+                threadDelay (200 * 1000)
                 writeIORef firstRunRef False
             return $ foldl' xor zeroBits input
         inner () queue = do
