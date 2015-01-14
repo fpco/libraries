@@ -38,9 +38,9 @@ import           Control.Monad.Base          (liftBase)
 import           Control.Monad.Trans.Control (MonadBaseControl, control)
 import qualified Data.Binary                 as B
 import qualified Data.Binary.Get             as B
+import           Data.ConcreteTypeRep        (ConcreteTypeRep, cTypeOf)
 import           Data.Function               (fix)
 import           Data.Streaming.Network      (AppData, appRead, appWrite)
-import           Data.Typeable
 import           Data.Vector.Binary          () -- commonly needed orphans
 
 -- | A network message application.
@@ -89,26 +89,19 @@ nmWrite nm = liftIO . _nmWrite nm
 nmRead :: MonadIO m => NMAppData iSend youSend -> m youSend
 nmRead = liftIO . _nmRead
 
--- | Serializable type representation.
-newtype TypeRepS = TypeRepS ByteString
-    deriving (Generic, Show, Read, Eq, Ord, Typeable, B.Binary)
-
-typeRepS :: Typeable a => proxy a -> TypeRepS
-typeRepS = TypeRepS . encodeUtf8 . tshow . typeRep
-
 data Handshake = Handshake
-    { hsISend     :: TypeRepS
-    , hsYouSend   :: TypeRepS
+    { hsISend     :: ConcreteTypeRep
+    , hsYouSend   :: ConcreteTypeRep
     , hsHeartbeat :: Int
     }
-    deriving (Generic, Show, Read, Eq, Ord, Typeable)
+    deriving (Generic, Show, Eq, Typeable)
 instance B.Binary Handshake
 
 mkHandshake :: forall iSend youSend m a. (Typeable iSend, Typeable youSend)
             => NMApp iSend youSend m a -> Int -> Handshake
 mkHandshake _ hb = Handshake
-    { hsISend = typeRepS (Nothing :: Maybe iSend)
-    , hsYouSend = typeRepS (Nothing :: Maybe youSend)
+    { hsISend = cTypeOf (error "impossible: iSend shouldn't be evaluated" :: iSend)
+    , hsYouSend = cTypeOf (error "impossible: youSend shouldn't be evaluated" :: youSend)
     , hsHeartbeat = hb
     }
 
