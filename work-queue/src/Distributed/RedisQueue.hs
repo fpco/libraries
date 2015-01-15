@@ -21,15 +21,20 @@ module Distributed.RedisQueue
     , withResponse
     , subscribeToResponses
     , dispatchResponse
-    , handleWorkerFailure
+    , sendHeartbeats
+    , checkHeartbeats
     ) where
 
 import ClassyPrelude
+import Control.Concurrent (threadDelay)
 import Data.Binary (Binary, encode, decode)
+import Data.Ratio ((%))
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import FP.Redis.Command (runCommand, runCommand_, makeCommand)
 import FP.Redis.Command.Generic (del)
 import FP.Redis.Command.List (lpush, lrem, lrange, brpoplpush)
 import FP.Redis.Command.PubSub (publish)
+import FP.Redis.Command.SortedSet (zadd, zrem, zrangebyscore)
 import FP.Redis.Command.String (set, get, incr)
 import FP.Redis.Connection (withConnection)
 import FP.Redis.PubSub (withSubscriptionsEx, trackSubscriptionStatus, subscribe)
@@ -172,13 +177,34 @@ dispatchResponse getMap k = do
         Nothing -> liftIO $ throwIO (NoCallbackFor k)
         Just callback -> callback
 
+-- | This sends a heartbeat to redis. This should be done
+-- periodically, so that we can know when to call
+-- 'handleWorkerFailure'.
+sendHeartbeats :: MonadCommand m => WorkerInfo -> Int -> m ()
+sendHeartbeats (WorkerInfo r wid) micros = forever $ do
+    now <- liftIO getPOSIXTime
+    run_ r $ zadd (heartbeatKey r) [(realToFrac now, unWorkerId wid)]
+    liftIO $ threadDelay micros
+
+checkHeartbeats :: MonadCommand m => RedisInfo -> Int -> m ()
+checkHeartbeats r micros = do
+    now <- liftIO getPOSIXTime
+    let ivl = fromRational (fromIntegral micros % (1000 * 1000))
+        threshold = realToFrac now - ivl
+    expired <- run r $ zrangebyscore (heartbeatKey r) 0 threshold False
+    -- Need this check because zrem can fail otherwise.
+    unless (null expired) $ do
+        mapM_ (handleWorkerFailure r . WorkerId) expired
+        run_ r $ zrem (heartbeatKey r) expired
+
 -- | NOTE: this should only be run when it's known for certain that
 -- the worker is down and no longer manipulating the in-progress list,
 -- since this is not an atomic update.
 handleWorkerFailure :: MonadCommand m => RedisInfo -> WorkerId -> m ()
 handleWorkerFailure r wid = do
     xs <- run r $ lrange (inProgressKey r wid) 0 (-1)
-    run_ r $ rpush' (requestsKey r) xs
+    unless (null xs) $
+        run_ r $ rpush' (requestsKey r) xs
 
 data DistributedRedisQueueException
     = KeyAlreadySet ByteString
@@ -190,9 +216,10 @@ data DistributedRedisQueueException
 
 instance Exception DistributedRedisQueueException
 
-idCounterKey, requestsKey :: RedisInfo -> ByteString
+idCounterKey, requestsKey, heartbeatKey :: RedisInfo -> ByteString
 idCounterKey r = redisKeyPrefix r <> "id-counter"
 requestsKey  r = redisKeyPrefix r <> "requests"
+heartbeatKey r = redisKeyPrefix r <> "heartbeat"
 
 requestDataKey, responseDataKey, responseChannelFor
     :: RedisInfo -> RequestId -> ByteString

@@ -8,7 +8,8 @@
 module FP.Redis.Command.SortedSet
     ( zadd
     , zrem
-    , zrange )
+    , zrange
+    , zrangebyscore )
     where
 
 import ClassyPrelude.Conduit
@@ -37,3 +38,10 @@ zrange key start stop withScores =
                 ([encodeArg key,encodeArg start,encodeArg stop] ++
                  if withScores then [encodeArg ("WITHSCORES"::ByteString)]  else [])
 
+-- | Returns all the elements in the sorted set at key with a score between min and max.
+-- See <http://redis.io/commands/zrangebyscore>.
+zrangebyscore :: ByteString -> Double -> Double -> Bool -> CommandRequest [ByteString]
+zrangebyscore key start stop withScores =
+    makeCommand "ZRANGEBYSCORE"
+                ([encodeArg key,encodeArg start,encodeArg stop] ++
+                 if withScores then [encodeArg ("WITHSCORES"::ByteString)]  else [])

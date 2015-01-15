@@ -3,7 +3,7 @@
 module Main where
 
 import ClassyPrelude (toStrict, fromStrict)
-import Control.Concurrent.Lifted (fork)
+import Control.Concurrent.Lifted (fork, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM (atomically, newTVarIO, readTVar, check)
 import Control.Monad (forever)
@@ -41,6 +41,10 @@ dispatcher =
                     putStrLn $ "Received result: " ++ show result
                     putStrLn "================"
                     putMVar done ()
+        _ <- fork $ forever $ do
+            let micros = 2 * 1000 * 1000
+            checkHeartbeats redis micros
+            threadDelay micros
         -- Block until we're subscribed before pushing requests.
         liftIO $ atomically $ check =<< readTVar subscribed
         -- Push a single work request.
@@ -57,11 +61,16 @@ masterOrSlave = runArgs initialData calc inner
             processId <- liftIO getProcessID
             let wid = WorkerId $ pack $ show (fromIntegral processId :: Int)
                 worker = WorkerInfo redis wid
+            fork $ forever $ do
+                let micros = 1000 * 1000
+                sendHeartbeats worker micros
+                threadDelay micros
             forever $ do
                 (requestId, request) <- popRequest worker 0
                 let xs = decode (fromStrict request)
                 subresults <- mapQueue queue (chunksOf 100 xs)
                 result <- calc () subresults
+                -- threadDelay (10 * 1000 * 1000)
                 sendResponse worker requestId (toStrict (encode result))
                 liftIO $ do
                     putStrLn "================"
