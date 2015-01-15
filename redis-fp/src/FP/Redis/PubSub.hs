@@ -15,7 +15,8 @@ module FP.Redis.PubSub
     , punsubscribe
     , makeSubscription
     , sendSubscription
-    , sendSubscriptions )
+    , sendSubscriptions
+    , trackSubscriptionStatus )
     where
 
 --TODO SHOULD: use a connection pool, and re-use a single connection for all subscriptions
@@ -161,3 +162,16 @@ punsubscribe channelPatterns = makeSubscription "PUNSUBSCRIBE" (map encodeArg ch
 makeSubscription :: ByteString -> [ByteString] -> SubscriptionRequest
 makeSubscription cmd args =
     SubscriptionRequest (Subscription (renderRequest (encodeArg cmd:args)))
+
+-- | Utility intended to aid implementing the (Message -> m ())
+--   callback.  When subscription is ready, the 'TVar' is set to
+--   'True'.  It is set to 'TVar' when it unsubscribes.
+trackSubscriptionStatus :: MonadIO m
+                        => TVar Bool
+                        -> (ByteString -> ByteString -> m ())
+                        -> (Message -> m ())
+trackSubscriptionStatus subscribed _ (Subscribe {}) =
+    liftIO $ atomically $ writeTVar subscribed True
+trackSubscriptionStatus subscribed _ (Unsubscribe {}) =
+    liftIO $ atomically $ writeTVar subscribed False
+trackSubscriptionStatus _ f (Message k x) = f k x
