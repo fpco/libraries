@@ -40,12 +40,6 @@ import FP.Redis.PubSub (withSubscriptionsEx, trackSubscriptionStatus, subscribe)
 import FP.Redis.Types (Connection, ConnectInfo, MonadCommand, MonadConnect, CommandRequest, SetOption(NX))
 import FP.Redis.Types.Internal (encodeArg)
 
--- Things to consider:
---
--- * Using a hash instead of atomically incrementing a request id
---
--- * Batching some of the commands by using send instead of run.
-
 -- | Info required to submit requests to the queue ('pushRequest'),
 -- wait for responses ('subscribeToResponses'), and retrieve them
 -- ('readResponse' / 'withResponse').
