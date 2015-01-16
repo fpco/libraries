@@ -126,8 +126,8 @@ sendResponse
 sendResponse (WorkerInfo r wid) k x = do
     run_ r $ set (responseDataKey r k) x []
     run_ r $ publish (responseChannelFor r k) (unRequestId k)
-    delExisting r (requestDataKey r k)
     lremExisting r (inProgressKey r wid) 1 (unRequestId k)
+    delExisting r (requestDataKey r k)
 
 readResponse
     :: MonadCommand m
