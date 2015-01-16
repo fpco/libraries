@@ -6,7 +6,7 @@ import ClassyPrelude (toStrict, fromStrict)
 import Control.Concurrent.Lifted (fork, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM (atomically, newTVarIO, readTVar, check)
-import Control.Monad (forever)
+import Control.Monad (forever, void)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Logger (runStdoutLoggingT)
 import Data.Binary (encode, decode)
@@ -61,10 +61,9 @@ masterOrSlave = runArgs initialData calc inner
             processId <- liftIO getProcessID
             let wid = WorkerId $ pack $ show (fromIntegral processId :: Int)
                 worker = WorkerInfo redis wid
-            fork $ forever $ do
-                let micros = 1000 * 1000
-                sendHeartbeats worker micros
-                threadDelay micros
+            _ <- fork $ forever $ do
+                sendHeartbeat worker
+                void $ threadDelay (1000 * 1000)
             forever $ do
                 (requestId, request) <- popRequest worker 0
                 let xs = decode (fromStrict request)

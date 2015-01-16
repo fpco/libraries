@@ -21,12 +21,11 @@ module Distributed.RedisQueue
     , withResponse
     , subscribeToResponses
     , dispatchResponse
-    , sendHeartbeats
+    , sendHeartbeat
     , checkHeartbeats
     ) where
 
 import ClassyPrelude
-import Control.Concurrent (threadDelay)
 import Data.Binary (Binary, encode, decode)
 import Data.Ratio ((%))
 import Data.Time.Clock.POSIX (getPOSIXTime)
@@ -180,11 +179,10 @@ dispatchResponse getMap k = do
 -- | This sends a heartbeat to redis. This should be done
 -- periodically, so that we can know when to call
 -- 'handleWorkerFailure'.
-sendHeartbeats :: MonadCommand m => WorkerInfo -> Int -> m ()
-sendHeartbeats (WorkerInfo r wid) micros = forever $ do
+sendHeartbeat :: MonadCommand m => WorkerInfo -> m ()
+sendHeartbeat (WorkerInfo r wid) = do
     now <- liftIO getPOSIXTime
     run_ r $ zadd (heartbeatKey r) [(realToFrac now, unWorkerId wid)]
-    liftIO $ threadDelay micros
 
 checkHeartbeats :: MonadCommand m => RedisInfo -> Int -> m ()
 checkHeartbeats r micros = do
@@ -203,8 +201,9 @@ checkHeartbeats r micros = do
 handleWorkerFailure :: MonadCommand m => RedisInfo -> WorkerId -> m ()
 handleWorkerFailure r wid = do
     xs <- run r $ lrange (inProgressKey r wid) 0 (-1)
-    unless (null xs) $
+    unless (null xs) $ do
         run_ r $ rpush' (requestsKey r) xs
+        delExisting r (inProgressKey r wid)
 
 data DistributedRedisQueueException
     = KeyAlreadySet ByteString
