@@ -112,7 +112,7 @@ popRequest
 popRequest (WorkerInfo r wid) ms = do
     mk <- run r $ brpoplpush (requestsKey r) (inProgressKey r wid) ms
     case mk of
-        Nothing -> fail ""
+        Nothing -> liftIO $ throwIO PopRequestTimeout
         Just (RequestId -> k) -> do
             x <- getExisting r (requestDataKey r k)
             return (k, x)
