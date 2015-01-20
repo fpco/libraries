@@ -1,10 +1,13 @@
 {-# LANGUAGE NoImplicitPrelude  #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE RecordWildCards #-}
 module Distributed.WorkQueueSpec where
 
 import           ClassyPrelude hiding (intersect)
-import           Control.Concurrent (threadDelay, forkIO, killThread)
-import           Control.Concurrent.Async (race)
+import           Control.Concurrent (threadDelay)
+import           Control.Concurrent.Async (race, async, wait, cancel, Async)
+import           Control.Concurrent.MVar (tryReadMVar)
 import           Data.Binary (Binary)
 import           Data.Bits (xor, zeroBits)
 import           Data.List (intersect, delete)
@@ -15,62 +18,157 @@ import           Filesystem (isFile, removeFile)
 import qualified Network.Socket as NS
 import           Prelude (appendFile, read)
 import           System.Environment (withArgs)
+import           System.Environment.Executable (getExecutablePath)
 import           System.Exit (ExitCode(ExitSuccess))
-import           System.Posix.Process (forkProcess, getProcessStatus, getProcessID, ProcessStatus(Exited))
-import           System.Posix.Signals (signalProcess, killProcess)
-import           System.Posix.Types (ProcessID)
+import           System.Posix.Process (getProcessID)
+import           System.Posix.Types (CPid(..))
+import           System.Process (runProcess, waitForProcess, terminateProcess, ProcessHandle)
+import           System.Process.Internals (ProcessHandle(..), ProcessHandle__(..))
 import           System.Random (randomRIO)
 import           Test.Hspec (Spec, it, shouldBe)
+import System.IO.Silently (hSilence)
 
-data Config = Config
+data Config = XorConfig
+    { xorExtra :: Int
+    , xorBits :: Int
+    , xorChunkSize :: Int
+    , sharedConfig :: SharedConfig
+    }
+
+data SharedConfig = SharedConfig
     { masterJobs :: Int
     , checkMasterRan :: Bool
     , checkSlaveRan :: Bool
     , checkAllSlavesRan :: Bool
     , wrapProcess :: IO () -> IO ()
-    , whileRunning :: ProcessID -> IO ProcessID -> IO ()
+    , whileRunning :: Process -> IO Process -> IO ()
+    , expectedOutput :: Maybe String
     }
-
-defaultConfig :: Config
-defaultConfig = Config 1 True True True id (\_ startSlave -> startSlave >> return ())
 
 spec :: Spec
 spec = do
     it "can run tasks on master and slave server" $
-        runXor 0 12 100 defaultConfig
+        forkMasterSlave "xor0"
     it "can run tasks on just the master server" $
-        runXor 1 12 100 defaultConfig
-            { checkSlaveRan = False
-            , checkAllSlavesRan = False
-            , whileRunning = \_ _ -> return ()
-            }
+        forkMasterSlave "xor1"
     it "can run tasks on master and two slave servers" $
-        runXor 2 12 100 defaultConfig
-            { whileRunning = \_ startSlave -> startSlave >> startSlave >> return () }
+        forkMasterSlave "xor2"
     it "can run tasks only on slaves" $
-        runXor 3 12 100 defaultConfig
-            { masterJobs = 0
-            , checkMasterRan = False
-            , whileRunning = \_ startSlave -> startSlave >> startSlave >> return ()
-            }
+        forkMasterSlave "xor3"
     it "preserves data despite slaves being started and killed periodically" $
-        runXor 4 12 100 defaultConfig
-            { masterJobs = 0
-            , checkMasterRan = False
-            , checkAllSlavesRan = False
-            , whileRunning = \_ startSlave -> do
-                let randomSlaveSpawner = forever $ do
-                        pid <- startSlave
-                        ms <- randomRIO (150, 300)
-                        threadDelay (1000 * ms)
-                        signalProcess killProcess pid
-                void $ randomSlaveSpawner `race` randomSlaveSpawner
-            }
+        forkMasterSlave "xor4"
 
-runXor :: Int -> Int -> Int -> Config -> IO ()
-runXor expected bits chunkSize config = do
+defaultXorConfig :: Int -> SharedConfig -> Config
+defaultXorConfig n c = XorConfig n 12 100 c { expectedOutput = Just (show n) }
+
+defaultSharedConfig :: SharedConfig
+defaultSharedConfig = SharedConfig 1 True True True id (\_ startSlave -> startSlave >> return ()) Nothing
+
+getConfig :: Text -> Config
+getConfig "xor0" = defaultXorConfig 0 defaultSharedConfig
+getConfig "xor1" = defaultXorConfig 1 defaultSharedConfig
+    { checkSlaveRan = False
+    , checkAllSlavesRan = False
+    , whileRunning = \_ _ -> return ()
+    }
+getConfig "xor2" = defaultXorConfig 2 defaultSharedConfig
+    { whileRunning = \_ startSlave -> startSlave >> startSlave >> return () }
+getConfig "xor3" = defaultXorConfig 3 defaultSharedConfig
+    { masterJobs = 0
+    , checkMasterRan = False
+    , whileRunning = \_ startSlave -> startSlave >> startSlave >> return ()
+    }
+getConfig "xor4" = defaultXorConfig 4 defaultSharedConfig
+    { masterJobs = 0
+    , checkMasterRan = False
+    , checkAllSlavesRan = False
+    , whileRunning = \_ startSlave -> do
+        let randomSlaveSpawner = forever $ do
+                _pid <- startSlave
+                ms <- randomRIO (150, 300)
+                threadDelay (1000 * ms)
+
+        void $ randomSlaveSpawner `race` randomSlaveSpawner
+    }
+getConfig "bench0" = defaultXorConfig 0 (benchConfig 0) { checkSlaveRan = False}
+getConfig "bench1" = defaultXorConfig 0 (benchConfig 1)
+getConfig "bench2" = defaultXorConfig 0 (benchConfig 2)
+getConfig "bench10" = defaultXorConfig 0 (benchConfig 10)
+
+getConfig which = error $ "No such config: " ++ unpack which
+
+benchConfig :: Int -> SharedConfig
+benchConfig n = defaultSharedConfig
+    { checkAllSlavesRan = False
+    , wrapProcess = void . tryAny . hSilence [stdout, stderr]
+    , whileRunning = \_ startSlave -> replicateM_ n startSlave
+    }
+
+-- Run the master and slave in separate processes or threads, using
+-- files to communicate with the test process.
+forkMasterSlave :: Text -> IO ()
+forkMasterSlave which = do
+    slavesRef <- newIORef []
+    let config = sharedConfig (getConfig which)
+        cleanup = do
+            removeFileIfExists seenPidsPath
+            removeFileIfExists resultsPath
+        startSlave = do
+            pid <- execProcessOrFork ["work-queue", unpack which, "slave", "localhost", "2015"]
+            mpid' <- processPid pid
+            forM_ mpid' $ \pid' -> modifyIORef slavesRef (pid':)
+            return pid
+        go = do
+            cleanup
+            master <- execProcessOrFork ["work-queue", unpack which, "master", show (masterJobs config), "2015"]
+            mmasterPid <- processPid master
+            waitForSocket
+            whileRunningThread <- async $ whileRunning config master startSlave
+            waitForExit master
+            -- Ensure that both the master and slave processes have
+            -- performed calculation.
+            seenPids <- ordNub . map read . lines <$> readFile seenPidsPath
+            slavePids <- readIORef slavesRef
+            case (useForkIO, mmasterPid) of
+                (False, Just masterPid) -> do
+                    when (checkMasterRan config && masterPid `notElem` seenPids) $
+                        fail "Master never ran"
+                    when (checkAllSlavesRan config) $
+                        sort (delete masterPid seenPids) `shouldBe` sort slavePids
+                    when (checkSlaveRan config && null (intersect seenPids slavePids)) $
+                        fail "No slave ran"
+                _ -> return ()
+            cancel whileRunningThread
+            -- Read out the results file.
+            result <- readFile resultsPath
+            return result
+    cleanup
+    output <- go `finally` cleanup
+    forM_ (expectedOutput config) $ \expected -> output `shouldBe` expected
+
+seenPidsPath, resultsPath :: FilePath
+seenPidsPath = "work_queue_spec_seen_pids"
+resultsPath = "work_queue_spec_results"
+
+execProcessOrFork :: [String] -> IO Process
+execProcessOrFork args =
+    if useForkIO
+        then fmap Right $ async $ withArgs args runWorkQueue
+        else do
+            path <- getExecutablePath
+            fmap Left $ runProcess path args Nothing Nothing Nothing Nothing Nothing
+
+runWorkQueue :: IO ()
+runWorkQueue = do
+    args <- getArgs
+    case args of
+        ("work-queue" : which : xs) -> withArgs (map unpack xs) $ runMasterOrSlave (getConfig which)
+        _ -> fail "Expected test invocation like './test work-queue xor0 ...'"
+
+runMasterOrSlave :: Config -> IO ()
+runMasterOrSlave XorConfig {..} = do
     firstRunRef <- newIORef True
-    let xs = expected : [1..(2^bits)-1]
+    let xs = xorExtra : [1..(2^xorBits)-1]
         initialData = return ()
         calc () input = do
             -- This thread delay is necessary so that the master
@@ -83,14 +181,11 @@ runXor expected bits chunkSize config = do
                 writeIORef firstRunRef False
             return $ foldl' xor zeroBits input
         inner () queue = do
-            subresults <- mapQueue queue (chunksOf chunkSize xs)
+            subresults <- mapQueue queue (chunksOf xorChunkSize xs)
             calc () subresults
-    result <- forkMasterSlave config initialData calc inner
-    result `shouldBe` expected
+    runArgs' sharedConfig initialData calc inner
 
--- Run the master and slave in separate processes, using files to
--- communicate with the test process.
-forkMasterSlave
+runArgs'
     :: ( Typeable initialData
        , Typeable payload
        , Typeable result
@@ -98,56 +193,21 @@ forkMasterSlave
        , Binary payload
        , Binary result
        , Show output
-       , Read output
        )
-    => Config
+    => SharedConfig
     -> IO initialData
     -> (initialData -> payload -> IO result)
     -> (initialData -> WorkQueue payload result -> IO output)
-    -> IO output
-forkMasterSlave config initialData calc' inner' = do
-    slavesRef <- newIORef []
-    let cleanup = do
-            removeFileIfExists seenPidsPath
-            removeFileIfExists resultsPath
-        seenPidsPath = "work_queue_spec_seen_pids"
-        resultsPath = "work_queue_spec_results"
-        calc initial input = do
+    -> IO ()
+runArgs' config initialData calc' inner' = do
+    let calc initial input = do
             pid <- getProcessID
             appendFile (fpToString seenPidsPath) (show pid ++ "\n")
             calc' initial input
         inner initial queue = do
             result <- inner' initial queue
             appendFile (fpToString resultsPath) (show result)
-        startSlave = do
-            pid <- forkProcess $ withArgs ["slave", "localhost", "2015"] run
-            modifyIORef slavesRef (pid:)
-            return pid
-        run = wrapProcess config $ runArgs initialData calc inner
-        go = do
-            cleanup
-            masterPid <- forkProcess $ withArgs ["master", show (masterJobs config), "2015"] run
-            waitForSocket
-            tid <- forkIO $ whileRunning config masterPid startSlave
-            status <- getProcessStatus True False masterPid
-            status `shouldBe` Just (Exited ExitSuccess)
-            -- Ensure that both the master and slave processes have
-            -- performed calculation.
-            seenPids <- ordNub . map read . lines <$> readFile seenPidsPath
-            slavePids <- readIORef slavesRef
-            when (checkMasterRan config && masterPid `notElem` seenPids) $
-                fail "Master never ran"
-            when (checkAllSlavesRan config) $
-                sort (delete masterPid seenPids) `shouldBe` sort slavePids
-            when (checkSlaveRan config && null (intersect seenPids slavePids)) $
-                fail "No slave ran"
-            -- Exit the 'whileRunning' thread.
-            killThread tid
-            -- Read out the results file.
-            result <- readFile resultsPath
-            return (read result)
-    cleanup
-    go `finally` cleanup
+    wrapProcess config $ runArgs initialData calc inner
 
 -- Wait for a connection to the test socket to succeed, indicating
 -- that the master is accepting connections.
@@ -169,3 +229,34 @@ removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists fp = do
     exists <- isFile fp
     when exists $ removeFile fp
+
+type Process = Either ProcessHandle (Async ())
+
+waitForExit :: Process -> IO ()
+waitForExit (Left pid) = do
+    status <- waitForProcess pid
+    status `shouldBe` ExitSuccess
+waitForExit (Right a) = wait a
+
+cancelProcess :: Process -> IO ()
+cancelProcess (Left pid) = terminateProcess pid
+cancelProcess (Right a) = cancel a
+
+useForkIO :: Bool
+useForkIO =
+#if COVERAGE
+    True
+#else
+    False
+#endif
+
+processPid :: Process -> IO (Maybe Int32)
+processPid (Left ph) = processHandlePid ph
+processPid _ = return Nothing
+
+processHandlePid :: ProcessHandle -> IO (Maybe Int32)
+processHandlePid (ProcessHandle var _) = do
+    mpid <- tryReadMVar var
+    return $ case mpid of
+        Just (OpenHandle (CPid pid)) -> Just pid
+        _ -> Nothing

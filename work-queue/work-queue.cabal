@@ -13,6 +13,10 @@ build-type:          Custom
 extra-source-files:  README.md
 cabal-version:       >= 1.10
 
+Flag coverage
+    Description:       Run tests with code coverage.
+    Default:           False
+
 library
   exposed-modules:     Data.WorkQueue
                        Data.Streaming.NetworkMessage
@@ -80,7 +84,7 @@ executable hpc-example-redis
 test-suite test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
-  main-is:             Spec.hs
+  main-is:             Main.hs
   other-modules:       Data.WorkQueueSpec
                        Data.Streaming.NetworkMessageSpec
                        Distributed.WorkQueueSpec
@@ -102,8 +106,14 @@ test-suite test
                      , split
                      , classy-prelude
                      , system-fileio
+                     , executable-path
+                     , process
+                     , silently
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
+  if flag(coverage)
+      ghc-options:     -fhpc
+      cpp-options:     -DCOVERAGE
 
 benchmark bench
   type:                exitcode-stdio-1.0
@@ -127,7 +137,12 @@ benchmark bench
                      , split
                      , classy-prelude
                      , system-fileio
-                     , criterion
+                     , executable-path
+                     , process
                      , silently
+                     , criterion
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
+  if flag(coverage)
+      ghc-options:     -fhpc
+      cpp-options:     -DCOVERAGE
