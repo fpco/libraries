@@ -18,16 +18,15 @@ import FP.Redis.Types.Internal
 
 -- | Removes the specified keys.
 -- See <http://redis.io/commands/del>.
-del :: [ByteString] -> CommandRequest Int64
+del :: [Key] -> CommandRequest Int64
 del keys = makeCommand "DEL" (map encodeArg keys)
 
 -- | Set a timeout on key.
 -- See <http://redis.io/commands/expire>.
-expire :: ByteString -> Int64 -> CommandRequest Bool
+expire :: Key -> TimeoutSeconds -> CommandRequest Bool
 expire key seconds = makeCommand "EXPIRE" [encodeArg key,encodeArg seconds]
 
--- | eturns the remaining time to live of a key that has a timeout.
+-- | Returns the remaining time to live of a key that has a timeout.
 -- See <http://redis.io/commands/ttl>.
-ttl :: ByteString -> CommandRequest Int64
+ttl :: Key -> CommandRequest TimeoutSeconds
 ttl key = makeCommand "TTL" [encodeArg key]
-

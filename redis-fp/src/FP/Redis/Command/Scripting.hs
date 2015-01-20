@@ -20,7 +20,7 @@ import FP.Redis.Types.Internal
 -- TODO SHOULD: use EVALSHA for previously sent commands
 -- TODO OPTIONAL: Track EVALs and resubmit after reconnection so that EVALSHA works reliably.
 -- TODO OPTIONAL: a DSL to generate Lua code in a typesafe manner
-eval :: (Result a) => ByteString -> [ByteString] -> [ByteString] -> CommandRequest a
+eval :: (Result a) => ByteString -> [Key] -> [ByteString] -> CommandRequest a
 eval script keys argv =
     makeCommand "EVAL"
                 (concat [[encodeArg script

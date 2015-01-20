@@ -1,6 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude, OverloadedStrings, ScopedTypeVariables, TypeFamilies,
              DeriveDataTypeable, FlexibleContexts, FlexibleInstances, RankNTypes, GADTs,
-             ConstraintKinds, NamedFieldPuns #-}
+             ConstraintKinds, NamedFieldPuns, GeneralizedNewtypeDeriving #-}
 
 -- | Redis internal types.
 
@@ -22,15 +22,35 @@ type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
 -- | Monads for running commands.
 type MonadCommand m = (MonadIO m, MonadBaseControl IO m)
 
+-- Newtype wrapper for redis top level key names.
+newtype Key = Key ByteString
+    deriving (Eq, Show, Ord, Result, Argument, IsString)
+
+-- Newtype wrapper for redis channel names.
+newtype Channel = Channel ByteString
+    deriving (Eq, Show, Ord, Result, Argument, IsString)
+
+-- Newtype wrapper for redis hash fields.
+newtype HashField = HashField ByteString
+    deriving (Eq, Show, Ord, Result, Argument, IsString)
+
+-- Newtype wrapper for timeouts stored in seconds.
+newtype TimeoutSeconds = TimeoutSeconds Int64
+    deriving (Eq, Show, Ord, Result, Argument)
+
+-- Newtype wrapper for timeouts stored in milliseconds.
+newtype TimeoutMilliseconds = TimeoutMilliseconds Int64
+    deriving (Eq, Show, Ord, Result, Argument)
+
 -- | A pub/sub subscription message.  See <http://redis.io/topics/pubsub>.
-data Message = Subscribe ByteString Int64
-             | Unsubscribe ByteString Int64
-             | Message ByteString ByteString
+data Message = Subscribe Channel Int64
+             | Unsubscribe Channel Int64
+             | Message Channel ByteString
     deriving (Show)
 
 -- | Options for 'set'.
-data SetOption = EX Int64 -- ^ Set the specified expire time, in seconds
-               | PX Int64 -- ^ Set the specified expire time, in milliseconds
+data SetOption = EX TimeoutSeconds -- ^ Set the specified expire time, in seconds
+               | PX TimeoutMilliseconds -- ^ Set the specified expire time, in milliseconds
                | NX -- ^ Only set the key if it does not already exist
                | XX -- ^ Only set the key if it already exists
 
@@ -164,20 +184,20 @@ instance Result Int64 where
     decodeResponse _ = Nothing
     encodeResponse = Integer
 
-instance Result (Maybe (ByteString,ByteString)) where
+instance (Result a, Result b) => Result (Maybe (a, b)) where
     decodeResponse (Array Nothing) =
         Just Nothing
-    decodeResponse (Array (Just [SimpleString key,SimpleString value])) =
-        Just (Just (key,value))
-    decodeResponse (Array (Just [BulkString (Just key),BulkString (Just value)])) =
-        Just (Just (key,value))
+    decodeResponse (Array (Just [key, value])) = do
+        key' <- decodeResponse key
+        value' <- decodeResponse value
+        return $ Just (key', value')
     decodeResponse _ =
         Nothing
     encodeResponse mp =
         case mp of
             Nothing -> Array Nothing
-            Just (a,b) -> Array (Just [encodeResponse (Just a)
-                                      ,encodeResponse (Just b)])
+            Just (a,b) -> Array (Just [encodeResponse a
+                                      ,encodeResponse b])
 
 instance Result [ByteString] where
     decodeResponse (Array (Just vals)) =

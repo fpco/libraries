@@ -16,6 +16,6 @@ import FP.Redis.Types.Internal
 
 -- | Returns all the members of the set value stored at key.
 -- See <http://redis.io/commands/smembers>.
-smembers :: ByteString -> CommandRequest [ByteString]
+smembers :: Key -> CommandRequest [ByteString]
 smembers key =
     makeCommand "SMEMBERS" [encodeArg key]

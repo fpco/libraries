@@ -37,7 +37,7 @@ import FP.Redis.Command.SortedSet (zadd, zrem, zrangebyscore)
 import FP.Redis.Command.String (set, get, incr)
 import FP.Redis.Connection (withConnection)
 import FP.Redis.PubSub (withSubscriptionsEx, trackSubscriptionStatus, subscribe)
-import FP.Redis.Types (Connection, ConnectInfo, MonadCommand, MonadConnect, CommandRequest, SetOption(NX))
+import FP.Redis.Types (Connection, ConnectInfo, MonadCommand, MonadConnect, CommandRequest, SetOption(NX), Key(Key), Channel(Channel))
 import FP.Redis.Types.Internal (encodeArg)
 
 -- | Info required to submit requests to the queue ('pushRequest'),
@@ -200,31 +200,33 @@ handleWorkerFailure r wid = do
         delExisting r (inProgressKey r wid)
 
 data DistributedRedisQueueException
-    = KeyAlreadySet ByteString
-    | KeyMissing ByteString
-    | ListItemMissing ByteString ByteString
+    = KeyAlreadySet Key
+    | KeyMissing Key
+    | ListItemMissing Key ByteString
     | NoCallbackFor RequestId
     | PopRequestTimeout
     deriving (Eq, Show, Typeable)
 
 instance Exception DistributedRedisQueueException
 
-idCounterKey, requestsKey, heartbeatKey :: RedisInfo -> ByteString
-idCounterKey r = redisKeyPrefix r <> "id-counter"
-requestsKey  r = redisKeyPrefix r <> "requests"
-heartbeatKey r = redisKeyPrefix r <> "heartbeat"
+idCounterKey, requestsKey, heartbeatKey :: RedisInfo -> Key
+idCounterKey r = Key $ redisKeyPrefix r <> "id-counter"
+requestsKey  r = Key $ redisKeyPrefix r <> "requests"
+heartbeatKey r = Key $ redisKeyPrefix r <> "heartbeat"
 
-requestDataKey, responseDataKey, responseChannelFor
-    :: RedisInfo -> RequestId -> ByteString
-requestDataKey     r k = redisKeyPrefix r <> "request." <> unRequestId k
-responseDataKey    r k = redisKeyPrefix r <> "response." <> unRequestId k
+requestDataKey, responseDataKey
+    :: RedisInfo -> RequestId -> Key
+requestDataKey  r k = Key $ redisKeyPrefix r <> "request." <> unRequestId k
+responseDataKey r k = Key $ redisKeyPrefix r <> "response." <> unRequestId k
+
+responseChannelFor :: RedisInfo -> RequestId -> Channel
 responseChannelFor r k = responseChannel r (fst (decodeRequestId k))
 
-responseChannel :: RedisInfo -> BackchannelId -> ByteString
-responseChannel r k = redisKeyPrefix r <> "responses." <> unBackchannelId k
+responseChannel :: RedisInfo -> BackchannelId -> Channel
+responseChannel r k = Channel $ redisKeyPrefix r <> "responses." <> unBackchannelId k
 
-inProgressKey :: RedisInfo -> WorkerId -> ByteString
-inProgressKey r k = redisKeyPrefix r <> "in-progress." <> unWorkerId k
+inProgressKey :: RedisInfo -> WorkerId -> Key
+inProgressKey r k = Key $ redisKeyPrefix r <> "in-progress." <> unWorkerId k
 
 run :: MonadCommand m => RedisInfo -> CommandRequest a -> m a
 run = runCommand . redisConnection
@@ -232,27 +234,27 @@ run = runCommand . redisConnection
 run_ :: MonadCommand m => RedisInfo -> CommandRequest a -> m ()
 run_ = runCommand_ . redisConnection
 
-runSetNX :: MonadCommand m => RedisInfo -> ByteString -> ByteString -> m ()
+runSetNX :: MonadCommand m => RedisInfo -> Key -> ByteString -> m ()
 runSetNX r k x = do
     worked <- run r $ set k x [NX]
     when (not worked) $ liftIO $ throwIO (KeyAlreadySet k)
 
-getExisting :: MonadCommand m => RedisInfo -> ByteString -> m ByteString
+getExisting :: MonadCommand m => RedisInfo -> Key -> m ByteString
 getExisting r k = do
     mresult <- run r $ get k
     case mresult of
         Nothing -> liftIO $ throwIO (KeyMissing k)
         Just result -> return result
 
-delExisting :: MonadCommand m => RedisInfo -> ByteString -> m ()
+delExisting :: MonadCommand m => RedisInfo -> Key -> m ()
 delExisting r k = do
     removed <- run r $ del [k]
     when (removed == 0) $ liftIO $ throwIO (KeyMissing k)
 
-lremExisting :: MonadCommand m => RedisInfo -> ByteString -> Int64 -> ByteString -> m ()
+lremExisting :: MonadCommand m => RedisInfo -> Key -> Int64 -> ByteString -> m ()
 lremExisting r k n v = do
     removed <- run r $ lrem k n v
     when (removed == 0) $ liftIO $ throwIO (ListItemMissing k v)
 
-rpush' :: ByteString -> [ByteString] -> CommandRequest Int64
+rpush' :: Key -> [ByteString] -> CommandRequest Int64
 rpush' key vals = makeCommand "RPUSH" (encodeArg key : map encodeArg vals)

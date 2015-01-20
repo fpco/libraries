@@ -18,9 +18,8 @@ import FP.Redis.Types.Internal
 
 -- | Posts a message to the given channel.
 -- See <http://redis.io/commands/publish>
-publish :: ByteString -- ^ Channel
+publish :: Channel -- ^ Channel
         -> ByteString -- ^ Message
         -> CommandRequest Int64
 publish channel message =
     makeCommand "PUBLISH" [encodeArg channel,encodeArg message]
-

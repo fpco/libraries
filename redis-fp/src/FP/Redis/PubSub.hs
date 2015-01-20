@@ -139,7 +139,7 @@ sendSubscription (SubscriptionConnection conn _) (SubscriptionRequest request) =
 -- | Subscribes the client to the specified channels.
 --
 -- TODO: use MinLen or NonEmpty to ensure at least one subscription?
-subscribe :: [ByteString] -- ^ Channels
+subscribe :: [Channel] -- ^ Channels
           -> SubscriptionRequest
 subscribe channels = makeSubscription "SUBSCRIBE" (map encodeArg channels)
 
@@ -149,7 +149,7 @@ psubscribe :: [ByteString] -- ^ Patterns
 psubscribe channelPatterns = makeSubscription "PSUBSCRIBE" (map encodeArg channelPatterns)
 
 -- | Unsubscribes the client from the given channels, or from all of them if none is given.
-unsubscribe :: [ByteString] -- ^ Channels
+unsubscribe :: [Channel] -- ^ Channels
             -> SubscriptionRequest
 unsubscribe channels = makeSubscription "UNSUBSCRIBE" (map encodeArg channels)
 
@@ -168,7 +168,7 @@ makeSubscription cmd args =
 --   'True'.  It is set to 'TVar' when it unsubscribes.
 trackSubscriptionStatus :: MonadIO m
                         => TVar Bool
-                        -> (ByteString -> ByteString -> m ())
+                        -> (Channel -> ByteString -> m ())
                         -> (Message -> m ())
 trackSubscriptionStatus subscribed _ (Subscribe {}) =
     liftIO $ atomically $ writeTVar subscribed True

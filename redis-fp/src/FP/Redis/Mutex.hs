@@ -67,9 +67,9 @@ periodicActionEx :: (MonadConnect m)
                     -- ^ I/O action to to perform.
                  -> m ()
 periodicActionEx conn keyPrefix period inner = forever $ do
-    sleepSeconds <- withMutex conn (keyPrefix ++ ".mutex") $ do
+    sleepSeconds <- withMutex conn (Key (keyPrefix ++ ".mutex")) $ do
         maybeLastStartedAt <- runCommand conn
-            (get (keyPrefix ++ ".last-started-at"))
+            (get (Key (keyPrefix ++ ".last-started-at")))
         curTime <- liftIO $ Time.getCurrentTime
         let lastStartedAt = fromMaybe (Time.UTCTime (Time.ModifiedJulianDay 0) 0)
                   (((unpack . decodeUtf8) <$> maybeLastStartedAt)
@@ -78,7 +78,7 @@ periodicActionEx conn keyPrefix period inner = forever $ do
         if interval >= fromIntegral period
             then do
                 _ <- runCommand conn
-                    (set (keyPrefix ++ ".last-started-at") (encodeUtf8 (tshow curTime)) [])
+                    (set (Key (keyPrefix ++ ".last-started-at")) (encodeUtf8 (tshow curTime)) [])
                 inner
                 curTime' <- liftIO $ Time.getCurrentTime
                 return $ fromIntegral period - (curTime' `Time.diffUTCTime` curTime)
@@ -94,7 +94,7 @@ periodicActionEx conn keyPrefix period inner = forever $ do
 withMutex :: (MonadCommand m, MonadThrow m)
           => forall a. Connection
              -- ^ Redis connection
-          -> ByteString
+          -> Key
              -- ^ Mutex key
           -> m a
              -- ^ I/O action to run while mutex is claimed.
@@ -120,7 +120,7 @@ withMutex conn key inner =
         mask_ $ refreshMutex conn mutexTtl key mutexToken
     -- This TTL should be at least as long as a cycle of retries in case the Redis server is
     -- temporarily unreachable.
-    mutexTtl = 90 :: Int64
+    mutexTtl = TimeoutSeconds 90
     refreshInterval = 5 :: Int
 
 -- | Acquire a mutex.  This will block until the mutex is available.  It will
@@ -137,9 +137,9 @@ withMutex conn key inner =
 acquireMutex :: (MonadCommand m)
              => Connection
                 -- ^ Redis connection
-             -> Int64
+             -> TimeoutSeconds
                 -- ^ Time-to-live of the mutex, in seconds (see description).
-             -> ByteString
+             -> Key
                 -- ^ Mutex key
              -> m MutexToken
                 -- ^ A token identifying who holds the mutex (see description).
@@ -162,9 +162,9 @@ acquireMutex conn mutexTtl key =
 tryAcquireMutex :: (MonadCommand m)
                 => Connection
                     -- ^ Redis connection
-                -> Int64
+                -> TimeoutSeconds
                     -- ^ Time-to-live of the mutex, in seconds (see description).
-                -> ByteString
+                -> Key
                     -- ^ Mutex key
                 -> m (Maybe MutexToken)
                     -- ^ Nothing if the mutex is unavailable, or Just a token
@@ -183,7 +183,7 @@ tryAcquireMutex conn mutexTtl key = do
 releaseMutex :: (MonadCommand m)
              => Connection
                 -- ^ Redis connection
-             -> ByteString
+             -> Key
                 -- ^ Mutex key
              -> MutexToken
                 -- ^ Token returned by 'acquireMutex'
@@ -207,9 +207,9 @@ releaseMutex conn key (MutexToken token) =
 refreshMutex :: (MonadCommand m, MonadThrow m)
              => Connection
                 -- ^ Redis connection
-             -> Int64
+             -> TimeoutSeconds
                 -- ^ New time-to-live (in seconds)
-             -> ByteString
+             -> Key
                 -- ^ Mutex key
              -> MutexToken
                 -- ^ The token that was returned by 'acquireMutex'

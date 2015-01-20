@@ -14,6 +14,12 @@ module FP.Redis.Types
     , Argument (..)
     , Response (..)
     , Result (..)
+      -- * Newtype wrappers
+    , Key (..)
+    , Channel (..)
+    , HashField (..)
+    , TimeoutSeconds (..)
+    , TimeoutMilliseconds (..)
       -- * Pub/sub subscriptions
     , SubscriptionConnection
     , SubscriptionRequest
