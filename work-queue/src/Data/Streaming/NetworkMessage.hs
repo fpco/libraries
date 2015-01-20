@@ -42,6 +42,7 @@ import           Data.ConcreteTypeRep        (ConcreteTypeRep, cTypeOf)
 import           Data.Function               (fix)
 import           Data.Streaming.Network      (AppData, appRead, appWrite)
 import           Data.Vector.Binary          () -- commonly needed orphans
+import           System.Executable.Hash      (executableHash)
 
 -- | A network message application.
 --
@@ -93,16 +94,18 @@ data Handshake = Handshake
     { hsISend     :: ConcreteTypeRep
     , hsYouSend   :: ConcreteTypeRep
     , hsHeartbeat :: Int
+    , hsExeHash   :: Maybe ByteString
     }
     deriving (Generic, Show, Eq, Typeable)
 instance B.Binary Handshake
 
 mkHandshake :: forall iSend youSend m a. (Typeable iSend, Typeable youSend)
-            => NMApp iSend youSend m a -> Int -> Handshake
-mkHandshake _ hb = Handshake
+            => NMApp iSend youSend m a -> Int -> Maybe ByteString -> Handshake
+mkHandshake _ hb eh = Handshake
     { hsISend = cTypeOf (error "impossible: iSend shouldn't be evaluated" :: iSend)
     , hsYouSend = cTypeOf (error "impossible: youSend shouldn't be evaluated" :: youSend)
     , hsHeartbeat = hb
+    , hsExeHash = eh
     }
 
 -- | Convert an 'NMApp' into an "Data.Streaming.Network" application.
@@ -118,9 +121,11 @@ runNMApp :: ( MonadBaseControl IO m
          -> m a
 runNMApp (NMSettings heartbeat) app ad = do
     (yourHS, leftover) <- liftBase $ do
+        exeHash <- executableHash
+        let myHS = mkHandshake app heartbeat exeHash
         forM_ (toChunks $ B.encode myHS) (appWrite ad)
         (yourHS, leftover) <- appGet mempty (appRead ad)
-        when (hsISend myHS /= hsYouSend yourHS || hsYouSend myHS /= hsISend yourHS)
+        when (hsISend myHS /= hsYouSend yourHS || hsYouSend myHS /= hsISend yourHS || hsExeHash myHS /= hsExeHash yourHS)
             $ throwIO $ MismatchedHandshakes myHS yourHS
         return (yourHS, leftover)
     control $ \runInBase -> do
@@ -171,8 +176,6 @@ runNMApp (NMSettings heartbeat) app ad = do
                             writeChan outgoing Complete `finally`
                             writeIORef active False)
   where
-    myHS = mkHandshake app heartbeat
-
     while ref inner = do
         loop
       where
