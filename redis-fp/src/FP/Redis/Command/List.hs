@@ -32,19 +32,19 @@ rpush key val = makeCommand "RPUSH" [encodeArg key,encodeArg val]
 
 -- | BRPOP is a blocking list pop primitive.
 -- See <http://redis.io/commands/brpop>.
-brpop :: [Key] -> Int64 -> CommandRequest (Maybe (Key,ByteString))
+brpop :: [Key] -> TimeoutSeconds -> CommandRequest (Maybe (Key,ByteString))
 brpop keys timeout =
     makeCommand "BRPOP" (map encodeArg keys ++ [encodeArg timeout])
 
 -- | BLPOP is a blocking list pop primitive.
 -- See <http://redis.io/commands/blpop>.
-blpop :: [Key] -> Int64 -> CommandRequest (Maybe (Key,ByteString))
+blpop :: [Key] -> TimeoutSeconds -> CommandRequest (Maybe (Key,ByteString))
 blpop keys timeout =
     makeCommand "BLPOP" (map encodeArg keys ++ [encodeArg timeout])
 
 -- | BRPOPLPUSH is the blocking variant of RPOPLPUSH.
 -- See <http://redis.io/commands/brpoplpush>.
-brpoplpush :: Key -> Key -> Int64 -> CommandRequest (Maybe ByteString)
+brpoplpush :: Key -> Key -> TimeoutSeconds -> CommandRequest (Maybe ByteString)
 brpoplpush source destination timeout =
     makeCommand "BRPOPLPUSH"
                 [encodeArg source
