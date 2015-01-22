@@ -55,6 +55,7 @@ library
                       ,monad-extras
                       ,monad-logger
                       ,retry
+                      ,safe
                       ,stm
                       ,time
                       ,transformers

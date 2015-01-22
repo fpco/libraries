@@ -13,8 +13,8 @@ import Control.Concurrent.BroadcastChan
 import Control.Monad.Catch (MonadCatch)
 import Control.Monad.Logger
 import Control.Retry
-
 import Control.Concurrent.STM.TSQueue
+import qualified Data.ByteString.Char8 as BS8
 
 -- | Monads for connecting.
 type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
@@ -179,6 +179,12 @@ instance Result (Maybe ByteString) where
     decodeResponse (BulkString mbs) = Just mbs
     decodeResponse _ = Nothing
     encodeResponse = BulkString
+
+instance Result (Maybe Double) where
+    decodeResponse (SimpleString bs) = Just <$> readMay (BS8.unpack bs)
+    decodeResponse (BulkString (Just bs)) = Just <$> readMay (BS8.unpack bs)
+    decodeResponse (BulkString Nothing) = Just Nothing
+    decodeResponse _ = Nothing
 
 instance Result Int64 where
     decodeResponse (Integer val) = Just val

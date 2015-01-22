@@ -9,7 +9,8 @@ module FP.Redis.Command.SortedSet
     ( zadd
     , zrem
     , zrange
-    , zrangebyscore )
+    , zrangebyscore
+    , zscore )
     where
 
 import ClassyPrelude.Conduit
@@ -45,3 +46,8 @@ zrangebyscore key start stop withScores =
     makeCommand "ZRANGEBYSCORE"
                 ([encodeArg key,encodeArg start,encodeArg stop] ++
                  if withScores then [encodeArg ("WITHSCORES"::ByteString)]  else [])
+
+-- | Returns the score of the element at key, if it is in the sorted set.
+-- See <http://redis.io/commands/zscore>
+zscore :: Key -> ByteString -> CommandRequest (Maybe Double)
+zscore key member = makeCommand "ZSCORE" [encodeArg key, encodeArg member]
