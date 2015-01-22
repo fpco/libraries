@@ -25,6 +25,8 @@ import ClassyPrelude.Conduit
 import Control.Concurrent.Chan.Lifted (newChan, writeChan, readChan)
 import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..))
 import Control.Monad.Logger
+import Data.List.NonEmpty (NonEmpty)
+import Data.Void (Void)
 
 import FP.Redis.Connection
 import FP.Redis.Internal
@@ -35,9 +37,9 @@ import FP.Redis.Command.PubSub
 -- to be called for new messages even if it throws an exception.
 withSubscriptionsWrapped :: forall m. (MonadConnect m)
                          => ConnectInfo -- ^ Redis connection info
-                         -> [SubscriptionRequest] -- ^ List of subscriptions
+                         -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
                          -> (Message -> m ()) -- ^ Callback to receive messages
-                         -> m ()
+                         -> m Void
 withSubscriptionsWrapped connectionInfo_ subscriptions callback =
     withSubscriptionsEx connectionInfo_ subscriptions wrappedCallback
   where
@@ -57,16 +59,15 @@ withSubscriptionsWrapped connectionInfo_ subscriptions callback =
 -- instead of just the `initialSubscriptions'.
 withSubscriptionsEx :: forall m. (MonadConnect m)
                     => ConnectInfo -- ^ Redis connection info
-                    -> [SubscriptionRequest] -- ^ List of subscriptions
+                    -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
                     -> (Message -> m ()) -- ^ Callback to receive messages
-                    -> m ()
-withSubscriptionsEx _ [] _ = return ()
+                    -> m Void
 withSubscriptionsEx connectionInfo_ subscriptions callback = do
     messageChan <- newChan
     withConnection
         (connectionInfo_{connectSubscriptionCallback = Just (writeChan messageChan)
                         ,connectInitialSubscriptions =
-                            connectInitialSubscriptions connectionInfo_ ++ subscriptions})
+                            connectInitialSubscriptions connectionInfo_ ++ toList subscriptions})
         (\_ -> forever (loop messageChan))
   where
     loop messageChan = do
