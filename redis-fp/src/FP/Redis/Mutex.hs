@@ -120,7 +120,7 @@ withMutex conn key inner =
         mask_ $ refreshMutex conn mutexTtl key mutexToken
     -- This TTL should be at least as long as a cycle of retries in case the Redis server is
     -- temporarily unreachable.
-    mutexTtl = TimeoutSeconds 90
+    mutexTtl = Seconds 90
     refreshInterval = 5 :: Int
 
 -- | Acquire a mutex.  This will block until the mutex is available.  It will
@@ -137,7 +137,7 @@ withMutex conn key inner =
 acquireMutex :: (MonadCommand m)
              => Connection
                 -- ^ Redis connection
-             -> TimeoutSeconds
+             -> Seconds
                 -- ^ Time-to-live of the mutex, in seconds (see description).
              -> Key
                 -- ^ Mutex key
@@ -162,7 +162,7 @@ acquireMutex conn mutexTtl key =
 tryAcquireMutex :: (MonadCommand m)
                 => Connection
                     -- ^ Redis connection
-                -> TimeoutSeconds
+                -> Seconds
                     -- ^ Time-to-live of the mutex, in seconds (see description).
                 -> Key
                     -- ^ Mutex key
@@ -207,7 +207,7 @@ releaseMutex conn key (MutexToken token) =
 refreshMutex :: (MonadCommand m, MonadThrow m)
              => Connection
                 -- ^ Redis connection
-             -> TimeoutSeconds
+             -> Seconds
                 -- ^ New time-to-live (in seconds)
              -> Key
                 -- ^ Mutex key

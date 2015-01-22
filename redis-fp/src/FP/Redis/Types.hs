@@ -18,8 +18,8 @@ module FP.Redis.Types
     , Key (..)
     , Channel (..)
     , HashField (..)
-    , TimeoutSeconds (..)
-    , TimeoutMilliseconds (..)
+    , Seconds (..)
+    , Milliseconds (..)
       -- * Pub/sub subscriptions
     , SubscriptionConnection
     , SubscriptionRequest

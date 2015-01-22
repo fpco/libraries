@@ -35,7 +35,7 @@ set key val options =
 
 -- | Set key to hold the string value and set key to timeout after a given number of seconds.
 -- See <http://redis.io/commands/setex>.
-setEx :: ByteString -> TimeoutSeconds -> ByteString -> CommandRequest ()
+setEx :: ByteString -> Seconds -> ByteString -> CommandRequest ()
 setEx key ttl_ val =
     makeCommand "SETEX" [encodeArg key,encodeArg ttl_,encodeArg val]
 

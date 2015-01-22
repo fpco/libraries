@@ -34,12 +34,13 @@ newtype Channel = Channel ByteString
 newtype HashField = HashField ByteString
     deriving (Eq, Show, Ord, Result, Argument, IsString)
 
--- Newtype wrapper for timeouts stored in seconds.
-newtype TimeoutSeconds = TimeoutSeconds Int64
+-- Newtype wrapper time delta (usually a timeout), stored in seconds.
+newtype Seconds = Seconds Int64
     deriving (Eq, Show, Ord, Result, Argument)
 
--- Newtype wrapper for timeouts stored in milliseconds.
-newtype TimeoutMilliseconds = TimeoutMilliseconds Int64
+-- Newtype wrapper time delta (usually a timeout), stored in
+-- milliseconds.
+newtype Milliseconds = Milliseconds Int64
     deriving (Eq, Show, Ord, Result, Argument)
 
 -- | A pub/sub subscription message.  See <http://redis.io/topics/pubsub>.
@@ -49,8 +50,8 @@ data Message = Subscribe Channel Int64
     deriving (Show)
 
 -- | Options for 'set'.
-data SetOption = EX TimeoutSeconds -- ^ Set the specified expire time, in seconds
-               | PX TimeoutMilliseconds -- ^ Set the specified expire time, in milliseconds
+data SetOption = EX Seconds -- ^ Set the specified expire time, in seconds
+               | PX Milliseconds -- ^ Set the specified expire time, in milliseconds
                | NX -- ^ Only set the key if it does not already exist
                | XX -- ^ Only set the key if it already exists
 

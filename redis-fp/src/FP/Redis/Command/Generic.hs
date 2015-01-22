@@ -23,10 +23,10 @@ del keys = makeCommand "DEL" (map encodeArg keys)
 
 -- | Set a timeout on key.
 -- See <http://redis.io/commands/expire>.
-expire :: Key -> TimeoutSeconds -> CommandRequest Bool
+expire :: Key -> Seconds -> CommandRequest Bool
 expire key seconds = makeCommand "EXPIRE" [encodeArg key,encodeArg seconds]
 
 -- | Returns the remaining time to live of a key that has a timeout.
 -- See <http://redis.io/commands/ttl>.
-ttl :: Key -> CommandRequest TimeoutSeconds
+ttl :: Key -> CommandRequest Seconds
 ttl key = makeCommand "TTL" [encodeArg key]

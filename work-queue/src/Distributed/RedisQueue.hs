@@ -37,7 +37,7 @@ import FP.Redis.Command.SortedSet (zadd, zrem, zrangebyscore)
 import FP.Redis.Command.String (set, get, incr)
 import FP.Redis.Connection (withConnection)
 import FP.Redis.PubSub (withSubscriptionsEx, trackSubscriptionStatus, subscribe)
-import FP.Redis.Types (Connection, ConnectInfo, MonadCommand, MonadConnect, CommandRequest, SetOption(NX), Key(Key), Channel(Channel), TimeoutSeconds)
+import FP.Redis.Types (Connection, ConnectInfo, MonadCommand, MonadConnect, CommandRequest, SetOption(NX), Key(Key), Channel(Channel), Seconds)
 import FP.Redis.Types.Internal (encodeArg)
 
 -- | Info required to submit requests to the queue ('pushRequest'),
@@ -101,7 +101,7 @@ pushRequest (ClientInfo r bid) request = do
 popRequest
     :: MonadCommand m
     => WorkerInfo
-    -> TimeoutSeconds
+    -> Seconds
     -> m (RequestId, ByteString)
 popRequest (WorkerInfo r wid) timeout = do
     mk <- run r $ brpoplpush (requestsKey r) (inProgressKey r wid) timeout
