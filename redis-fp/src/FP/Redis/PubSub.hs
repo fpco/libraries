@@ -26,7 +26,6 @@ import Control.Concurrent.Chan.Lifted (newChan, writeChan, readChan)
 import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..))
 import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty)
-import Data.Void (Void)
 
 import FP.Redis.Connection
 import FP.Redis.Internal
@@ -35,11 +34,11 @@ import FP.Redis.Command.PubSub
 
 -- | Like 'withSubscriptionsEx', but wraps the callback in an exception handler so it continues
 -- to be called for new messages even if it throws an exception.
-withSubscriptionsWrapped :: forall m. (MonadConnect m)
+withSubscriptionsWrapped :: MonadConnect m
                          => ConnectInfo -- ^ Redis connection info
                          -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
                          -> (Message -> m ()) -- ^ Callback to receive messages
-                         -> m Void
+                         -> m void
 withSubscriptionsWrapped connectionInfo_ subscriptions callback =
     withSubscriptionsEx connectionInfo_ subscriptions wrappedCallback
   where
@@ -57,11 +56,11 @@ withSubscriptionsWrapped connectionInfo_ subscriptions callback =
 --
 -- TODO MAYBE: Auto-resubscribe to any subscriptions that were active when auto-reconnecting,
 -- instead of just the `initialSubscriptions'.
-withSubscriptionsEx :: forall m. (MonadConnect m)
+withSubscriptionsEx :: MonadConnect m
                     => ConnectInfo -- ^ Redis connection info
                     -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
                     -> (Message -> m ()) -- ^ Callback to receive messages
-                    -> m Void
+                    -> m void
 withSubscriptionsEx connectionInfo_ subscriptions callback = do
     messageChan <- newChan
     withConnection
