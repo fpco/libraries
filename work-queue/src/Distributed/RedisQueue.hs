@@ -57,7 +57,7 @@ import           FP.Redis
 
 -- | Info required to submit requests to the queue ('pushRequest'),
 -- wait for responses ('subscribeToResponses'), and retrieve them
--- ('readResponse' / 'withResponse').
+-- ('readResponse').
 data ClientInfo = ClientInfo
     { clientRedis :: RedisInfo
     , clientBackchannelId :: BackchannelId
@@ -79,7 +79,7 @@ data RedisInfo = RedisInfo
 
 -- | ID of a redis channel used for notifications about a particular
 -- request.  One way to use this is to give each client server its own
--- 'BackChannelId', so that it is informed of responses to the
+-- 'BackchannelId', so that it is informed of responses to the
 -- requests it makes.
 newtype BackchannelId = BackchannelId { unBackchannelId :: ByteString }
     deriving (Eq, Show, Binary, IsString)
@@ -95,11 +95,6 @@ newtype WorkerId = WorkerId { unWorkerId :: ByteString }
 -- identifying ByteString - see 'encodeRequestId'.  Along with an ID,
 -- It encodes a 'BackchannelId', so that the worker knows which
 -- channel to push its response to.
---
--- TODO: If we had a guarantee that BackChannelIds are unique per
--- server, then this would allow us to use an in memory counter
--- instead of an atomic redis counter, as long as BackchannelId is
--- still in the
 newtype RequestId = RequestId { unRequestId :: ByteString }
     deriving (Eq, Show, Binary, Hashable)
 
