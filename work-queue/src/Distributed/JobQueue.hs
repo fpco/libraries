@@ -49,7 +49,6 @@ jobQueueWorker config redis queue toResult = do
     wid <- getWorkerId redis
     let worker = WorkerInfo redis wid
     _ <- fork $ forever $ do
-        putStrLn "Sending heartbeat"
         sendHeartbeat worker
         void $ threadDelay (workerHeartbeat config)
     forever $ do
@@ -87,7 +86,9 @@ jobQueueClient cvs redis = do
             -- guarantees about uniqueness of back channel, and number
             -- of times a response is yielded, in order to have
             -- guarantees about delivery.
-            Nothing -> $logWarn ""
+            Nothing -> $logWarn $
+                "Couldn't find handler to deal with response to " <>
+                tshow requestId
             Just handler -> do
                 response <- readResponse redis requestId
                 handler response
