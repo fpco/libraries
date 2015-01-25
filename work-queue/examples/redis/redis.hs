@@ -28,7 +28,8 @@ dispatcher =
         _ <- fork $ jobQueueClient client redis
         -- Push a single set of work requests.
         let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
-        jobQueueRequest client redis workItems $ \response -> do
+        _ <- fork $ do
+            response <- jobQueueRequest client redis workItems
             let result = decode (fromStrict response) :: Int
             liftIO $ do
                 putStrLn "================"

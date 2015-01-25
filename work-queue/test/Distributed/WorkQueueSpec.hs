@@ -8,32 +8,41 @@ import           ClassyPrelude hiding (intersect)
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async (race, async, wait, cancel, Async)
 import           Control.Concurrent.MVar (tryReadMVar)
-import           Data.Binary (Binary)
+import           Control.Monad.Logger (runStdoutLoggingT)
+import           Data.Binary (Binary, encode)
 import           Data.Bits (xor, zeroBits)
 import           Data.List (intersect, delete)
 import           Data.List.Split (chunksOf)
 import           Data.Streaming.Network (getSocketFamilyTCP)
+import           Distributed.JobQueue
+import           Distributed.RedisQueue
 import           Distributed.WorkQueue
+import           FP.Redis (connectInfo)
 import           Filesystem (isFile, removeFile)
 import qualified Network.Socket as NS
 import           Prelude (appendFile, read)
 import           System.Environment (withArgs)
 import           System.Environment.Executable (getExecutablePath)
 import           System.Exit (ExitCode(ExitSuccess))
+import           System.IO.Silently (hSilence)
 import           System.Posix.Process (getProcessID)
 import           System.Posix.Types (CPid(..))
 import           System.Process (runProcess, waitForProcess, terminateProcess, ProcessHandle)
 import           System.Process.Internals (ProcessHandle(..), ProcessHandle__(..))
 import           System.Random (randomRIO)
 import           Test.Hspec (Spec, it, shouldBe)
-import System.IO.Silently (hSilence)
 
-data Config = XorConfig
-    { xorExtra :: Int
-    , xorBits :: Int
-    , xorChunkSize :: Int
-    , sharedConfig :: SharedConfig
-    }
+data Config
+    = XorConfig
+        { xorExtra :: Int
+        , xorBits :: Int
+        , xorChunkSize :: Int
+        , sharedConfig :: SharedConfig
+        }
+    | RedisConfig
+        { redisPrefix :: ByteString
+        , sharedConfig :: SharedConfig
+        }
 
 data SharedConfig = SharedConfig
     { masterJobs :: Int
@@ -61,8 +70,19 @@ spec = do
 defaultXorConfig :: Int -> SharedConfig -> Config
 defaultXorConfig n c = XorConfig n 12 100 c { expectedOutput = Just (show n) }
 
+defaultRedisConfig :: SharedConfig -> Config
+defaultRedisConfig = RedisConfig redisTestPrefix
+
+redisTestPrefix :: ByteString
+redisTestPrefix = "fpco:job-queue-test:"
+
 defaultSharedConfig :: SharedConfig
-defaultSharedConfig = SharedConfig 1 True True True id (\_ startSlave -> startSlave >> return ()) Nothing
+defaultSharedConfig = SharedConfig 1 True True True id f Nothing
+  where
+    f _ startSlave = void startSlave
+
+-- TODO: Use TH to generate this dispatch so that definitions can go
+-- in their respective Spec modules?
 
 getConfig :: Text -> Config
 getConfig "xor0" = defaultXorConfig 0 defaultSharedConfig
@@ -94,6 +114,8 @@ getConfig "bench0" = defaultXorConfig 0 (benchConfig 0) { checkSlaveRan = False}
 getConfig "bench1" = defaultXorConfig 0 (benchConfig 1)
 getConfig "bench2" = defaultXorConfig 0 (benchConfig 2)
 getConfig "bench10" = defaultXorConfig 0 (benchConfig 10)
+getConfig "redis0" = defaultRedisConfig defaultSharedConfig { masterJobs = 0, whileRunning = \_ _ -> return () }
+getConfig "redis1" = defaultRedisConfig defaultSharedConfig
 
 getConfig which = error $ "No such config: " ++ unpack which
 
@@ -103,6 +125,19 @@ benchConfig n = defaultSharedConfig
     , wrapProcess = void . tryAny . hSilence [stdout, stderr]
     , whileRunning = \_ startSlave -> replicateM_ n startSlave
     }
+
+forkMasterSlaveNoBlock :: Text -> IO (IO ())
+forkMasterSlaveNoBlock which = do
+    let config = sharedConfig (getConfig which)
+        startSlave = execProcessOrFork ["work-queue", unpack which, "slave", "localhost", "2015"]
+    removeFileIfExists seenPidsPath
+    removeFileIfExists resultsPath
+    master <- execProcessOrFork ["work-queue", unpack which, "master", show (masterJobs config), "2015"]
+    waitForSocket
+    whileRunningThread <- async $ whileRunning config master startSlave
+    return $ do
+        cancel whileRunningThread
+        cancelProcess master
 
 -- Run the master and slave in separate processes or threads, using
 -- files to communicate with the test process.
@@ -119,7 +154,6 @@ forkMasterSlave which = do
             forM_ mpid' $ \pid' -> modifyIORef slavesRef (pid':)
             return pid
         go = do
-            cleanup
             master <- execProcessOrFork ["work-queue", unpack which, "master", show (masterJobs config), "2015"]
             mmasterPid <- processPid master
             waitForSocket
@@ -183,6 +217,23 @@ runMasterOrSlave XorConfig {..} = do
         inner () queue = do
             subresults <- mapQueue queue (chunksOf xorChunkSize xs)
             calc () subresults
+    runArgs' sharedConfig initialData calc inner
+runMasterOrSlave RedisConfig {..} = do
+    firstRunRef <- newIORef True
+    let initialData = return ()
+        calc :: () -> [Int] -> IO Int
+        calc () input = do
+            -- See similar comment above.
+            firstRun <- readIORef firstRunRef
+            when firstRun $ do
+                threadDelay (200 * 1000)
+                writeIORef firstRunRef False
+            return $ foldl' xor zeroBits input
+        inner () queue = do
+            runStdoutLoggingT $ withRedisInfo redisPrefix (connectInfo "localhost") $ \redis -> do
+                void $ jobQueueWorker (WorkerConfig (1000 * 1000)) redis queue $ \subresults -> do
+                    result <- liftIO $ calc () (otoList subresults)
+                    return (toStrict (encode result))
     runArgs' sharedConfig initialData calc inner
 
 runArgs'

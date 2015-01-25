@@ -16,6 +16,7 @@ module Distributed.JobQueue
     , newClientVars
     , jobQueueClient
     , jobQueueRequest
+    , jobQueueRequest'
     ) where
 
 import ClassyPrelude
@@ -98,9 +99,25 @@ jobQueueRequest
     => ClientVars m
     -> RedisInfo
     -> Vector request
+    -> m ByteString
+jobQueueRequest cvs redis request = do
+    resultVar <- newEmptyMVar
+    jobQueueRequest' cvs redis request $ putMVar resultVar
+    takeMVar resultVar
+
+-- | This is a non-blocking version of jobQueueRequest.  When the
+-- response comes back, the provided callback is invoked.  One thing
+-- to note is that exceptions thrown by the callback do not get
+-- rethrown.  Instead, they're printed, due to jobQueueClient using
+-- 'FP.Redis.withSubscriptionsWrapped'.
+jobQueueRequest'
+    :: (MonadCommand m, MonadThrow m, Binary request)
+    => ClientVars m
+    -> RedisInfo
+    -> Vector request
     -> (ByteString -> m ())
     -> m ()
-jobQueueRequest cvs redis request handler = do
+jobQueueRequest' cvs redis request handler = do
     let client = ClientInfo redis (clientBackchannel cvs)
     -- TODO: Does it make sense to block on subscription like this?
     -- Perhaps instead servers should block even accepting requests

@@ -116,6 +116,11 @@ test-suite test
                      , executable-path
                      , process
                      , silently
+                     , monad-logger
+                     , redis-fp
+                     , lifted-base
+                     , semigroups
+                     , lifted-async
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
   if flag(coverage)
@@ -147,6 +152,9 @@ benchmark bench
                      , executable-path
                      , process
                      , silently
+                     , monad-logger
+                     , redis-fp
+                     , lifted-base
                      , criterion
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
