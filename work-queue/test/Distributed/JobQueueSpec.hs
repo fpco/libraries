@@ -46,12 +46,8 @@ runDispatcher :: MVar Int -> IO ()
 runDispatcher resultVar = do
     let localhost = connectInfo "localhost"
     runStdoutLoggingT $ withRedisInfo redisTestPrefix localhost $ \redis -> do
-        client <- liftIO newClientVars
-        let periodicHeartbeat = forever $ do
-                 let micros = 2 * 1000 * 1000
-                 checkHeartbeats redis micros
-                 threadDelay micros
-        withAsync (jobQueueClient client redis) $ \_ -> withAsync periodicHeartbeat $ \_ -> do
+        client <- liftIO (newClientVars (Seconds 2))
+        withAsync (jobQueueClient client redis) $ \_ -> do
             -- Push a single set of work requests.
             let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
             response <- jobQueueRequest client redis workItems

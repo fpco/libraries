@@ -4,7 +4,7 @@
 module Main where
 
 import ClassyPrelude
-import Control.Concurrent.Lifted (fork, threadDelay)
+import Control.Concurrent.Lifted (fork)
 import Control.Monad.Logger (runStdoutLoggingT)
 import Data.Binary (encode, decode)
 import Data.Bits (xor, zeroBits)
@@ -12,7 +12,7 @@ import Data.List.Split (chunksOf)
 import Distributed.JobQueue
 import Distributed.RedisQueue
 import Distributed.WorkQueue
-import FP.Redis.Connection (ConnectInfo, connectInfo)
+import FP.Redis (Seconds(..), ConnectInfo, connectInfo)
 
 main :: IO ()
 main = do
@@ -24,21 +24,16 @@ main = do
 dispatcher :: IO ()
 dispatcher =
     runStdoutLoggingT $ withRedisInfo prefix localhost $ \redis -> do
-        client <- liftIO newClientVars
+        client <- liftIO (newClientVars (Seconds 20))
         _ <- fork $ jobQueueClient client redis
         -- Push a single set of work requests.
         let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
-        _ <- fork $ do
-            response <- jobQueueRequest client redis workItems
-            let result = decode (fromStrict response) :: Int
-            liftIO $ do
-                putStrLn "================"
-                putStrLn $ "Received result: " ++ tshow result
-                putStrLn "================"
-        forever $ do
-            let micros = 20 * 1000 * 1000
-            checkHeartbeats redis micros
-            threadDelay micros
+        response <- jobQueueRequest client redis workItems
+        let result = decode (fromStrict response) :: Int
+        liftIO $ do
+            putStrLn "================"
+            putStrLn $ "Received result: " ++ tshow result
+            putStrLn "================"
 
 masterOrSlave :: IO ()
 masterOrSlave = runArgs initialData calc inner

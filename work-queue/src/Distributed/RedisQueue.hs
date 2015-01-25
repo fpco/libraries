@@ -42,6 +42,7 @@ module Distributed.RedisQueue
     , readResponse
     , subscribeToResponses
     , sendHeartbeat
+    , periodicallyCheckHeartbeats
     , checkHeartbeats
     , getUnusedWorkerId
     ) where
@@ -54,6 +55,7 @@ import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Data.Ratio ((%))
 import           Data.Time.Clock.POSIX (getPOSIXTime)
 import           FP.Redis
+import           FP.Redis.Mutex
 
 -- | Info required to submit requests to the queue ('pushRequest'),
 -- wait for responses ('subscribeToResponses'), and retrieve them
@@ -183,12 +185,17 @@ sendHeartbeat (WorkerInfo r wid) = do
     now <- liftIO getPOSIXTime
     run_ r $ zadd (heartbeatKey r) [(realToFrac now, unWorkerId wid)]
 
+periodicallyCheckHeartbeats
+    :: MonadConnect m => RedisInfo -> Seconds -> m void
+periodicallyCheckHeartbeats r ivl =
+    periodicActionWrapped (redisConnection r) (heartbeatTimeKey r) ivl $
+        checkHeartbeats r ivl
+
 checkHeartbeats
-    :: MonadCommand m => RedisInfo -> Int -> m ()
-checkHeartbeats r micros = do
+    :: MonadCommand m => RedisInfo -> Seconds -> m ()
+checkHeartbeats r (Seconds ivl) = do
     now <- liftIO getPOSIXTime
-    let ivl = fromRational (fromIntegral micros % (1000 * 1000))
-        threshold = realToFrac now - ivl
+    let threshold = realToFrac now - fromIntegral ivl
     expired <- run r $ zrangebyscore (heartbeatKey r) 0 threshold False
     -- Need this check because zrem can fail otherwise.
     unless (null expired) $ do
@@ -224,6 +231,9 @@ idCounterKey, requestsKey, heartbeatKey :: RedisInfo -> Key
 idCounterKey r = Key $ redisKeyPrefix r <> "id-counter"
 requestsKey  r = Key $ redisKeyPrefix r <> "requests"
 heartbeatKey r = Key $ redisKeyPrefix r <> "heartbeat"
+
+heartbeatTimeKey :: RedisInfo -> ByteString
+heartbeatTimeKey r = redisKeyPrefix r <> "heartbeat:time"
 
 requestDataKey, responseDataKey :: RedisInfo -> RequestId -> Key
 requestDataKey  r k = Key $ redisKeyPrefix r <> "request:" <> unRequestId k

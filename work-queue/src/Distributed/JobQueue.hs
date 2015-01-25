@@ -19,18 +19,19 @@ module Distributed.JobQueue
     , jobQueueRequest'
     ) where
 
-import ClassyPrelude
-import Control.Concurrent.Lifted (fork, threadDelay)
-import Control.Concurrent.STM (check)
-import Control.Monad.Logger (logWarn)
-import Data.Binary (Binary, decode, encode)
-import Data.WorkQueue
-import Distributed.RedisQueue
-import Focus (Decision(Remove))
-import FP.Redis.Types (MonadConnect, MonadCommand)
-import Network.HostName (getHostName)
+import           ClassyPrelude
+import           Control.Concurrent.Async.Lifted (withAsync)
+import           Control.Concurrent.Lifted (fork, threadDelay)
+import           Control.Concurrent.STM (check)
+import           Control.Monad.Logger (logWarn)
+import           Data.Binary (Binary, decode, encode)
+import           Data.WorkQueue
+import           Distributed.RedisQueue
+import           FP.Redis.Types (MonadConnect, MonadCommand, Seconds(..))
+import           Focus (Decision(Remove))
+import           Network.HostName (getHostName)
 import qualified STMContainers.Map as SM
-import System.Posix.Process (getProcessID)
+import           System.Posix.Process (getProcessID)
 
 data WorkerConfig = WorkerConfig
     { workerHeartbeat :: Int -- ^ Heartbeat frequency, in microseconds.
@@ -61,13 +62,15 @@ data ClientVars m = ClientVars
     { clientSubscribed :: TVar Bool
     , clientDispatch :: SM.Map RequestId (ByteString -> m ())
     , clientBackchannel :: BackchannelId
+    , clientHeartbeatCheckIvl :: Seconds
     }
 
-newClientVars :: IO (ClientVars m)
-newClientVars = ClientVars
+newClientVars :: Seconds -> IO (ClientVars m)
+newClientVars heartbeatCheckIvl = ClientVars
     <$> newTVarIO False
     <*> SM.newIO
     <*> getBackchannelId
+    <*> pure heartbeatCheckIvl
 
 jobQueueClient
     :: MonadConnect m
@@ -76,23 +79,25 @@ jobQueueClient
     -> m void
 jobQueueClient cvs redis = do
     let client = ClientInfo redis (clientBackchannel cvs)
-    subscribeToResponses client (clientSubscribed cvs) $ \requestId -> do
-        -- Lookup the handler before fetching / deleting the response,
-        -- as the message may get delivered to multiple clients.
-        let lookupAndRemove r = return (r, Remove)
-        mhandler <- atomically $
-            SM.focus lookupAndRemove requestId (clientDispatch cvs)
-        case mhandler of
-            -- TODO: Is a mere warning sufficient? Perhaps we need
-            -- guarantees about uniqueness of back channel, and number
-            -- of times a response is yielded, in order to have
-            -- guarantees about delivery.
-            Nothing -> $logWarn $
-                "Couldn't find handler to deal with response to " <>
-                tshow requestId
-            Just handler -> do
-                response <- readResponse redis requestId
-                handler response
+        checker = periodicallyCheckHeartbeats redis (clientHeartbeatCheckIvl cvs)
+    withAsync checker $ \_ ->
+        subscribeToResponses client (clientSubscribed cvs) $ \requestId -> do
+            -- Lookup the handler before fetching / deleting the response,
+            -- as the message may get delivered to multiple clients.
+            let lookupAndRemove r = return (r, Remove)
+            mhandler <- atomically $
+                SM.focus lookupAndRemove requestId (clientDispatch cvs)
+            case mhandler of
+                -- TODO: Is a mere warning sufficient? Perhaps we need
+                -- guarantees about uniqueness of back channel, and number
+                -- of times a response is yielded, in order to have
+                -- guarantees about delivery.
+                Nothing -> $logWarn $
+                    "Couldn't find handler to deal with response to " <>
+                    tshow requestId
+                Just handler -> do
+                    response <- readResponse redis requestId
+                    handler response
 
 jobQueueRequest
     :: (MonadCommand m, MonadThrow m, Binary request)
