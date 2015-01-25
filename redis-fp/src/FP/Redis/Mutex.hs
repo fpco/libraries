@@ -37,19 +37,19 @@ periodicActionWrapped :: (MonadConnect m)
                          -- ^ Redis connection
                       -> ByteString
                          -- ^ Key prefix for keys used to coordinate clients
-                      -> Int
+                      -> Seconds
                          -- ^ Period (how often to run the action), in seconds
                       -> m ()
                          -- ^ I/O action to to perform.
-                      -> m ()
-periodicActionWrapped conn keyPrefix period inner =
+                      -> m void
+periodicActionWrapped conn keyPrefix period@(Seconds seconds) inner =
     forever (catchAny (periodicActionEx conn keyPrefix period wrappedInner) outerHandler)
   where
     wrappedInner = catchAny inner innerHandler
     outerHandler ex = do
         logErrorNS (connectLogSource (connectionInfo conn))
                    ("periodicActionWrapper outerHandler: " ++ tshow ex)
-        liftIO (threadDelay (period * 1000000))
+        liftIO (threadDelay (fromIntegral seconds * 1000000))
     innerHandler ex =
         logErrorNS (connectLogSource (connectionInfo conn))
                    ("periodicActionWrapped innerHandler: " ++ tshow ex)
@@ -61,12 +61,12 @@ periodicActionEx :: (MonadConnect m)
                     -- ^ Redis connection
                  -> ByteString
                     -- ^ Key prefix for keys used to coordinate clients
-                 -> Int
+                 -> Seconds
                     -- ^ Period (how often to run the action), in seconds
                  -> m ()
                     -- ^ I/O action to to perform.
-                 -> m ()
-periodicActionEx conn keyPrefix period inner = forever $ do
+                 -> m void
+periodicActionEx conn keyPrefix (Seconds period) inner = forever $ do
     sleepSeconds <- withMutex conn (Key (keyPrefix ++ ".mutex")) $ do
         maybeLastStartedAt <- runCommand conn
             (get (Key (keyPrefix ++ ".last-started-at")))
