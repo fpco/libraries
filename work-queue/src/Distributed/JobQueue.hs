@@ -20,10 +20,11 @@ module Distributed.JobQueue
     ) where
 
 import           ClassyPrelude
-import           Control.Concurrent.Async.Lifted (withAsync)
+import           Control.Concurrent.Async (withAsync)
 import           Control.Concurrent.Lifted (fork, threadDelay)
 import           Control.Concurrent.STM (check)
 import           Control.Monad.Logger (MonadLogger, logWarn, logError)
+import           Control.Monad.Trans.Control (control)
 import           Data.Binary (Binary, decode, encode)
 import           Data.WorkQueue
 import           Distributed.RedisQueue
@@ -84,23 +85,24 @@ jobQueueClient
 jobQueueClient cvs r = do
     let checker = periodicallyCheckHeartbeats r (clientHeartbeatCheckIvl cvs)
         subscribe = subscribeToResponses r (clientInfo cvs) (clientSubscribed cvs)
-    withAsync checker $ \_ -> subscribe $ \requestId -> do
-        -- Lookup the handler before fetching / deleting the response,
-        -- as the message may get delivered to multiple clients.
-        let lookupAndRemove r = return (r, Remove)
-        mhandler <- atomically $
-            SM.focus lookupAndRemove requestId (clientDispatch cvs)
-        case mhandler of
-            -- TODO: Is a mere warning sufficient? Perhaps we need
-            -- guarantees about uniqueness of back channel, and number
-            -- of times a response is yielded, in order to have
-            -- guarantees about delivery.
-            Nothing -> $logWarn $
-                "Couldn't find handler to deal with response to " <>
-                tshow requestId
-            Just handler -> do
-                response <- readResponse r requestId
-                handler response
+    control $ \restore -> withAsync (restore checker) $ \_ ->
+        restore $ subscribe $ \requestId -> do
+            -- Lookup the handler before fetching / deleting the response,
+            -- as the message may get delivered to multiple clients.
+            let lookupAndRemove r = return (r, Remove)
+            mhandler <- atomically $
+                SM.focus lookupAndRemove requestId (clientDispatch cvs)
+            case mhandler of
+                -- TODO: Is a mere warning sufficient? Perhaps we need
+                -- guarantees about uniqueness of back channel, and number
+                -- of times a response is yielded, in order to have
+                -- guarantees about delivery.
+                Nothing -> $logWarn $
+                    "Couldn't find handler to deal with response to " <>
+                    tshow requestId
+                Just handler -> do
+                    response <- readResponse r requestId
+                    handler response
 
 jobQueueRequest
     :: (MonadCommand m, MonadLogger m, Binary request)

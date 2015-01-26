@@ -4,9 +4,10 @@
 module Distributed.JobQueueSpec where
 
 import ClassyPrelude
-import Control.Concurrent.Async.Lifted (withAsync)
+import Control.Concurrent.Async (withAsync)
 import Control.Concurrent.Lifted (threadDelay, fork, killThread)
 import Control.Monad.Logger (runStdoutLoggingT)
+import Control.Monad.Trans.Control (control)
 import Data.Binary (decode)
 import Data.List.Split (chunksOf)
 import Distributed.JobQueue
@@ -47,9 +48,10 @@ runDispatcher resultVar = do
     let localhost = connectInfo "localhost"
     runStdoutLoggingT $ withRedisInfo redisTestPrefix localhost $ \redis -> do
         client <- liftIO (newClientVars (Seconds 2) (Seconds 3600))
-        withAsync (jobQueueClient client redis) $ \_ -> do
-            -- Push a single set of work requests.
-            let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
-            response <- jobQueueRequest client redis workItems
-            putStrLn "Putting"
-            putMVar resultVar (decode (fromStrict response))
+        control $ \restore ->
+            withAsync (restore $ jobQueueClient client redis) $ \_ -> restore $ do
+                -- Push a single set of work requests.
+                let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
+                response <- jobQueueRequest client redis workItems
+                putStrLn "Putting"
+                putMVar resultVar (decode (fromStrict response))
