@@ -20,6 +20,7 @@ import Test.Hspec (Spec, it, shouldBe)
 spec :: Spec
 spec = do
     it "Runs enqueued computations" $ do
+        clearRedisKeys
         killMaster <- forkMasterSlaveNoBlock "redis1"
         resultVar <- newEmptyMVar
         tid <- fork $ runDispatcher resultVar
@@ -29,6 +30,7 @@ spec = do
             `finally` killMaster >> killThread tid
         killMaster
     it "Doesn't lose data when master fails" $ do
+        clearRedisKeys
         killMaster0 <- forkMasterSlaveNoBlock "redis0"
         resultVar <- newEmptyMVar
         tid <- fork $ runDispatcher resultVar
@@ -55,3 +57,9 @@ runDispatcher resultVar = do
                 response <- jobQueueRequest client redis workItems
                 putStrLn "Putting"
                 putMVar resultVar (decode (fromStrict response))
+
+clearRedisKeys :: IO ()
+clearRedisKeys =
+    runStdoutLoggingT $ withConnection (connectInfo "localhost") $ \redis -> do
+        matches <- runCommand redis $ keys (redisTestPrefix <> "*")
+        runCommand_ redis $ del matches

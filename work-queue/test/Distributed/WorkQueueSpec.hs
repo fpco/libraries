@@ -40,8 +40,7 @@ data Config
         , sharedConfig :: SharedConfig
         }
     | RedisConfig
-        { redisPrefix :: ByteString
-        , sharedConfig :: SharedConfig
+        { sharedConfig :: SharedConfig
         }
 
 data SharedConfig = SharedConfig
@@ -71,7 +70,7 @@ defaultXorConfig :: Int -> SharedConfig -> Config
 defaultXorConfig n c = XorConfig n 12 100 c { expectedOutput = Just (show n) }
 
 defaultRedisConfig :: SharedConfig -> Config
-defaultRedisConfig = RedisConfig redisTestPrefix
+defaultRedisConfig = RedisConfig
 
 redisTestPrefix :: ByteString
 redisTestPrefix = "fpco:job-queue-test:"
@@ -229,8 +228,8 @@ runMasterOrSlave RedisConfig {..} = do
                 threadDelay (200 * 1000)
                 writeIORef firstRunRef False
             return $ foldl' xor zeroBits input
-        inner () queue = do
-            runStdoutLoggingT $ withRedisInfo redisPrefix (connectInfo "localhost") $ \redis -> do
+        inner () queue = runStdoutLoggingT $
+            withRedisInfo redisTestPrefix (connectInfo "localhost") $ \redis ->
                 void $ jobQueueWorker config redis queue $ \subresults -> do
                     result <- liftIO $ calc () (otoList subresults)
                     return (toStrict (encode result))
