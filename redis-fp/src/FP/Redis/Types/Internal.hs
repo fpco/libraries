@@ -185,6 +185,7 @@ instance Result (Maybe Double) where
     decodeResponse (BulkString (Just bs)) = Just <$> readMay (BS8.unpack bs)
     decodeResponse (BulkString Nothing) = Just Nothing
     decodeResponse _ = Nothing
+    encodeResponse = BulkString . fmap (BS8.pack . show)
 
 instance Result Int64 where
     decodeResponse (Integer val) = Just val
