@@ -161,12 +161,7 @@ sendResponse r (WorkerInfo wid expiry) k bid x = do
 readResponse
     :: MonadCommand m
     => RedisInfo -> RequestId -> m ByteString
-readResponse r k = do
-    response <- getExisting r k'
-    delExisting r k'
-    return response
-  where
-    k' = responseDataKey r k
+readResponse r k = getExisting r (responseDataKey r k)
 
 -- | Subscribes to responses on the channel specified by this client's
 -- 'BackchannelId'.  It changes the @subscribed@ 'TVar' to 'True' when
