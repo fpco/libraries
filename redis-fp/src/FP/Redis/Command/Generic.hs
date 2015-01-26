@@ -8,7 +8,8 @@
 module FP.Redis.Command.Generic
     ( del
     , expire
-    , ttl )
+    , ttl
+    , keys )
     where
 
 import ClassyPrelude.Conduit
@@ -30,3 +31,8 @@ expire key seconds = makeCommand "EXPIRE" [encodeArg key,encodeArg seconds]
 -- See <http://redis.io/commands/ttl>.
 ttl :: Key -> CommandRequest Seconds
 ttl key = makeCommand "TTL" [encodeArg key]
+
+-- | Returns all keys matching pattern.
+-- See <http://redis.io/commands/keys>.
+keys :: ByteString -> CommandRequest [Key]
+keys pattern = makeCommand "KEYS" [encodeArg pattern]

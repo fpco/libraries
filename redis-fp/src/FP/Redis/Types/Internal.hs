@@ -216,6 +216,15 @@ instance Result [ByteString] where
     decodeResponse _ = Nothing
     encodeResponse xs = Array (Just (map encodeResponse xs))
 
+instance Result [Key] where
+    decodeResponse (Array (Just vals)) =
+        let maybeVals = map decodeResponse vals
+        in if any isNothing maybeVals
+            then Nothing
+            else Just (catMaybes maybeVals)
+    decodeResponse _ = Nothing
+    encodeResponse xs = Array (Just (map encodeResponse xs))
+
 instance Result [Maybe ByteString] where
     decodeResponse (Array (Just vals)) =
         Just (map dr vals)
