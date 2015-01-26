@@ -23,24 +23,24 @@ type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
 type MonadCommand m = (MonadIO m, MonadBaseControl IO m)
 
 -- Newtype wrapper for redis top level key names.
-newtype Key = Key ByteString
+newtype Key = Key { unKey :: ByteString }
     deriving (Eq, Show, Ord, Result, Argument, IsString)
 
 -- Newtype wrapper for redis channel names.
-newtype Channel = Channel ByteString
+newtype Channel = Channel { unChannel :: ByteString }
     deriving (Eq, Show, Ord, Result, Argument, IsString)
 
 -- Newtype wrapper for redis hash fields.
-newtype HashField = HashField ByteString
+newtype HashField = HashField { unHashField :: ByteString }
     deriving (Eq, Show, Ord, Result, Argument, IsString)
 
 -- Newtype wrapper time delta (usually a timeout), stored in seconds.
-newtype Seconds = Seconds Int64
+newtype Seconds = Seconds { unSeconds :: Int64 }
     deriving (Eq, Show, Ord, Result, Argument)
 
 -- Newtype wrapper time delta (usually a timeout), stored in
 -- milliseconds.
-newtype Milliseconds = Milliseconds Int64
+newtype Milliseconds = Milliseconds { unMilliseconds :: Int64 }
     deriving (Eq, Show, Ord, Result, Argument)
 
 -- | A pub/sub subscription message.  See <http://redis.io/topics/pubsub>.
