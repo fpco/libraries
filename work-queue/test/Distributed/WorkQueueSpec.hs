@@ -17,7 +17,7 @@ import           Data.Streaming.Network (getSocketFamilyTCP)
 import           Distributed.JobQueue
 import           Distributed.RedisQueue
 import           Distributed.WorkQueue
-import           FP.Redis (connectInfo)
+import           FP.Redis (connectInfo, Seconds(..))
 import           Filesystem (isFile, removeFile)
 import qualified Network.Socket as NS
 import           Prelude (appendFile, read)
@@ -231,9 +231,12 @@ runMasterOrSlave RedisConfig {..} = do
             return $ foldl' xor zeroBits input
         inner () queue = do
             runStdoutLoggingT $ withRedisInfo redisPrefix (connectInfo "localhost") $ \redis -> do
-                void $ jobQueueWorker (WorkerConfig (1000 * 1000)) redis queue $ \subresults -> do
+                void $ jobQueueWorker config redis queue $ \subresults -> do
                     result <- liftIO $ calc () (otoList subresults)
                     return (toStrict (encode result))
+        -- Send heartbeat every second, and response data expires
+        -- every hour.
+        config = WorkerConfig (1000 * 1000) (Seconds 3600)
     runArgs' sharedConfig initialData calc inner
 
 runArgs'

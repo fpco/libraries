@@ -49,10 +49,10 @@ module Distributed.RedisQueue
 
 import           ClassyPrelude
 import           Control.Monad.Logger (MonadLogger, logError)
+import qualified Crypto.Hash.SHA1 as SHA1
 import           Data.Binary (Binary, encode, decode)
 import qualified Data.ByteString.Char8 as BS8
 import           Data.List.NonEmpty (NonEmpty((:|)))
-import           Data.Ratio ((%))
 import           Data.Time.Clock.POSIX (getPOSIXTime)
 import           FP.Redis
 import           FP.Redis.Mutex
@@ -61,15 +61,15 @@ import           FP.Redis.Mutex
 -- wait for responses ('subscribeToResponses'), and retrieve them
 -- ('readResponse').
 data ClientInfo = ClientInfo
-    { clientRedis :: RedisInfo
-    , clientBackchannelId :: BackchannelId
+    { clientBackchannelId :: BackchannelId
+    , clientRequestExpiry :: Seconds
     }
 
 -- | Info required to wait for incoming requests ('popRequest'), and
 -- yield corresponding responses ('sendResponse').
 data WorkerInfo = WorkerInfo
-    { workerRedis :: RedisInfo
-    , workerId :: WorkerId
+    { workerId :: WorkerId
+    , workerResponseExpiry :: Seconds
     }
 
 -- | Common information about redis, used by both client and worker.
@@ -93,72 +93,74 @@ newtype WorkerId = WorkerId { unWorkerId :: ByteString }
     deriving (Eq, Show, Binary, IsString)
 
 -- | This is the key used for enqueued requests, and, later, the
--- response associated with it.  It actually isn't an arbitrary
--- identifying ByteString - see 'encodeRequestId'.  Along with an ID,
--- It encodes a 'BackchannelId', so that the worker knows which
--- channel to push its response to.
+-- response associated with it.  It's the hash of the request, which
+-- allows responses to be cached.
 newtype RequestId = RequestId { unRequestId :: ByteString }
     deriving (Eq, Show, Binary, Hashable)
 
-encodeRequestId :: (BackchannelId, Int64) -> RequestId
-encodeRequestId = RequestId . toStrict . encode
-
-decodeRequestId :: RequestId -> (BackchannelId, Int64)
-decodeRequestId = decode . fromStrict . unRequestId
-
 withRedisInfo
-    :: MonadConnect m => ByteString -> ConnectInfo -> (RedisInfo -> m ()) -> m ()
+    :: MonadConnect m
+    => ByteString -> ConnectInfo -> (RedisInfo -> m ()) -> m ()
 withRedisInfo redisKeyPrefix redisConnectInfo f =
     withConnection redisConnectInfo $ \redisConnection -> f RedisInfo {..}
 
 pushRequest
-    :: MonadCommand m => ClientInfo -> ByteString -> m RequestId
-pushRequest (ClientInfo r bid) request = do
-    -- Atomically increment a redis counter in order to get a new,
-    -- unique request ID.
-    requestNumber <- run r $ incr (idCounterKey r)
-    -- Store the request data as a normal redis value.
-    let k = encodeRequestId (bid, requestNumber)
-    runSetNX r (requestDataKey r k) request
-    -- Enqueue its ID on the requests list.
-    run_ r $ lpush (requestsKey r) (unRequestId k)
-    return k
+    :: MonadCommand m
+    => RedisInfo -> ClientInfo -> ByteString -> m (RequestId, Maybe ByteString)
+pushRequest r (ClientInfo bid expiry) request = do
+    -- Check if the response has already been computed.  If so, then
+    -- yield it.
+    let k = RequestId (SHA1.hash request)
+    result <- run r $ get (responseDataKey r k)
+    case result of
+        Just _ -> return (k, result)
+        Nothing -> do
+            -- Store the request data as a normal redis value.
+            run_ r $ set (requestDataKey r k) request [EX expiry]
+            -- Enqueue its ID on the requests list.
+            run_ r $ lpush (requestsKey r) (toStrict (encode (k, bid)))
+            return (k, Nothing)
 
 popRequest
-    :: MonadCommand m => WorkerInfo -> m (RequestId, ByteString)
-popRequest (WorkerInfo r wid) = do
+    :: MonadCommand m
+    => RedisInfo -> WorkerInfo -> m (RequestId, BackchannelId, Maybe ByteString)
+popRequest r (WorkerInfo wid _) = do
     mk <- run r $ brpoplpush (requestsKey r) (inProgressKey r wid) (Seconds 0)
     case mk of
         Nothing -> fail "impossible: brpoplpush with 0 timeout reported timeout"
-        Just (RequestId -> k) -> do
-            x <- getExisting r (requestDataKey r k)
-            return (k, x)
+        Just (decode . fromStrict -> (k, bid)) -> do
+            mx <- run r $ get (requestDataKey r k)
+            return (k, bid, mx)
 
 sendResponse
-    :: (MonadCommand m, MonadLogger m) => WorkerInfo -> RequestId -> ByteString -> m ()
-sendResponse (WorkerInfo r wid) k x = do
+    :: (MonadCommand m, MonadLogger m)
+    => RedisInfo -> WorkerInfo -> RequestId -> BackchannelId -> ByteString -> m ()
+sendResponse r (WorkerInfo wid expiry) k bid x = do
     -- Store the response data, and notify the client that it's ready.
-    run_ r $ set (responseDataKey r k) x []
-    run_ r $ publish (responseChannelFor r k) (unRequestId k)
+    run_ r $ set (responseDataKey r k) x [EX expiry]
+    run_ r $ publish (responseChannel r bid) (unRequestId k)
     -- Remove the RequestId associated with this response, from the
     -- list of in-progress requests.
     let ipk = inProgressKey r wid
-    removed <- run r $ lrem ipk 1 (unRequestId k)
+    removed <- run r $ lrem ipk 1 (toStrict (encode (k, bid)))
     when (removed == 0) $ do
         $logError $
+            tshow k <>
+            " isn't a member of in-progress queue (" <>
             tshow ipk <>
-            " isn't a member of the in-progress queue, likely indicating that\
-            \ a heartbeat failure happened, causing it to be erroneously\
-            \ re-enqueued.  This doesn't affect correctness, but could mean that\
-            \ redundant work is performed."
+            "), likely indicating that a heartbeat failure happened, causing\
+            \ it to be erroneously re-enqueued.  This doesn't affect\
+            \ correctness, but could mean that redundant work is performed."
     -- Remove the request data, as it's no longer needed.  We don't
     -- check if the removal succeeds, as this may not be the first
-    -- time a response is sent for the request.  See the error message above.
+    -- time a response is sent for the request.  See the error message
+    -- above.
     run_ r $ del [requestDataKey r k]
 
 -- | Retrieves and deletes the response for the specified 'RequestId'.
 readResponse
-    :: MonadCommand m => RedisInfo -> RequestId -> m ByteString
+    :: MonadCommand m
+    => RedisInfo -> RequestId -> m ByteString
 readResponse r k = do
     response <- getExisting r k'
     delExisting r k'
@@ -172,16 +174,17 @@ readResponse r k = do
 -- order to be sure to receive the response, clients should wait for
 -- the subscription to be established before enqueueing requests.
 subscribeToResponses
-    :: MonadConnect m => ClientInfo -> TVar Bool -> (RequestId -> m ()) -> m void
-subscribeToResponses (ClientInfo r bid) subscribed f = do
+    :: MonadConnect m
+    => RedisInfo -> ClientInfo -> TVar Bool -> (RequestId -> m ()) -> m void
+subscribeToResponses r (ClientInfo bid _) subscribed f = do
     let sub = subscribe [responseChannel r bid]
     withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $
         trackSubscriptionStatus subscribed $ \_ k ->
             f (RequestId k)
 
 sendHeartbeat
-    :: MonadCommand m => WorkerInfo -> m ()
-sendHeartbeat (WorkerInfo r wid) = do
+    :: MonadCommand m => RedisInfo -> WorkerInfo -> m ()
+sendHeartbeat r (WorkerInfo wid _) = do
     now <- liftIO getPOSIXTime
     run_ r $ zadd (heartbeatKey r) [(realToFrac now, unWorkerId wid)]
 
@@ -227,8 +230,7 @@ getUnusedWorkerId r initial = go (0 :: Int)
 
 -- * Functions to compute Redis keys
 
-idCounterKey, requestsKey, heartbeatKey :: RedisInfo -> Key
-idCounterKey r = Key $ redisKeyPrefix r <> "id-counter"
+requestsKey, heartbeatKey :: RedisInfo -> Key
 requestsKey  r = Key $ redisKeyPrefix r <> "requests"
 heartbeatKey r = Key $ redisKeyPrefix r <> "heartbeat"
 
@@ -238,9 +240,6 @@ heartbeatTimeKey r = redisKeyPrefix r <> "heartbeat:time"
 requestDataKey, responseDataKey :: RedisInfo -> RequestId -> Key
 requestDataKey  r k = Key $ redisKeyPrefix r <> "request:" <> unRequestId k
 responseDataKey r k = Key $ redisKeyPrefix r <> "response:" <> unRequestId k
-
-responseChannelFor :: RedisInfo -> RequestId -> Channel
-responseChannelFor r k = responseChannel r (fst (decodeRequestId k))
 
 responseChannel :: RedisInfo -> BackchannelId -> Channel
 responseChannel r k = Channel $ redisKeyPrefix r <> "responses:" <> unBackchannelId k
@@ -255,11 +254,6 @@ run = runCommand . redisConnection
 
 run_ :: MonadCommand m => RedisInfo -> CommandRequest a -> m ()
 run_ = runCommand_ . redisConnection
-
-runSetNX :: MonadCommand m => RedisInfo -> Key -> ByteString -> m ()
-runSetNX r k x = do
-    worked <- run r $ set k x [NX]
-    when (not worked) $ liftIO $ throwIO (KeyAlreadySet k)
 
 getExisting :: MonadCommand m => RedisInfo -> Key -> m ByteString
 getExisting r k = do
@@ -279,8 +273,7 @@ rpush' key vals = makeCommand "RPUSH" (encodeArg key : map encodeArg vals)
 -- * Exceptions
 
 data DistributedRedisQueueException
-    = KeyAlreadySet Key
-    | KeyMissing Key
+    = KeyMissing Key
     deriving (Eq, Show, Typeable)
 
 instance Exception DistributedRedisQueueException

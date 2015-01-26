@@ -24,7 +24,11 @@ main = do
 dispatcher :: IO ()
 dispatcher =
     runStdoutLoggingT $ withRedisInfo prefix localhost $ \redis -> do
-        client <- liftIO (newClientVars (Seconds 20))
+        -- Client configuration, where heartbeats are checked every 20
+        -- seconds, and requests expire after an hour.
+        client <- liftIO (newClientVars (Seconds 20) (Seconds 3600))
+        -- Run the client heartbeat checker and back channel
+        -- subscription.
         _ <- fork $ jobQueueClient client redis
         -- Push a single set of work requests.
         let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
@@ -42,13 +46,16 @@ masterOrSlave = runArgs initialData calc inner
     calc () input = return $ foldl' xor zeroBits (input :: [Int])
     inner () queue = do
         runStdoutLoggingT $ withRedisInfo prefix localhost $ \redis -> do
-            void $ jobQueueWorker (WorkerConfig (10 * 1000 * 1000)) redis queue $ \subresults -> do
+            void $ jobQueueWorker config redis queue $ \subresults -> do
                 result <- calc () (otoList subresults)
                 liftIO $ do
                     putStrLn "================"
                     putStrLn $ "Sending result: " ++ tshow (result :: Int)
                     putStrLn "================"
                 return (toStrict (encode result))
+    -- Send heartbeat every 10 seconds, and response data expires
+    -- every hour.
+    config = WorkerConfig (10 * 1000 * 1000) (Seconds 3600)
 
 localhost :: ConnectInfo
 localhost = connectInfo "localhost"

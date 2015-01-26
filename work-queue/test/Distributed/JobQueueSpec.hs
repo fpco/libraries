@@ -46,7 +46,7 @@ runDispatcher :: MVar Int -> IO ()
 runDispatcher resultVar = do
     let localhost = connectInfo "localhost"
     runStdoutLoggingT $ withRedisInfo redisTestPrefix localhost $ \redis -> do
-        client <- liftIO (newClientVars (Seconds 2))
+        client <- liftIO (newClientVars (Seconds 2) (Seconds 3600))
         withAsync (jobQueueClient client redis) $ \_ -> do
             -- Push a single set of work requests.
             let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
