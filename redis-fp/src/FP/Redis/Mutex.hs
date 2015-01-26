@@ -156,9 +156,9 @@ acquireMutex conn mutexTtl key =
     initDelay = 1000000
     maxDelay = 30000000
 
--- | Attempt to acquire a mutex.  This will return immediately if if the mutex
--- is not available.  It will retry for a limited time if the Redis server is
--- not reachable.  See `acquireMutex` for more information about the arguments.
+-- | Attempt to acquire a mutex.  This will return immediately if the mutex is
+-- not available.  It will retry for a limited time if the Redis server is not
+-- reachable.  See `acquireMutex` for more information about the arguments.
 tryAcquireMutex :: (MonadCommand m)
                 => Connection
                     -- ^ Redis connection
