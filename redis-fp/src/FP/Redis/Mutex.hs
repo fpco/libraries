@@ -117,7 +117,7 @@ withMutex conn key inner =
   where
     refreshThread mutexToken = forever $ do
         liftIO (threadDelay (refreshInterval * 1000000))
-        mask_ $ refreshMutex conn mutexTtl key mutexToken
+        refreshMutex conn mutexTtl key mutexToken
     -- This TTL should be at least as long as a cycle of retries in case the Redis server is
     -- temporarily unreachable.
     mutexTtl = Seconds 90
