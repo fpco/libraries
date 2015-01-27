@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts   #-}
 {-# LANGUAGE NoImplicitPrelude  #-}
 {-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE ConstraintKinds  #-}
 -- | Distribute a "Data.WorkQueue" queue over a network via
 -- "Data.Streaming.NetworkMessage".
 --
@@ -41,12 +42,9 @@ instance (Binary a, Binary b) => Binary (ToSlave a b)
 -- optparse-applicative at some point.
 runArgs
     :: ( MonadIO m
-       , Typeable initialData
-       , Typeable payload
-       , Typeable result
-       , Binary initialData
-       , Binary payload
-       , Binary result
+       , Sendable initialData
+       , Sendable payload
+       , Sendable result
        )
     => IO initialData -- ^ will not be run in slave mode
     -> (initialData -> payload -> IO result) -- ^ perform a single calculation
@@ -120,12 +118,9 @@ runArgs getInitialData calc inner = liftIO $ do
 -- use 'runSlave'.
 withMaster
     :: ( MonadBaseControl IO m
-       , Typeable initialData
-       , Typeable payload
-       , Typeable result
-       , Binary initialData
-       , Binary payload
-       , Binary result
+       , Sendable initialData
+       , Sendable payload
+       , Sendable result
        )
     => ((AppData -> IO ()) -> IO ()) -- ^ run the network application
     -> NMSettings
@@ -148,12 +143,9 @@ withMaster runApp nmSettings initial inner =
 -- 'withMaster').
 runSlave
     :: ( MonadIO m
-       , Typeable initialData
-       , Typeable payload
-       , Typeable result
-       , Binary initialData
-       , Binary payload
-       , Binary result
+       , Sendable initialData
+       , Sendable payload
+       , Sendable result
        )
     => ClientSettings
     -> NMSettings

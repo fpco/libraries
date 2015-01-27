@@ -5,6 +5,7 @@
 {-# LANGUAGE NoImplicitPrelude          #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE ConstraintKinds  #-}
 -- | Pass well-typed messages across a network connection, including heartbeats.
 --
 -- Built on top of "Data.Streaming.Network". This module handles all heartbeat
@@ -19,6 +20,7 @@ module Data.Streaming.NetworkMessage
     ( -- * Types
       NMApp
     , NMAppData
+    , Sendable
     , NetworkMessageException (..)
       -- * Functions
     , runNMApp
@@ -66,6 +68,10 @@ import           System.Executable.Hash      (executableHash)
 -- run it using the functions provided by "Data.Streaming.Network".
 type NMApp iSend youSend m a = NMAppData iSend youSend -> m a
 
+-- | Constraint synonym for the constraints required to send data from
+-- / to an 'NMApp'.
+type Sendable a = (B.Binary a, Typeable a)
+
 -- | Provides an 'NMApp' with a means of communicating with the other side of a
 -- connection. See other functions provided by this module.
 data NMAppData iSend youSend = NMAppData
@@ -109,12 +115,7 @@ mkHandshake _ hb eh = Handshake
     }
 
 -- | Convert an 'NMApp' into an "Data.Streaming.Network" application.
-runNMApp :: ( MonadBaseControl IO m
-            , Typeable iSend
-            , Typeable youSend
-            , B.Binary iSend
-            , B.Binary youSend
-            )
+runNMApp :: (MonadBaseControl IO m, Sendable iSend, Sendable youSend)
          => NMSettings
          -> NMApp iSend youSend m a
          -> AppData
