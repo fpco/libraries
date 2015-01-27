@@ -43,6 +43,14 @@ spec = do
         result <- timeout (5 * 1000 * 1000) $ takeMVar resultVar
         (result `shouldBe` Just 0)
             `finally` killMaster1 >> killThread tid
+    it "Long tasks complete" $ do
+        clearRedisKeys
+        killMaster <- forkMasterSlaveNoBlock "redis-long"
+        resultVar <- newEmptyMVar
+        tid <- fork $ runDispatcher resultVar
+        result <- timeout (15 * 1000 * 1000) $ takeMVar resultVar
+        (result `shouldBe` Just 0)
+            `finally` killMaster >> killThread tid
 
 runDispatcher :: MVar Int -> IO ()
 runDispatcher resultVar = do

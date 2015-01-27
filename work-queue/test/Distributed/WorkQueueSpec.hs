@@ -40,7 +40,8 @@ data Config
         , sharedConfig :: SharedConfig
         }
     | RedisConfig
-        { sharedConfig :: SharedConfig
+        { isLong :: Bool
+        , sharedConfig :: SharedConfig
         }
 
 data SharedConfig = SharedConfig
@@ -70,7 +71,7 @@ defaultXorConfig :: Int -> SharedConfig -> Config
 defaultXorConfig n c = XorConfig n 12 100 c { expectedOutput = Just (show n) }
 
 defaultRedisConfig :: SharedConfig -> Config
-defaultRedisConfig = RedisConfig
+defaultRedisConfig = RedisConfig False
 
 redisTestPrefix :: ByteString
 redisTestPrefix = "fpco:job-queue-test:"
@@ -115,6 +116,7 @@ getConfig "bench2" = defaultXorConfig 0 (benchConfig 2)
 getConfig "bench10" = defaultXorConfig 0 (benchConfig 10)
 getConfig "redis0" = defaultRedisConfig defaultSharedConfig { masterJobs = 0, whileRunning = \_ _ -> return () }
 getConfig "redis1" = defaultRedisConfig defaultSharedConfig
+getConfig "redis-long" = (defaultRedisConfig defaultSharedConfig) { isLong = True }
 
 getConfig which = error $ "No such config: " ++ unpack which
 
@@ -216,6 +218,19 @@ runMasterOrSlave XorConfig {..} = do
         inner () queue = do
             subresults <- mapQueue queue (chunksOf xorChunkSize xs)
             calc () subresults
+    runArgs' sharedConfig initialData calc inner
+runMasterOrSlave RedisConfig {..} | isLong = do
+    let initialData = return ()
+        calc :: () -> [Int] -> IO Int
+        calc () _ = do
+            threadDelay (5 * 1000 * 1000)
+            return 0
+        inner () queue = runStdoutLoggingT $
+            withRedisInfo redisTestPrefix (connectInfo "localhost") $ \redis ->
+                void $ jobQueueWorker config redis queue $ \_ -> do
+                    return (toStrict (encode (0 :: Int)))
+        -- Response data expires every hour.
+        config = WorkerConfig (Seconds 3600)
     runArgs' sharedConfig initialData calc inner
 runMasterOrSlave RedisConfig {..} = do
     firstRunRef <- newIORef True
