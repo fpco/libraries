@@ -12,7 +12,7 @@ module FP.Redis.Command.Set
     , sismember )
     where
 
-import ClassyPrelude.Conduit
+import ClassyPrelude.Conduit hiding (member)
 
 import FP.Redis.Internal
 import FP.Redis.Types.Internal

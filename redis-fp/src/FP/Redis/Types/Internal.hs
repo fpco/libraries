@@ -10,7 +10,6 @@ import ClassyPrelude.Conduit hiding (Builder)
 import Blaze.ByteString.Builder (Builder)
 import Control.Concurrent.Async (Async)
 import Control.Concurrent.BroadcastChan
-import Control.Monad.Catch (MonadCatch)
 import Control.Monad.Logger
 import Control.Retry
 import Control.Concurrent.STM.TSQueue

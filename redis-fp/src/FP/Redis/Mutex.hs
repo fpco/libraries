@@ -18,7 +18,6 @@ module FP.Redis.Mutex
 import ClassyPrelude.Conduit
 import qualified Control.Concurrent.Async as Async
 import Control.Concurrent (threadDelay)
-import Control.Exception.Lifted (mask_)
 import Control.Monad.Logger
 import Control.Monad.Trans.Control (control)
 import qualified Data.ByteString as BS

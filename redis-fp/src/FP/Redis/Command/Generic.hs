@@ -20,7 +20,7 @@ import FP.Redis.Types.Internal
 -- | Removes the specified keys.
 -- See <http://redis.io/commands/del>.
 del :: [Key] -> CommandRequest Int64
-del keys = makeCommand "DEL" (map encodeArg keys)
+del ks = makeCommand "DEL" (map encodeArg ks)
 
 -- | Set a timeout on key.
 -- See <http://redis.io/commands/expire>.
