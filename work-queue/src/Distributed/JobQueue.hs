@@ -21,7 +21,7 @@ module Distributed.JobQueue
 
 import           ClassyPrelude
 import           Control.Concurrent.Async (withAsync)
-import           Control.Concurrent.Lifted (fork, threadDelay)
+import           Control.Concurrent.Lifted (fork)
 import           Control.Concurrent.STM (check)
 import           Control.Monad.Logger (MonadLogger, logWarn, logError)
 import           Control.Monad.Trans.Control (control)
@@ -35,8 +35,7 @@ import qualified STMContainers.Map as SM
 import           System.Posix.Process (getProcessID)
 
 data WorkerConfig = WorkerConfig
-    { workerHeartbeat :: Int -- ^ Heartbeat frequency, in microseconds.
-    , workerResponseDataExpiry :: Seconds
+    { workerResponseDataExpiry :: Seconds
     }
 
 -- | This is intended for use as the body of the @inner@ function of a
@@ -51,17 +50,18 @@ jobQueueWorker
     -> m void
 jobQueueWorker config r queue toResult = do
     wid <- getWorkerId r
+    subscribed <- liftIO $ newTVarIO False
     let worker = WorkerInfo wid (workerResponseDataExpiry config)
-    _ <- fork $ forever $ do
-        sendHeartbeat r worker
-        void $ threadDelay (workerHeartbeat config)
-    forever $ do
-        (requestId, bid, mrequest) <- popRequest r worker
-        case mrequest of
-            Nothing -> $logError $ "Request " ++ tshow requestId ++ " expired."
-            Just request -> do
-                subresults <- mapQueue queue (decode (fromStrict request))
-                sendResponse r worker requestId bid =<< toResult subresults
+        heartbeats = sendHeartbeats r worker subscribed
+    control $ \restore -> withAsync (restore heartbeats) $ \_ -> restore $ do
+        atomically $ check =<< readTVar subscribed
+        forever $ do
+            (requestId, bid, mrequest) <- popRequest r worker
+            case mrequest of
+                Nothing -> $logError $ "Request " ++ tshow requestId ++ " expired."
+                Just request -> do
+                    subresults <- mapQueue queue (decode (fromStrict request))
+                    sendResponse r worker requestId bid =<< toResult subresults
 
 data ClientVars m = ClientVars
     { clientSubscribed :: TVar Bool
@@ -83,13 +83,13 @@ jobQueueClient
     -> RedisInfo
     -> m void
 jobQueueClient cvs r = do
-    let checker = periodicallyCheckHeartbeats r (clientHeartbeatCheckIvl cvs)
+    let checker = checkHeartbeats r (clientHeartbeatCheckIvl cvs)
         subscribe = subscribeToResponses r (clientInfo cvs) (clientSubscribed cvs)
     control $ \restore -> withAsync (restore checker) $ \_ ->
         restore $ subscribe $ \requestId -> do
             -- Lookup the handler before fetching / deleting the response,
             -- as the message may get delivered to multiple clients.
-            let lookupAndRemove r = return (r, Remove)
+            let lookupAndRemove handler = return (handler, Remove)
             mhandler <- atomically $
                 SM.focus lookupAndRemove requestId (clientDispatch cvs)
             case mhandler of

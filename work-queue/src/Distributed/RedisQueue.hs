@@ -41,19 +41,20 @@ module Distributed.RedisQueue
     , sendResponse
     , readResponse
     , subscribeToResponses
-    , sendHeartbeat
-    , periodicallyCheckHeartbeats
+    , sendHeartbeats
     , checkHeartbeats
     , getUnusedWorkerId
     ) where
 
 import           ClassyPrelude
+import           Control.Concurrent.Async (withAsync)
+import           Control.Concurrent.STM (check)
 import           Control.Monad.Logger (MonadLogger, logError)
+import           Control.Monad.Trans.Control (control)
 import qualified Crypto.Hash.SHA1 as SHA1
 import           Data.Binary (Binary, encode, decode)
 import qualified Data.ByteString.Char8 as BS8
 import           Data.List.NonEmpty (NonEmpty((:|)))
-import           Data.Time.Clock.POSIX (getPOSIXTime)
 import           FP.Redis
 import           FP.Redis.Mutex
 
@@ -177,28 +178,35 @@ subscribeToResponses r (ClientInfo bid _) subscribed f = do
         trackSubscriptionStatus subscribed $ \_ k ->
             f (RequestId k)
 
-sendHeartbeat
-    :: MonadCommand m => RedisInfo -> WorkerInfo -> m ()
-sendHeartbeat r (WorkerInfo wid _) = do
-    now <- liftIO getPOSIXTime
-    run_ r $ zadd (heartbeatKey r) [(realToFrac now, unWorkerId wid)]
-
-periodicallyCheckHeartbeats
-    :: MonadConnect m => RedisInfo -> Seconds -> m void
-periodicallyCheckHeartbeats r ivl =
-    periodicActionWrapped (redisConnection r) (heartbeatTimeKey r) ivl $
-        checkHeartbeats r ivl
+sendHeartbeats
+    :: MonadConnect m => RedisInfo -> WorkerInfo -> TVar Bool -> m void
+sendHeartbeats r (WorkerInfo wid _) subscribed = do
+    -- Add to the active list first, so that if a heartbeat check is
+    -- done between these two commands, it won't think this worker is
+    -- inactive.
+    let addWorker = do
+            atomically $ check =<< readTVar subscribed
+            run_ r $ sadd (workersKey r) [unWorkerId wid]
+        sub = subscribe [heartbeatChannel r]
+    control $ \restore -> withAsync (restore addWorker) $ \_ -> restore $
+        withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $
+            trackSubscriptionStatus subscribed $ \_ _ -> remInactive
+  where
+    remInactive = run_ r $ srem (inactiveKey r) [unWorkerId wid]
 
 checkHeartbeats
-    :: MonadCommand m => RedisInfo -> Seconds -> m ()
-checkHeartbeats r (Seconds ivl) = do
-    now <- liftIO getPOSIXTime
-    let threshold = realToFrac now - fromIntegral ivl
-    expired <- run r $ zrangebyscore (heartbeatKey r) 0 threshold False
-    -- Need this check because zrem can fail otherwise.
-    unless (null expired) $ do
-        mapM_ (handleWorkerFailure r . WorkerId) expired
-        run_ r $ zrem (heartbeatKey r) expired
+    :: MonadConnect m => RedisInfo -> Seconds -> m void
+checkHeartbeats r ivl =
+    periodicActionWrapped (redisConnection r) (heartbeatTimeKey r) ivl $ do
+        inactive <- run r $ smembers (inactiveKey r)
+        run_ r $ del [inactiveKey r]
+        workers <- run r $ smembers (workersKey r)
+        run_ r $ sadd (inactiveKey r) workers
+        run_ r $ publish (heartbeatChannel r) ""
+        -- Handle worker failure after setting up the next heartbeat,
+        -- so that the workers get more time to reespond to the
+        -- heartbeat.
+        forM_ inactive (handleWorkerFailure r . WorkerId)
 
 -- NOTE: this should only be run when it's known for certain that
 -- the worker is down and no longer manipulating the in-progress list,
@@ -209,7 +217,7 @@ handleWorkerFailure r wid = do
     xs <- run r $ lrange (inProgressKey r wid) 0 (-1)
     unless (null xs) $ do
         run_ r $ rpush' (requestsKey r) xs
-        delExisting r (inProgressKey r wid)
+        run_ r $ del [inProgressKey r wid]
 
 getUnusedWorkerId
     :: MonadCommand m => RedisInfo -> ByteString -> m WorkerId
@@ -218,19 +226,15 @@ getUnusedWorkerId r initial = go (0 :: Int)
     go n = do
         let k | n == 0 = initial
               | otherwise = initial <> "-" <> BS8.pack (show n)
-        exists <- liftM isJust $ run r $ zscore (heartbeatKey r) k
+        exists <- run r $ sismember (workersKey r) k
         if exists
             then go (n+1)
             else return (WorkerId k)
 
 -- * Functions to compute Redis keys
 
-requestsKey, heartbeatKey :: RedisInfo -> Key
+requestsKey :: RedisInfo -> Key
 requestsKey  r = Key $ redisKeyPrefix r <> "requests"
-heartbeatKey r = Key $ redisKeyPrefix r <> "heartbeat"
-
-heartbeatTimeKey :: RedisInfo -> ByteString
-heartbeatTimeKey r = redisKeyPrefix r <> "heartbeat:time"
 
 requestDataKey, responseDataKey :: RedisInfo -> RequestId -> Key
 requestDataKey  r k = Key $ redisKeyPrefix r <> "request:" <> unRequestId k
@@ -241,6 +245,16 @@ responseChannel r k = Channel $ redisKeyPrefix r <> "responses:" <> unBackchanne
 
 inProgressKey :: RedisInfo -> WorkerId -> Key
 inProgressKey r k = Key $ redisKeyPrefix r <> "in-progress:" <> unWorkerId k
+
+inactiveKey, workersKey :: RedisInfo -> Key
+inactiveKey r = Key $ redisKeyPrefix r <> "heartbeat:inactive"
+workersKey r = Key $ redisKeyPrefix r <> "heartbeat:workers"
+
+heartbeatChannel :: RedisInfo -> Channel
+heartbeatChannel r = Channel $ redisKeyPrefix r <> "heartbeat:channel"
+
+heartbeatTimeKey :: RedisInfo -> ByteString
+heartbeatTimeKey r = redisKeyPrefix r <> "heartbeat:time"
 
 -- * Redis utilities
 
@@ -256,11 +270,6 @@ getExisting r k = do
     case mresult of
         Nothing -> liftIO $ throwIO (KeyMissing k)
         Just result -> return result
-
-delExisting :: MonadCommand m => RedisInfo -> Key -> m ()
-delExisting r k = do
-    removed <- run r $ del [k]
-    when (removed == 0) $ liftIO $ throwIO (KeyMissing k)
 
 rpush' :: Key -> [ByteString] -> CommandRequest Int64
 rpush' key vals = makeCommand "RPUSH" (encodeArg key : map encodeArg vals)

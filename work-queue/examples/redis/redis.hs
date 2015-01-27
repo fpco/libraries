@@ -55,7 +55,7 @@ masterOrSlave = runArgs initialData calc inner
                 return (toStrict (encode result))
     -- Send heartbeat every 10 seconds, and response data expires
     -- every hour.
-    config = WorkerConfig (10 * 1000 * 1000) (Seconds 3600)
+    config = WorkerConfig (Seconds 3600)
 
 localhost :: ConnectInfo
 localhost = connectInfo "localhost"

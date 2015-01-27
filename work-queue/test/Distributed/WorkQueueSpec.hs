@@ -233,9 +233,8 @@ runMasterOrSlave RedisConfig {..} = do
                 void $ jobQueueWorker config redis queue $ \subresults -> do
                     result <- liftIO $ calc () (otoList subresults)
                     return (toStrict (encode result))
-        -- Send heartbeat every second, and response data expires
-        -- every hour.
-        config = WorkerConfig (1000 * 1000) (Seconds 3600)
+        -- Response data expires every hour.
+        config = WorkerConfig (Seconds 3600)
     runArgs' sharedConfig initialData calc inner
 
 runArgs'
