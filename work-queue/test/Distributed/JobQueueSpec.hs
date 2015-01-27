@@ -28,7 +28,6 @@ spec = do
         result <- timeout (5 * 1000 * 1000) $ takeMVar resultVar
         (result `shouldBe` Just 0)
             `finally` killMaster >> killThread tid
-        killMaster
     it "Doesn't lose data when master fails" $ do
         clearRedisKeys
         killMaster0 <- forkMasterSlaveNoBlock "redis0"
