@@ -9,6 +9,7 @@ module FP.Redis.Command.String
     ( set
     , setEx
     , get
+    , getset
     , incr )
     where
 
@@ -43,6 +44,11 @@ setEx key ttl_ val =
 -- See <http://redis.io/commands/get>.
 get :: Key -> CommandRequest (Maybe ByteString)
 get key = makeCommand "GET" [encodeArg key]
+
+-- | Atomically sets key to value and returns the old value stored at key.
+-- See <http://redis.io/commands/getset>.
+getset :: Key -> ByteString -> CommandRequest (Maybe ByteString)
+getset key value = makeCommand "GETSET" [encodeArg key, encodeArg value]
 
 -- | Increments the number stored at key by one.
 -- See <http://redis.io/commands/incr>.
