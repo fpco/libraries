@@ -22,6 +22,9 @@
 -- completed, even in the presence of server failure.  A failure in
 -- Redis persistence can invalidate this guarantee.
 --
+--     - This guarantee requires that workers run a 'sendHeartbeats'
+--     thread, and clients run a 'checkHeartbeats' thread.
+--
 --     - SIDENOTE: We may need a high reliability redis configuration
 --     for this guarantee as well. The redis wikipedia article
 --     mentions that the default config can lose changes received
@@ -47,10 +50,7 @@ module Distributed.RedisQueue
     ) where
 
 import           ClassyPrelude
-import           Control.Concurrent.Async (withAsync)
-import           Control.Concurrent.STM (check)
 import           Control.Monad.Logger (MonadLogger, logError)
-import           Control.Monad.Trans.Control (control)
 import qualified Crypto.Hash.SHA1 as SHA1
 import           Data.Binary (Binary, encode, decode)
 import qualified Data.ByteString.Char8 as BS8
@@ -180,17 +180,16 @@ subscribeToResponses r (ClientInfo bid _) subscribed f = do
 
 sendHeartbeats
     :: MonadConnect m => RedisInfo -> WorkerInfo -> TVar Bool -> m void
-sendHeartbeats r (WorkerInfo wid _) subscribed = do
-    -- Add to the active list first, so that if a heartbeat check is
-    -- done between these two commands, it won't think this worker is
-    -- inactive.
-    let addWorker = do
-            atomically $ check =<< readTVar subscribed
-            run_ r $ sadd (workersKey r) [unWorkerId wid]
-        sub = subscribe [heartbeatChannel r]
-    control $ \restore -> withAsync (restore addWorker) $ \_ -> restore $
-        withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $
-            trackSubscriptionStatus subscribed $ \_ _ -> remInactive
+sendHeartbeats r (WorkerInfo wid _) ready = do
+    let sub = subscribe [heartbeatChannel r]
+    withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $ \msg ->
+        case msg of
+            Subscribe {} -> do
+                run_ r $ sadd (workersKey r) [unWorkerId wid]
+                atomically $ writeTVar ready True
+            Unsubscribe {} -> do
+                atomically $ writeTVar ready False
+            Message {} -> remInactive
   where
     remInactive = run_ r $ srem (inactiveKey r) [unWorkerId wid]
 
@@ -198,15 +197,34 @@ checkHeartbeats
     :: MonadConnect m => RedisInfo -> Seconds -> m void
 checkHeartbeats r ivl =
     periodicActionWrapped (redisConnection r) (heartbeatTimeKey r) ivl $ do
-        inactive <- run r $ smembers (inactiveKey r)
-        run_ r $ del [inactiveKey r]
-        workers <- run r $ smembers (workersKey r)
-        run_ r $ sadd (inactiveKey r) workers
-        run_ r $ publish (heartbeatChannel r) ""
-        -- Handle worker failure after setting up the next heartbeat,
-        -- so that the workers get more time to reespond to the
+        -- Check if the last iteration of this heartbeat check ran
+        -- successfully.  If it did, then we can use the contents of
+        -- the inactive list.  The flag also gets set to False here,
+        -- such that if a failure happens in the middle, the next run
+        -- will know to not use the data.
+        functioning <- fmap (fmap (decode . fromStrict)) $
+            run r $ getset (heartbeatFunctioningKey r) (toStrict (encode False))
+        inactive <- if functioning == Just True
+            then do
+                -- Fetch the list of inactive workers and move their jobs
+                -- back to the requests queue.
+                inactive <- run r $ smembers (inactiveKey r)
+                mapM_ (handleWorkerFailure r . WorkerId) inactive
+                return inactive
+            else return []
+        -- Remove the inactive workers from the list of workers.
+        when (not (null inactive)) $
+            run_ r $ srem (workersKey r) inactive
+        -- Populate the list of inactive workers for the next
         -- heartbeat.
-        forM_ inactive (handleWorkerFailure r . WorkerId)
+        workers <- run r $ smembers (workersKey r)
+        run_ r $ del [inactiveKey r]
+        run_ r $ sadd (inactiveKey r) workers
+        -- Ask all of the workers to remove their IDs from the inactive
+        -- list.
+        run_ r $ publish (heartbeatChannel r) ""
+        -- Record that the heartbeat check was successful.
+        run_ r $ set (heartbeatFunctioningKey r) (toStrict (encode True)) []
 
 -- NOTE: this should only be run when it's known for certain that
 -- the worker is down and no longer manipulating the in-progress list,
@@ -246,9 +264,10 @@ responseChannel r k = Channel $ redisKeyPrefix r <> "responses:" <> unBackchanne
 inProgressKey :: RedisInfo -> WorkerId -> Key
 inProgressKey r k = Key $ redisKeyPrefix r <> "in-progress:" <> unWorkerId k
 
-inactiveKey, workersKey :: RedisInfo -> Key
+inactiveKey, workersKey, heartbeatFunctioningKey :: RedisInfo -> Key
 inactiveKey r = Key $ redisKeyPrefix r <> "heartbeat:inactive"
 workersKey r = Key $ redisKeyPrefix r <> "heartbeat:workers"
+heartbeatFunctioningKey r = Key $ redisKeyPrefix r <> "heartbeat:functioning"
 
 heartbeatChannel :: RedisInfo -> Channel
 heartbeatChannel r = Channel $ redisKeyPrefix r <> "heartbeat:channel"
