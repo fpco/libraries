@@ -29,7 +29,7 @@ import           Data.Binary (Binary, decode, encode)
 import           Data.WorkQueue
 import           Distributed.RedisQueue
 import           FP.Redis.Types (MonadConnect, MonadCommand, Seconds(..))
-import           Focus (Decision(Remove))
+import           Focus (Decision(Remove, Replace))
 import           Network.HostName (getHostName)
 import qualified STMContainers.Map as SM
 import           System.Posix.Process (getProcessID)
@@ -134,11 +134,14 @@ jobQueueRequest' cvs r request handler = do
     atomically $ check =<< readTVar (clientSubscribed cvs)
     (k, mresponse) <- pushRequest r (clientInfo cvs) (toStrict (encode request))
     case mresponse of
-        Nothing ->
-            atomically $ SM.insert handler k (clientDispatch cvs)
-        Just response ->
-            void $ fork $ catchAny (handler response) $ \ex ->
-                $logError $ "jobQueueRequest' callbackHandler: " ++ tshow ex
+        Nothing -> atomically $ SM.focus addOrExtend k (clientDispatch cvs)
+        Just response -> void $ fork $ runHandler response
+  where
+    addOrExtend Nothing = return ((), Replace runHandler)
+    addOrExtend (Just old) = return ((), Replace (\x -> old x >> runHandler x))
+    runHandler response =
+        catchAny (handler response) $ \ex ->
+            $logError $ "jobQueueRequest' callbackHandler: " ++ tshow ex
 
 getBackchannelId :: IO BackchannelId
 getBackchannelId = BackchannelId <$> getHostAndProcessId
