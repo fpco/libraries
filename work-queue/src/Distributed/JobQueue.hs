@@ -66,11 +66,11 @@ jobQueueWorker
     -> m void
 jobQueueWorker config r queue toResult = do
     wid <- getWorkerId r
-    subscribed <- liftIO $ newTVarIO False
+    ready <- liftIO $ newTVarIO False
     let worker = WorkerInfo wid (workerResponseDataExpiry config)
-        heartbeats = sendHeartbeats r worker subscribed
+        heartbeats = sendHeartbeats r worker ready
     control $ \restore -> withAsync (restore heartbeats) $ \_ -> restore $ do
-        atomically $ check =<< readTVar subscribed
+        atomically $ check =<< readTVar ready
         forever $ do
             (requestId, bid, mrequest) <- popRequest r worker
             case mrequest of

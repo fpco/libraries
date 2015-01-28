@@ -212,6 +212,14 @@ subscribeToResponses r (ClientInfo bid _) subscribed f = do
         trackSubscriptionStatus subscribed $ \_ k ->
             f (RequestId k)
 
+-- | This listens for a notification telling the worker to send a
+-- heartbeat.  In this case, that means the worker needs to remove its
+-- key from a Redis set.  If this doesn't happen in a timely fashion,
+-- then the worker will be considered to be dead, and its work items
+-- get re-enqueued.
+--
+-- The @TVar Bool@ is changed to 'True' once the subscription is made
+-- and the 'WorkerId' has been added to the list of active workers.
 sendHeartbeats
     :: MonadConnect m => RedisInfo -> WorkerInfo -> TVar Bool -> m void
 sendHeartbeats r (WorkerInfo wid _) ready = do
@@ -219,7 +227,7 @@ sendHeartbeats r (WorkerInfo wid _) ready = do
     withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $ \msg ->
         case msg of
             Subscribe {} -> do
-                run_ r $ sadd (workersKey r) [unWorkerId wid]
+                run_ r $ sadd (activeKey r) [unWorkerId wid]
                 atomically $ writeTVar ready True
             Unsubscribe {} -> do
                 atomically $ writeTVar ready False
@@ -252,10 +260,10 @@ checkHeartbeats r ivl =
             else return []
         -- Remove the inactive workers from the list of workers.
         when (not (null inactive)) $
-            run_ r $ srem (workersKey r) inactive
+            run_ r $ srem (activeKey r) inactive
         -- Populate the list of inactive workers for the next
         -- heartbeat.
-        workers <- run r $ smembers (workersKey r)
+        workers <- run r $ smembers (activeKey r)
         run_ r $ del [inactiveKey r]
         run_ r $ sadd (inactiveKey r) workers
         -- Ask all of the workers to remove their IDs from the inactive
@@ -275,6 +283,9 @@ handleWorkerFailure r wid = do
         run_ r $ rpush' (requestsKey r) xs
         run_ r $ del [inProgressKey r wid]
 
+-- | Given a name to start with, this finds a 'WorkerId' which has
+-- never been used before.  It also adds the new 'WorkerId' to the set
+-- of all worker IDs.
 getUnusedWorkerId
     :: MonadCommand m => RedisInfo -> ByteString -> m WorkerId
 getUnusedWorkerId r initial = go (0 :: Int)
@@ -282,8 +293,8 @@ getUnusedWorkerId r initial = go (0 :: Int)
     go n = do
         let k | n == 0 = initial
               | otherwise = initial <> "-" <> BS8.pack (show n)
-        exists <- run r $ sismember (workersKey r) k
-        if exists
+        numberAdded <- run r $ sadd (workersKey r) [k]
+        if numberAdded == 0
             then go (n+1)
             else return (WorkerId k)
 
@@ -307,11 +318,13 @@ responseChannel r k = Channel $ redisKeyPrefix r <> "responses:" <> unBackchanne
 inProgressKey :: RedisInfo -> WorkerId -> Key
 inProgressKey r k = Key $ redisKeyPrefix r <> "in-progress:" <> unWorkerId k
 
-inactiveKey, workersKey, heartbeatFunctioningKey :: RedisInfo -> Key
+inactiveKey, activeKey, workersKey, heartbeatFunctioningKey :: RedisInfo -> Key
 -- A set of 'WorkerId' who have not yet removed their keys (indicating
 -- that they're still alive and responding to heartbeats).
 inactiveKey r = Key $ redisKeyPrefix r <> "heartbeat:inactive"
 -- A set of 'WorkerId's that are currently thought to be running.
+activeKey r = Key $ redisKeyPrefix r <> "heartbeat:active"
+-- A set of all 'WorkerId's that have ever been known.
 workersKey r = Key $ redisKeyPrefix r <> "heartbeat:workers"
 -- Stores a "Data.Binary" encoded 'Bool'.
 heartbeatFunctioningKey r = Key $ redisKeyPrefix r <> "heartbeat:functioning"
