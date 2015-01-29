@@ -59,6 +59,7 @@ module Distributed.RedisQueue
     ) where
 
 import           ClassyPrelude
+import           Control.Concurrent (threadDelay)
 import           Control.Monad.Logger (MonadLogger, logError)
 import qualified Crypto.Hash.SHA1 as SHA1
 import           Data.Binary (Binary, encode, decode)
@@ -268,6 +269,8 @@ checkHeartbeats r ivl =
         run_ r $ sadd (inactiveKey r) workers
         -- Ask all of the workers to remove their IDs from the inactive
         -- list.
+        -- TODO: Remove this threadDelay (see #26)
+        liftIO $ threadDelay (100 * 1000)
         run_ r $ publish (heartbeatChannel r) ""
         -- Record that the heartbeat check was successful.
         run_ r $ set (heartbeatFunctioningKey r) (toStrict (encode True)) []
