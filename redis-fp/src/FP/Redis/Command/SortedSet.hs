@@ -14,22 +14,23 @@ module FP.Redis.Command.SortedSet
     where
 
 import ClassyPrelude.Conduit hiding (member)
+import Data.List.NonEmpty (NonEmpty)
 
 import FP.Redis.Internal
 import FP.Redis.Types.Internal
 
 -- | Adds all the specified members with the specified scores to the sorted set stored at key.
 -- See <http://redis.io/commands/zadd>.
-zadd :: ZKey -> [(Double, ByteString)] -> CommandRequest Int64
+zadd :: ZKey -> NonEmpty (Double, ByteString) -> CommandRequest Int64
 zadd key scoreMembers =
-    makeCommand "ZADD" (encodeArg key : concatMap encodeScoreMember scoreMembers)
+    makeCommand "ZADD" (encodeArg key : concatMap encodeScoreMember (toList scoreMembers))
   where
     encodeScoreMember (score,memb) = [encodeArg score,encodeArg memb]
 
 -- | Removes the specified members from the sorted set stored at key.
 -- See <http://redis.io/commands/zrem>.
-zrem :: ZKey -> [ByteString] -> CommandRequest Int64
-zrem key members = makeCommand "ZREM" (encodeArg key : map encodeArg members)
+zrem :: ZKey -> NonEmpty ByteString -> CommandRequest Int64
+zrem key members = makeCommand "ZREM" (encodeArg key : map encodeArg (toList members))
 
 -- | Returns the specified range of elements in the sorted set stored at key.
 -- See <http://redis.io/commands/zrange>.

@@ -13,14 +13,15 @@ module FP.Redis.Command.Generic
     where
 
 import ClassyPrelude.Conduit
+import Data.List.NonEmpty (NonEmpty)
 
 import FP.Redis.Internal
 import FP.Redis.Types.Internal
 
 -- | Removes the specified keys.
 -- See <http://redis.io/commands/del>.
-del :: [Key] -> CommandRequest Int64
-del ks = makeCommand "DEL" (map encodeArg ks)
+del :: NonEmpty Key -> CommandRequest Int64
+del ks = makeCommand "DEL" (map encodeArg (toList ks))
 
 -- | Set a timeout on key.
 -- See <http://redis.io/commands/expire>.

@@ -13,6 +13,7 @@ module FP.Redis.Command.Set
     where
 
 import ClassyPrelude.Conduit hiding (member)
+import Data.List.NonEmpty (NonEmpty)
 
 import FP.Redis.Internal
 import FP.Redis.Types.Internal
@@ -25,15 +26,15 @@ smembers key =
 
 -- | Add the specified members to the set stored at key.
 -- See <http://redis.io/commands/sadd>.
-sadd :: SKey -> [ByteString] -> CommandRequest Int64
+sadd :: SKey -> NonEmpty ByteString -> CommandRequest Int64
 sadd key members =
-    makeCommand "SADD" (encodeArg key : map encodeArg members)
+    makeCommand "SADD" (encodeArg key : map encodeArg (toList members))
 
 -- | Remove the specified members from the set stored at key.
 -- See <http://redis.io/commands/srem>.
-srem :: SKey -> [ByteString] -> CommandRequest Int64
+srem :: SKey -> NonEmpty ByteString -> CommandRequest Int64
 srem key members =
-    makeCommand "SREM" (encodeArg key : map encodeArg members)
+    makeCommand "SREM" (encodeArg key : map encodeArg (toList members))
 
 -- | Returns if member is a member of the set stored at key.
 -- See <http://redis.io/commands/sismember>.

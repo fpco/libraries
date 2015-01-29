@@ -14,6 +14,7 @@ module FP.Redis.Command.Hash
     where
 
 import ClassyPrelude.Conduit
+import Data.List.NonEmpty (NonEmpty)
 
 import FP.Redis.Internal
 import FP.Redis.Types.Internal
@@ -26,9 +27,9 @@ hget key field =
 
 -- | Returns the values associated with the specified fields in the hash stored at key.
 -- See <http://redis.io/commands/hmget>.
-hmget :: HKey -> [HashField] -> CommandRequest [Maybe ByteString]
+hmget :: HKey -> NonEmpty HashField -> CommandRequest [Maybe ByteString]
 hmget key fields =
-    makeCommand "HMGET" (encodeArg key : map encodeArg fields)
+    makeCommand "HMGET" (encodeArg key : map encodeArg (toList fields))
 
 -- | Sets field in the hash stored at key to value.
 -- See <http://redis.io/commands/hset>.
@@ -38,7 +39,7 @@ hset key field value =
 
 -- | Sets the specified fields to their respective values in the hash stored at key.
 -- See <http://redis.io/commands/hmset>.
-hmset :: HKey -> [(HashField,ByteString)] -> CommandRequest ()
+hmset :: HKey -> NonEmpty (HashField,ByteString) -> CommandRequest ()
 hmset key fieldValuePairs =
     makeCommand "HMSET" (encodeArg key : concatMap encodeFieldValue fieldValuePairs)
   where
@@ -46,6 +47,6 @@ hmset key fieldValuePairs =
 
 -- | Removes the specified fields from the hash stored at key.
 -- See <http://redis.io/commands/hdel>.
-hdel :: HKey -> [HashField] -> CommandRequest Int64
+hdel :: HKey -> NonEmpty HashField -> CommandRequest Int64
 hdel key fields =
-    makeCommand "HDEL" (encodeArg key : map encodeArg fields)
+    makeCommand "HDEL" (encodeArg key : map encodeArg (toList fields))

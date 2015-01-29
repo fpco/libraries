@@ -136,31 +136,29 @@ sendSubscription (SubscriptionConnection conn _) (SubscriptionRequest request) =
     sendRequest conn request
 
 -- | Subscribes the client to the specified channels.
---
--- TODO: use MinLen or NonEmpty to ensure at least one subscription?
-subscribe :: [Channel] -- ^ Channels
+subscribe :: NonEmpty Channel -- ^ Channels
           -> SubscriptionRequest
-subscribe channels = makeSubscription "SUBSCRIBE" (map encodeArg channels)
+subscribe channels = makeSubscription "SUBSCRIBE" (fmap encodeArg channels)
 
 -- | Subscribes the client to the given patterns.
-psubscribe :: [ByteString] -- ^ Patterns
+psubscribe :: NonEmpty ByteString -- ^ Patterns
            -> SubscriptionRequest
-psubscribe channelPatterns = makeSubscription "PSUBSCRIBE" (map encodeArg channelPatterns)
+psubscribe channelPatterns = makeSubscription "PSUBSCRIBE" (fmap encodeArg channelPatterns)
 
 -- | Unsubscribes the client from the given channels, or from all of them if none is given.
-unsubscribe :: [Channel] -- ^ Channels
+unsubscribe :: NonEmpty Channel -- ^ Channels
             -> SubscriptionRequest
-unsubscribe channels = makeSubscription "UNSUBSCRIBE" (map encodeArg channels)
+unsubscribe channels = makeSubscription "UNSUBSCRIBE" (fmap encodeArg channels)
 
 -- | Unsubscribes the client from the given patterns, or from all of them if none is given.
-punsubscribe :: [ByteString] -- Patterns
+punsubscribe :: NonEmpty ByteString -- Patterns
              -> SubscriptionRequest
-punsubscribe channelPatterns = makeSubscription "PUNSUBSCRIBE" (map encodeArg channelPatterns)
+punsubscribe channelPatterns = makeSubscription "PUNSUBSCRIBE" (fmap encodeArg channelPatterns)
 
 -- | Make a subscription request
-makeSubscription :: ByteString -> [ByteString] -> SubscriptionRequest
+makeSubscription :: ByteString -> NonEmpty ByteString -> SubscriptionRequest
 makeSubscription cmd args =
-    SubscriptionRequest (Subscription (renderRequest (encodeArg cmd:args)))
+    SubscriptionRequest (Subscription (renderRequest (encodeArg cmd:(toList args))))
 
 -- | Utility intended to aid implementing the (Message -> m ())
 --   callback.  When subscription is ready, the 'TVar' is set to

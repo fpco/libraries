@@ -9,6 +9,7 @@ import Control.Concurrent.Lifted (threadDelay, fork, killThread)
 import Control.Monad.Logger (runStdoutLoggingT)
 import Control.Monad.Trans.Control (control)
 import Data.Binary (decode)
+import Data.List.NonEmpty (nonEmpty)
 import Data.List.Split (chunksOf)
 import Distributed.JobQueue
 import Distributed.RedisQueue
@@ -69,4 +70,4 @@ clearRedisKeys :: IO ()
 clearRedisKeys =
     runStdoutLoggingT $ withConnection (connectInfo "localhost") $ \redis -> do
         matches <- runCommand redis $ keys (redisTestPrefix <> "*")
-        runCommand_ redis $ del matches
+        mapM_ (runCommand_ redis . del) (nonEmpty matches)

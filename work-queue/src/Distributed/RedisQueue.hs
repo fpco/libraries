@@ -64,7 +64,7 @@ import           Control.Monad.Logger (MonadLogger, logError)
 import qualified Crypto.Hash.SHA1 as SHA1
 import           Data.Binary (Binary, encode, decode)
 import qualified Data.ByteString.Char8 as BS8
-import           Data.List.NonEmpty (NonEmpty((:|)))
+import           Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
 import           FP.Redis
 import           FP.Redis.Mutex
 
@@ -142,7 +142,7 @@ pushRequest r (ClientInfo bid expiry) request = do
             -- Store the request data as a normal redis value.
             run_ r $ set (requestDataKey r k) request [EX expiry]
             -- Enqueue its ID on the requests list.
-            run_ r $ lpush (requestsKey r) (toStrict (encode (k, bid)))
+            run_ r $ lpush (requestsKey r) (toStrict (encode (k, bid)) :| [])
             return (k, Nothing)
 
 -- | This function is used by the compute workers to take work off of
@@ -207,7 +207,7 @@ sendResponse r (WorkerInfo wid expiry) k bid x = do
     -- check if the removal succeeds, as this may not be the first
     -- time a response is sent for the request.  See the error message
     -- above.
-    run_ r $ del [unVKey (requestDataKey r k)]
+    run_ r $ del (unVKey (requestDataKey r k) :| [])
 
 -- | Retrieves the response for the specified 'RequestId'.  This
 -- function is usually called in the body of a 'subscribeToResponses'
@@ -228,7 +228,7 @@ subscribeToResponses
     :: MonadConnect m
     => RedisInfo -> ClientInfo -> TVar Bool -> (RequestId -> m ()) -> m void
 subscribeToResponses r (ClientInfo bid _) subscribed f = do
-    let sub = subscribe [responseChannel r bid]
+    let sub = subscribe (responseChannel r bid :| [])
     withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $
         trackSubscriptionStatus subscribed $ \_ k ->
             f (RequestId k)
@@ -244,18 +244,18 @@ subscribeToResponses r (ClientInfo bid _) subscribed f = do
 sendHeartbeats
     :: MonadConnect m => RedisInfo -> WorkerInfo -> TVar Bool -> m void
 sendHeartbeats r (WorkerInfo wid _) ready = do
-    let sub = subscribe [heartbeatChannel r]
+    let sub = subscribe (heartbeatChannel r :| [])
     withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $ \msg ->
         case msg of
             Subscribe {} -> do
-                run_ r $ sadd (activeKey r) [unWorkerId wid]
+                run_ r $ sadd (activeKey r) (unWorkerId wid :| [])
                 atomically $ writeTVar ready True
             Unsubscribe {} ->
                 atomically $ writeTVar ready False
             Message {} ->
                 remInactive
   where
-    remInactive = run_ r $ srem (inactiveKey r) [unWorkerId wid]
+    remInactive = run_ r $ srem (inactiveKey r) (unWorkerId wid :| [])
 
 -- | Periodically check worker heartbeats.  This uses
 -- 'periodicActionWrapped' to share the responsibility of checking the
@@ -281,14 +281,12 @@ checkHeartbeats r ivl =
                 return inactive
             else return []
         -- Remove the inactive workers from the list of workers.
-        when (not (null inactive)) $
-            run_ r $ srem (activeKey r) inactive
+        mapM_ (run_ r . srem (activeKey r)) (nonEmpty inactive)
         -- Populate the list of inactive workers for the next
         -- heartbeat.
         workers <- run r $ smembers (activeKey r)
-        run_ r $ del [unSKey (inactiveKey r)]
-        when (not (null workers)) $
-            run_ r $ sadd (inactiveKey r) workers
+        run_ r $ del (unSKey (inactiveKey r) :| [])
+        mapM_ (run_ r . sadd (inactiveKey r)) (nonEmpty workers)
         -- Ask all of the workers to remove their IDs from the inactive
         -- list.
         -- TODO: Remove this threadDelay (see #26)
@@ -341,7 +339,7 @@ getUnusedWorkerId r initial = go (0 :: Int)
     go n = do
         let k | n == 0 = initial
               | otherwise = initial <> "-" <> BS8.pack (show n)
-        numberAdded <- run r $ sadd (workersKey r) [k]
+        numberAdded <- run r $ sadd (workersKey r) (k :| [])
         if numberAdded == 0
             then go (n+1)
             else return (WorkerId k)

@@ -16,31 +16,32 @@ module FP.Redis.Command.List
     where
 
 import ClassyPrelude.Conduit
+import Data.List.NonEmpty (NonEmpty)
 
 import FP.Redis.Internal
 import FP.Redis.Types.Internal
 
 -- | Insert all the specified values at the head of the list stored at key.
 -- See <http://redis.io/commands/lpush>.
-lpush :: LKey -> ByteString -> CommandRequest Int64
-lpush key val = makeCommand "LPUSH" [encodeArg key,encodeArg val]
+lpush :: LKey -> NonEmpty ByteString -> CommandRequest Int64
+lpush key vals = makeCommand "LPUSH" (encodeArg key : map encodeArg (toList vals))
 
 -- | Insert all the specified values at the tail of the list stored at key.
 -- See <http://redis.io/commands/rpush>
-rpush :: LKey -> ByteString -> CommandRequest Int64
-rpush key val = makeCommand "RPUSH" [encodeArg key,encodeArg val]
+rpush :: LKey -> NonEmpty ByteString -> CommandRequest Int64
+rpush key vals = makeCommand "RPUSH" (encodeArg key : map encodeArg (toList vals))
 
 -- | BRPOP is a blocking list pop primitive.
 -- See <http://redis.io/commands/brpop>.
-brpop :: [LKey] -> Seconds -> CommandRequest (Maybe (Key,ByteString))
+brpop :: NonEmpty LKey -> Seconds -> CommandRequest (Maybe (Key,ByteString))
 brpop keys timeout =
-    makeCommand "BRPOP" (map encodeArg keys ++ [encodeArg timeout])
+    makeCommand "BRPOP" (map encodeArg (toList keys) ++ [encodeArg timeout])
 
 -- | BLPOP is a blocking list pop primitive.
 -- See <http://redis.io/commands/blpop>.
-blpop :: [LKey] -> Seconds -> CommandRequest (Maybe (Key,ByteString))
+blpop :: NonEmpty LKey -> Seconds -> CommandRequest (Maybe (Key,ByteString))
 blpop keys timeout =
-    makeCommand "BLPOP" (map encodeArg keys ++ [encodeArg timeout])
+    makeCommand "BLPOP" (map encodeArg (toList keys) ++ [encodeArg timeout])
 
 -- | BRPOPLPUSH is the blocking variant of RPOPLPUSH.
 -- See <http://redis.io/commands/brpoplpush>.
