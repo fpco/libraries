@@ -9,7 +9,7 @@ module FP.Redis.Command.Generic
     ( del
     , expire
     , ttl
-    , keys )
+    , FP.Redis.Command.Generic.keys )
     where
 
 import ClassyPrelude.Conduit
