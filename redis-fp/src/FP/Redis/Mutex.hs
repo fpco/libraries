@@ -1,6 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude, OverloadedStrings, ScopedTypeVariables, TypeFamilies,
              DeriveDataTypeable, FlexibleContexts, FlexibleInstances, RankNTypes, GADTs,
-             ConstraintKinds, NamedFieldPuns #-}
+             ConstraintKinds, NamedFieldPuns, ViewPatterns #-}
 
 -- | Mutexes built on Redis operations
 
@@ -34,7 +34,7 @@ import FP.Redis.Mutex.Types
 periodicActionWrapped :: (MonadConnect m)
                       => Connection
                          -- ^ Redis connection
-                      -> ByteString
+                      -> PeriodicPrefix
                          -- ^ Key prefix for keys used to coordinate clients
                       -> Seconds
                          -- ^ Period (how often to run the action), in seconds
@@ -58,17 +58,18 @@ periodicActionWrapped conn keyPrefix period@(Seconds seconds) inner =
 periodicActionEx :: (MonadConnect m)
                  => Connection
                     -- ^ Redis connection
-                 -> ByteString
+                 -> PeriodicPrefix
                     -- ^ Key prefix for keys used to coordinate clients
                  -> Seconds
                     -- ^ Period (how often to run the action), in seconds
                  -> m ()
                     -- ^ I/O action to to perform.
                  -> m void
-periodicActionEx conn keyPrefix (Seconds period) inner = forever $ do
-    sleepSeconds <- withMutex conn (Key (keyPrefix ++ ".mutex")) $ do
-        maybeLastStartedAt <- runCommand conn
-            (get (Key (keyPrefix ++ ".last-started-at")))
+periodicActionEx conn (PeriodicPrefix pre) (Seconds period) inner = forever $ do
+    let mutexKey = MutexKey $ Key $ pre ++ ".mutex"
+    sleepSeconds <- withMutex conn mutexKey $ do
+        let lastStartedKey = VKey (Key (pre ++ ".last-started-at"))
+        maybeLastStartedAt <- runCommand conn (get lastStartedKey)
         curTime <- liftIO $ Time.getCurrentTime
         let lastStartedAt = fromMaybe (Time.UTCTime (Time.ModifiedJulianDay 0) 0)
                   (((unpack . decodeUtf8) <$> maybeLastStartedAt)
@@ -77,7 +78,7 @@ periodicActionEx conn keyPrefix (Seconds period) inner = forever $ do
         if interval >= fromIntegral period
             then do
                 _ <- runCommand conn
-                    (set (Key (keyPrefix ++ ".last-started-at")) (encodeUtf8 (tshow curTime)) [])
+                    (set lastStartedKey (encodeUtf8 (tshow curTime)) [])
                 inner
                 curTime' <- liftIO $ Time.getCurrentTime
                 return $ fromIntegral period - (curTime' `Time.diffUTCTime` curTime)
@@ -93,7 +94,7 @@ periodicActionEx conn keyPrefix (Seconds period) inner = forever $ do
 withMutex :: (MonadCommand m, MonadThrow m)
           => forall a. Connection
              -- ^ Redis connection
-          -> Key
+          -> MutexKey
              -- ^ Mutex key
           -> m a
              -- ^ I/O action to run while mutex is claimed.
@@ -138,7 +139,7 @@ acquireMutex :: (MonadCommand m)
                 -- ^ Redis connection
              -> Seconds
                 -- ^ Time-to-live of the mutex, in seconds (see description).
-             -> Key
+             -> MutexKey
                 -- ^ Mutex key
              -> m MutexToken
                 -- ^ A token identifying who holds the mutex (see description).
@@ -163,12 +164,12 @@ tryAcquireMutex :: (MonadCommand m)
                     -- ^ Redis connection
                 -> Seconds
                     -- ^ Time-to-live of the mutex, in seconds (see description).
-                -> Key
+                -> MutexKey
                     -- ^ Mutex key
                 -> m (Maybe MutexToken)
                     -- ^ Nothing if the mutex is unavailable, or Just a token
                     -- identifying who holds the mutex (see description).
-tryAcquireMutex conn mutexTtl key = do
+tryAcquireMutex conn mutexTtl (VKey . unMutexKey -> key) = do
     token <- liftIO $ (BS.concat . BSL.toChunks . UUID.toByteString) <$> UUID.nextRandom
     re <- runCommand conn (set key token [NX,EX mutexTtl])
     return (if re then Just (MutexToken token)
@@ -182,7 +183,7 @@ tryAcquireMutex conn mutexTtl key = do
 releaseMutex :: (MonadCommand m)
              => Connection
                 -- ^ Redis connection
-             -> Key
+             -> MutexKey
                 -- ^ Mutex key
              -> MutexToken
                 -- ^ Token returned by 'acquireMutex'
@@ -195,7 +196,7 @@ releaseMutex conn key (MutexToken token) =
                       \else\n\
                       \    return 0\n\
                       \end"
-                      [key]
+                      [unMutexKey key]
                       [token] :: CommandRequest ())
 
 -- | Refresh the time-to-live of a mutex.  This will retry for a limited period
@@ -208,7 +209,7 @@ refreshMutex :: (MonadCommand m, MonadThrow m)
                 -- ^ Redis connection
              -> Seconds
                 -- ^ New time-to-live (in seconds)
-             -> Key
+             -> MutexKey
                 -- ^ Mutex key
              -> MutexToken
                 -- ^ The token that was returned by 'acquireMutex'
@@ -221,7 +222,7 @@ refreshMutex conn mutexTtl key (MutexToken token) = do
                                 \else\n\
                                 \    return 0\n\
                                 \end"
-                                [key]
+                                [unMutexKey key]
                                 [encodeArg mutexTtl, token])
     if re == (0::Int64)
         then throwM IncorrectRedisMutexException

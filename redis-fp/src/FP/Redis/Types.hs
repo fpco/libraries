@@ -16,6 +16,11 @@ module FP.Redis.Types
     , Result (..)
       -- * Newtype wrappers
     , Key (..)
+    , VKey (..)
+    , LKey (..)
+    , HKey (..)
+    , SKey (..)
+    , ZKey (..)
     , Channel (..)
     , HashField (..)
     , Seconds (..)

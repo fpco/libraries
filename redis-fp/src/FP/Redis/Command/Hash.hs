@@ -20,25 +20,25 @@ import FP.Redis.Types.Internal
 
 -- | Returns the value associated with field in the hash stored at key.
 -- See <http://redis.io/commands/hget>.
-hget :: Key -> HashField -> CommandRequest (Maybe ByteString)
+hget :: HKey -> HashField -> CommandRequest (Maybe ByteString)
 hget key field =
     makeCommand "HGET" [encodeArg key,encodeArg field]
 
 -- | Returns the values associated with the specified fields in the hash stored at key.
 -- See <http://redis.io/commands/hmget>.
-hmget :: Key -> [HashField] -> CommandRequest [Maybe ByteString]
+hmget :: HKey -> [HashField] -> CommandRequest [Maybe ByteString]
 hmget key fields =
     makeCommand "HMGET" (encodeArg key : map encodeArg fields)
 
 -- | Sets field in the hash stored at key to value.
 -- See <http://redis.io/commands/hset>.
-hset :: Key -> HashField -> ByteString -> CommandRequest Bool
+hset :: HKey -> HashField -> ByteString -> CommandRequest Bool
 hset key field value =
     makeCommand "HSET" [encodeArg key,encodeArg field,encodeArg value]
 
 -- | Sets the specified fields to their respective values in the hash stored at key.
 -- See <http://redis.io/commands/hmset>.
-hmset :: Key -> [(HashField,ByteString)] -> CommandRequest ()
+hmset :: HKey -> [(HashField,ByteString)] -> CommandRequest ()
 hmset key fieldValuePairs =
     makeCommand "HMSET" (encodeArg key : concatMap encodeFieldValue fieldValuePairs)
   where
@@ -46,6 +46,6 @@ hmset key fieldValuePairs =
 
 -- | Removes the specified fields from the hash stored at key.
 -- See <http://redis.io/commands/hdel>.
-hdel :: Key -> [HashField] -> CommandRequest Int64
+hdel :: HKey -> [HashField] -> CommandRequest Int64
 hdel key fields =
     makeCommand "HDEL" (encodeArg key : map encodeArg fields)

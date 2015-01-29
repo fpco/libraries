@@ -20,7 +20,7 @@ import FP.Redis.Types.Internal
 
 -- | Set key to hold the string.
 -- See <http://redis.io/commands/set>.
-set :: Key -- ^ Key
+set :: VKey -- ^ Key
     -> ByteString -- ^ Value
     -> [SetOption] -- ^ Zero or more extra options
     -> CommandRequest Bool
@@ -36,21 +36,21 @@ set key val options =
 
 -- | Set key to hold the string value and set key to timeout after a given number of seconds.
 -- See <http://redis.io/commands/setex>.
-setEx :: ByteString -> Seconds -> ByteString -> CommandRequest ()
+setEx :: VKey -> Seconds -> ByteString -> CommandRequest ()
 setEx key ttl_ val =
     makeCommand "SETEX" [encodeArg key,encodeArg ttl_,encodeArg val]
 
 -- | Get the value of key.
 -- See <http://redis.io/commands/get>.
-get :: Key -> CommandRequest (Maybe ByteString)
+get :: VKey -> CommandRequest (Maybe ByteString)
 get key = makeCommand "GET" [encodeArg key]
 
 -- | Atomically sets key to value and returns the old value stored at key.
 -- See <http://redis.io/commands/getset>.
-getset :: Key -> ByteString -> CommandRequest (Maybe ByteString)
+getset :: VKey -> ByteString -> CommandRequest (Maybe ByteString)
 getset key value = makeCommand "GETSET" [encodeArg key, encodeArg value]
 
 -- | Increments the number stored at key by one.
 -- See <http://redis.io/commands/incr>.
-incr :: Key -> CommandRequest Int64
+incr :: VKey -> CommandRequest Int64
 incr key = makeCommand "INCR" [encodeArg key]

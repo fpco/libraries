@@ -25,6 +25,26 @@ type MonadCommand m = (MonadIO m, MonadBaseControl IO m)
 newtype Key = Key { unKey :: ByteString }
     deriving (Eq, Show, Ord, Result, Argument, IsString)
 
+-- Key which is known to refer to a "FP.Redis.Command.String"
+newtype VKey = VKey { unVKey :: Key }
+    deriving (Eq, Show, Ord, Result, Argument, IsString)
+
+-- Key which is known to refer to a "FP.Redis.Command.List"
+newtype LKey = LKey { unLKey :: Key }
+    deriving (Eq, Show, Ord, Result, Argument, IsString)
+
+-- Key which is known to refer to a "FP.Redis.Command.Hash"
+newtype HKey = HKey { unHKey :: Key }
+    deriving (Eq, Show, Ord, Result, Argument, IsString)
+
+-- Key which is known to refer to a "FP.Redis.Command.Set"
+newtype SKey = SKey { unSKey :: Key }
+    deriving (Eq, Show, Ord, Result, Argument, IsString)
+
+-- Key which is known to refer to a "FP.Redis.Command.SortedSet"
+newtype ZKey = ZKey { unZKey :: Key }
+    deriving (Eq, Show, Ord, Result, Argument, IsString)
+
 -- Newtype wrapper for redis channel names.
 newtype Channel = Channel { unChannel :: ByteString }
     deriving (Eq, Show, Ord, Result, Argument, IsString)

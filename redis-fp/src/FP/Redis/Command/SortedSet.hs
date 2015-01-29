@@ -13,14 +13,14 @@ module FP.Redis.Command.SortedSet
     , zscore )
     where
 
-import ClassyPrelude.Conduit
+import ClassyPrelude.Conduit hiding (member)
 
 import FP.Redis.Internal
 import FP.Redis.Types.Internal
 
 -- | Adds all the specified members with the specified scores to the sorted set stored at key.
 -- See <http://redis.io/commands/zadd>.
-zadd :: Key -> [(Double, ByteString)] -> CommandRequest Int64
+zadd :: ZKey -> [(Double, ByteString)] -> CommandRequest Int64
 zadd key scoreMembers =
     makeCommand "ZADD" (encodeArg key : concatMap encodeScoreMember scoreMembers)
   where
@@ -28,12 +28,12 @@ zadd key scoreMembers =
 
 -- | Removes the specified members from the sorted set stored at key.
 -- See <http://redis.io/commands/zrem>.
-zrem :: Key -> [ByteString] -> CommandRequest Int64
+zrem :: ZKey -> [ByteString] -> CommandRequest Int64
 zrem key members = makeCommand "ZREM" (encodeArg key : map encodeArg members)
 
 -- | Returns the specified range of elements in the sorted set stored at key.
 -- See <http://redis.io/commands/zrange>.
-zrange :: Key -> Int64 -> Int64 -> Bool -> CommandRequest [ByteString]
+zrange :: ZKey -> Int64 -> Int64 -> Bool -> CommandRequest [ByteString]
 zrange key start stop withScores =
     makeCommand "ZRANGE"
                 ([encodeArg key,encodeArg start,encodeArg stop] ++
@@ -41,7 +41,7 @@ zrange key start stop withScores =
 
 -- | Returns all the elements in the sorted set at key with a score between min and max.
 -- See <http://redis.io/commands/zrangebyscore>.
-zrangebyscore :: Key -> Double -> Double -> Bool -> CommandRequest [ByteString]
+zrangebyscore :: ZKey -> Double -> Double -> Bool -> CommandRequest [ByteString]
 zrangebyscore key start stop withScores =
     makeCommand "ZRANGEBYSCORE"
                 ([encodeArg key,encodeArg start,encodeArg stop] ++
@@ -49,5 +49,5 @@ zrangebyscore key start stop withScores =
 
 -- | Returns the score of the element at key, if it is in the sorted set.
 -- See <http://redis.io/commands/zscore>
-zscore :: Key -> ByteString -> CommandRequest (Maybe Double)
+zscore :: ZKey -> ByteString -> CommandRequest (Maybe Double)
 zscore key member = makeCommand "ZSCORE" [encodeArg key, encodeArg member]

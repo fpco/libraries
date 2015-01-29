@@ -186,7 +186,7 @@ sendResponse r (WorkerInfo wid expiry) k bid x = do
     -- check if the removal succeeds, as this may not be the first
     -- time a response is sent for the request.  See the error message
     -- above.
-    run_ r $ del [requestDataKey r k]
+    run_ r $ del [unVKey (requestDataKey r k)]
 
 -- | Retrieves the response for the specified 'RequestId'.  This
 -- function is usually called in the body of a 'subscribeToResponses'
@@ -264,7 +264,7 @@ checkHeartbeats r ivl =
         -- Populate the list of inactive workers for the next
         -- heartbeat.
         workers <- run r $ smembers (activeKey r)
-        run_ r $ del [inactiveKey r]
+        run_ r $ del [unSKey (inactiveKey r)]
         run_ r $ sadd (inactiveKey r) workers
         -- Ask all of the workers to remove their IDs from the inactive
         -- list.
@@ -281,7 +281,7 @@ handleWorkerFailure r wid = do
     xs <- run r $ lrange (inProgressKey r wid) 0 (-1)
     unless (null xs) $ do
         run_ r $ rpush' (requestsKey r) xs
-        run_ r $ del [inProgressKey r wid]
+        run_ r $ del [unLKey (inProgressKey r wid)]
 
 -- | Given a name to start with, this finds a 'WorkerId' which has
 -- never been used before.  It also adds the new 'WorkerId' to the set
@@ -301,33 +301,35 @@ getUnusedWorkerId r initial = go (0 :: Int)
 -- * Functions to compute Redis keys
 
 -- List of "Data.Binary" encoded @(RequestId, BackchannelId)@.
-requestsKey :: RedisInfo -> Key
-requestsKey  r = Key $ redisKeyPrefix r <> "requests"
+requestsKey :: RedisInfo -> LKey
+requestsKey  r = LKey $ Key $ redisKeyPrefix r <> "requests"
 
 -- Given a 'RequestId', computes the key for the request or response
 -- data.
-requestDataKey, responseDataKey :: RedisInfo -> RequestId -> Key
-requestDataKey  r k = Key $ redisKeyPrefix r <> "request:" <> unRequestId k
-responseDataKey r k = Key $ redisKeyPrefix r <> "response:" <> unRequestId k
+requestDataKey, responseDataKey :: RedisInfo -> RequestId -> VKey
+requestDataKey  r k = VKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k
+responseDataKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestId k
 
 -- Given a 'BackchannelId', computes the name of the 'Channel'.
 responseChannel :: RedisInfo -> BackchannelId -> Channel
 responseChannel r k = Channel $ redisKeyPrefix r <> "responses:" <> unBackchannelId k
 
 -- Given a 'WorkerId', computes the key of its in-progress list.
-inProgressKey :: RedisInfo -> WorkerId -> Key
-inProgressKey r k = Key $ redisKeyPrefix r <> "in-progress:" <> unWorkerId k
+inProgressKey :: RedisInfo -> WorkerId -> LKey
+inProgressKey r k = LKey $ Key $ redisKeyPrefix r <> "in-progress:" <> unWorkerId k
 
-inactiveKey, activeKey, workersKey, heartbeatFunctioningKey :: RedisInfo -> Key
+inactiveKey, activeKey, workersKey :: RedisInfo -> SKey
 -- A set of 'WorkerId' who have not yet removed their keys (indicating
 -- that they're still alive and responding to heartbeats).
-inactiveKey r = Key $ redisKeyPrefix r <> "heartbeat:inactive"
+inactiveKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:inactive"
 -- A set of 'WorkerId's that are currently thought to be running.
-activeKey r = Key $ redisKeyPrefix r <> "heartbeat:active"
+activeKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:active"
 -- A set of all 'WorkerId's that have ever been known.
-workersKey r = Key $ redisKeyPrefix r <> "heartbeat:workers"
+workersKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:workers"
+
 -- Stores a "Data.Binary" encoded 'Bool'.
-heartbeatFunctioningKey r = Key $ redisKeyPrefix r <> "heartbeat:functioning"
+heartbeatFunctioningKey :: RedisInfo -> VKey
+heartbeatFunctioningKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:functioning"
 
 -- Channel used for requesting that the workers remove their
 -- 'WorkerId' from the set at 'inactiveKey'.
@@ -337,8 +339,8 @@ heartbeatChannel r = Channel $ redisKeyPrefix r <> "heartbeat:channel"
 -- Prefix used for the 'periodicActionWrapped' invocation, which is
 -- used to share the responsibility of periodically checking
 -- heartbeats.
-heartbeatTimeKey :: RedisInfo -> ByteString
-heartbeatTimeKey r = redisKeyPrefix r <> "heartbeat:time"
+heartbeatTimeKey :: RedisInfo -> PeriodicPrefix
+heartbeatTimeKey r = PeriodicPrefix $ redisKeyPrefix r <> "heartbeat:time"
 
 -- * Redis utilities
 
@@ -348,15 +350,15 @@ run = runCommand . redisConnection
 run_ :: MonadCommand m => RedisInfo -> CommandRequest a -> m ()
 run_ = runCommand_ . redisConnection
 
-getExisting :: MonadCommand m => RedisInfo -> Key -> m ByteString
+getExisting :: MonadCommand m => RedisInfo -> VKey -> m ByteString
 getExisting r k = do
     mresult <- run r $ get k
     case mresult of
-        Nothing -> liftIO $ throwIO (KeyMissing k)
+        Nothing -> liftIO $ throwIO (KeyMissing (unVKey k))
         Just result -> return result
 
 -- Like 'rpush', but takes multiple values.
-rpush' :: Key -> [ByteString] -> CommandRequest Int64
+rpush' :: LKey -> [ByteString] -> CommandRequest Int64
 rpush' key vals = makeCommand "RPUSH" (encodeArg key : map encodeArg vals)
 
 -- * Exceptions
