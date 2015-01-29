@@ -150,14 +150,31 @@ pushRequest r (ClientInfo bid expiry) request = do
 -- an in-progress queue specific to the worker, atomically.  This is
 -- done so that in the event of server failure, the work items can be
 -- re-enqueued.
+--
+-- If this worker has been erroneously failed the heartbeat check,
+-- then it should exit.  When this circumstance occurs, this function
+-- throws a 'WorkerHeartbeatFailed' exception.
 popRequest
-    :: MonadCommand m
+    :: (MonadCommand m, MonadThrow m)
     => RedisInfo -> WorkerInfo -> m (RequestId, BackchannelId, Maybe ByteString)
 popRequest r (WorkerInfo wid _) = do
-    mk <- run r $ brpoplpush (requestsKey r) (inProgressKey r wid) (Seconds 0)
-    case mk of
-        Nothing -> fail "impossible: brpoplpush with 0 timeout reported timeout"
-        Just (decode . fromStrict -> (k, bid)) -> do
+    -- 'inProgressKey' can either be a list or a dummy string value.
+    -- It gets replaced by a string when its in-progress items get
+    -- moved to the requests queue.  This causes this command to exit
+    -- without taking action.  So, the use of 'LKey' here is not
+    -- entirely valid, and this can cause 'brpoplpush' to yield a
+    -- 'CommandException'.
+    let src = requestsKey r
+        dest = LKey $ inProgressKey r wid
+    eres <- try $ run r $ brpoplpush src dest (Seconds 0)
+    case eres of
+        Left (CommandException (isPrefixOf "WRONGTYPE" -> True)) ->
+            throwM (WorkerHeartbeatFailed wid)
+        Left ex ->
+            throwM ex
+        Right Nothing ->
+            fail "impossible: brpoplpush with 0 timeout reported timeout"
+        Right (Just (decode . fromStrict -> (k, bid))) -> do
             mx <- run r $ get (requestDataKey r k)
             return (k, bid, mx)
 
@@ -172,11 +189,14 @@ sendResponse r (WorkerInfo wid expiry) k bid x = do
     run_ r $ set (responseDataKey r k) x [EX expiry]
     run_ r $ publish (responseChannel r bid) (unRequestId k)
     -- Remove the RequestId associated with this response, from the
-    -- list of in-progress requests.
-    let ipk = inProgressKey r wid
-    removed <- run r $ lrem ipk 1 (toStrict (encode (k, bid)))
-    when (removed == 0) $ do
-        $logError $
+    -- list of in-progress requests.  This is wrapped in a 'try'
+    -- because inProgressKey might point to a dummy value rather than
+    -- a list (see handleWorkerFailure).
+    let ipk = LKey $ inProgressKey r wid
+    removed <- try $ run r $ lrem ipk 1 (toStrict (encode (k, bid)))
+    case removed :: Either RedisException Int64 of
+        Right 1 -> return ()
+        _ -> $logError $
             tshow k <>
             " isn't a member of in-progress queue (" <>
             tshow ipk <>
@@ -230,9 +250,10 @@ sendHeartbeats r (WorkerInfo wid _) ready = do
             Subscribe {} -> do
                 run_ r $ sadd (activeKey r) [unWorkerId wid]
                 atomically $ writeTVar ready True
-            Unsubscribe {} -> do
+            Unsubscribe {} ->
                 atomically $ writeTVar ready False
-            Message {} -> remInactive
+            Message {} ->
+                remInactive
   where
     remInactive = run_ r $ srem (inactiveKey r) [unWorkerId wid]
 
@@ -266,7 +287,8 @@ checkHeartbeats r ivl =
         -- heartbeat.
         workers <- run r $ smembers (activeKey r)
         run_ r $ del [unSKey (inactiveKey r)]
-        run_ r $ sadd (inactiveKey r) workers
+        when (not (null workers)) $
+            run_ r $ sadd (inactiveKey r) workers
         -- Ask all of the workers to remove their IDs from the inactive
         -- list.
         -- TODO: Remove this threadDelay (see #26)
@@ -275,16 +297,39 @@ checkHeartbeats r ivl =
         -- Record that the heartbeat check was successful.
         run_ r $ set (heartbeatFunctioningKey r) (toStrict (encode True)) []
 
--- NOTE: this should only be run when it's known for certain that
--- the worker is down and no longer manipulating the in-progress list,
--- since this is not an atomic update.
 handleWorkerFailure
-    :: MonadCommand m => RedisInfo -> WorkerId -> m ()
+    :: (MonadCommand m, MonadLogger m) => RedisInfo -> WorkerId -> m ()
 handleWorkerFailure r wid = do
-    xs <- run r $ lrange (inProgressKey r wid) 0 (-1)
-    unless (null xs) $ do
-        run_ r $ rpush' (requestsKey r) xs
-        run_ r $ del [unLKey (inProgressKey r wid)]
+    success <- run r $ (eval script
+        [inProgressKey r wid, unLKey (requestsKey r)]
+        [] :: CommandRequest Bool)
+    when (not success) $
+        $logError $ "Failed to read in-progress list for " <> tshow wid <> "."
+  where
+    script = BS8.unlines
+        [ "local xs = redis.pcall('lrange', KEYS[1], 0, -1)"
+        , "if xs['err'] then"
+        , "    return false"
+        , "else"
+               -- A step size of 1000 is a conservative choice.
+               -- Really this ought to be (LUAI_MAXCSTACK - 2), which
+               -- is usually 7998.  However, unfortunately there
+               -- doesn't seem to be a way to access LUAI_MAXCSTACK.
+        , "    local step = 1000"
+        , "    local len = table.getn(xs)"
+        , "    for i=1,len,step do"
+        , "        local upper = math.min(i + step - 1, len)"
+        , "        redis.call('rpush', KEYS[2], unpack(xs, i, upper))"
+        , "    end"
+        , "    redis.pcall('del', KEYS[1])"
+               -- This is rather tricky - the inProgressKey is
+               -- replaced with a dummy string value.  This causes
+               -- popRequest's invocation of brpoplpush to exit
+               -- without causing any mutation.
+        , "    redis.pcall('set', KEYS[1], 'done')"
+        , "    return true"
+        , "end"
+        ]
 
 -- | Given a name to start with, this finds a 'WorkerId' which has
 -- never been used before.  It also adds the new 'WorkerId' to the set
@@ -315,11 +360,12 @@ responseDataKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestI
 
 -- Given a 'BackchannelId', computes the name of the 'Channel'.
 responseChannel :: RedisInfo -> BackchannelId -> Channel
-responseChannel r k = Channel $ redisKeyPrefix r <> "responses:" <> unBackchannelId k
+responseChannel r k =
+    Channel $ redisKeyPrefix r <> "responses:" <> unBackchannelId k
 
+inProgressKey :: RedisInfo -> WorkerId -> Key
 -- Given a 'WorkerId', computes the key of its in-progress list.
-inProgressKey :: RedisInfo -> WorkerId -> LKey
-inProgressKey r k = LKey $ Key $ redisKeyPrefix r <> "in-progress:" <> unWorkerId k
+inProgressKey r k = Key $ redisKeyPrefix r <> "in-progress:" <> unWorkerId k
 
 inactiveKey, activeKey, workersKey :: RedisInfo -> SKey
 -- A set of 'WorkerId' who have not yet removed their keys (indicating
@@ -360,14 +406,11 @@ getExisting r k = do
         Nothing -> liftIO $ throwIO (KeyMissing (unVKey k))
         Just result -> return result
 
--- Like 'rpush', but takes multiple values.
-rpush' :: LKey -> [ByteString] -> CommandRequest Int64
-rpush' key vals = makeCommand "RPUSH" (encodeArg key : map encodeArg vals)
-
 -- * Exceptions
 
 data DistributedRedisQueueException
     = KeyMissing Key
+    | WorkerHeartbeatFailed WorkerId
     deriving (Eq, Show, Typeable)
 
 instance Exception DistributedRedisQueueException

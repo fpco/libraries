@@ -57,6 +57,12 @@ data WorkerConfig = WorkerConfig
 -- Also note that the return type is @void@, indicating that this
 -- function is never intended to return, as it is always waiting for
 -- more work.
+--
+-- This shouldn't happen often in normal operation, but when the
+-- worker erroneously fails the heartbeat check, this throws
+-- 'WorkerHeartbeatFailed'.  This happens in the circumstance where
+-- the worker's in-progress items have been re-enqueued but the worker
+-- is actually still active.
 jobQueueWorker
     :: (MonadConnect m, Binary payload)
     => WorkerConfig
