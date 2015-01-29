@@ -22,6 +22,7 @@ module FP.Redis.PubSub
 --TODO SHOULD: use a connection pool, and re-use a single connection for all subscriptions
 
 import ClassyPrelude.Conduit
+import Control.Concurrent.Chan
 import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..))
 import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty)

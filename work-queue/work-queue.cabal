@@ -20,8 +20,8 @@ Flag coverage
 library
   exposed-modules:     Data.WorkQueue
                        Data.Streaming.NetworkMessage
-                       Distributed.JobQueue
-                       Distributed.RedisQueue
+--                       Distributed.JobQueue
+--                       Distributed.RedisQueue
                        Distributed.WorkQueue
                        Control.Concurrent.ThreadPool
   build-depends:       base
@@ -40,7 +40,7 @@ library
                      , transformers
                      , concrete-typerep
                      , bytestring
-                     , redis-fp
+--                     , redis-fp
                      , time
                      , executable-hash
                      , unix
@@ -73,23 +73,23 @@ executable hpc-example-war
                      , mutable-containers
   ghc-options:         -Wall -threaded
 
-executable hpc-example-redis
-  main-is:             redis.hs
-  hs-source-dirs:      examples/redis
-  default-language:    Haskell2010
-  build-depends:       base
-                     , redis-fp
-                     , work-queue
-                     , binary
-                     , split
-                     , stm
-                     , bytestring
-                     , classy-prelude
-                     , monad-logger
-                     , transformers
-                     , lifted-base
-                     , unix
-  ghc-options:         -Wall -threaded
+-- executable hpc-example-redis
+--   main-is:             redis.hs
+--   hs-source-dirs:      examples/redis
+--   default-language:    Haskell2010
+--   build-depends:       base
+--                      , redis-fp
+--                      , work-queue
+--                      , binary
+--                      , split
+--                      , stm
+--                      , bytestring
+--                      , classy-prelude
+--                      , monad-logger
+--                      , transformers
+--                      , lifted-base
+--                      , unix
+--   ghc-options:         -Wall -threaded
 
 test-suite test
   type:                exitcode-stdio-1.0
@@ -120,7 +120,7 @@ test-suite test
                      , process
                      , silently
                      , monad-logger
-                     , redis-fp
+--                     , redis-fp
                      , lifted-base
                      , semigroups
                      , monad-control
@@ -156,7 +156,7 @@ benchmark bench
                      , process
                      , silently
                      , monad-logger
-                     , redis-fp
+--                     , redis-fp
                      , lifted-base
                      , criterion
   default-language:    Haskell2010

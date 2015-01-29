@@ -20,7 +20,7 @@ import Blaze.ByteString.Builder (Builder)
 import qualified Blaze.ByteString.Builder as Builder
 import qualified Control.Concurrent.Async as Async
 import Control.Concurrent.STM (retry)
-import Control.Monad.Catch (Handler(..))
+import Control.Monad.Catch (Handler(..), mask)
 import Control.Monad.Extra
 import Control.Monad.Logger
 import Control.Monad.Trans.Control (control, RunInBase, StM)

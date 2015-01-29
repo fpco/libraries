@@ -35,6 +35,7 @@ module Data.Streaming.NetworkMessage
 
 import           ClassyPrelude
 import           Control.Concurrent          (threadDelay)
+import           Control.Concurrent.Chan
 import qualified Control.Concurrent.Async    as A
 import           Control.Monad.Base          (liftBase)
 import           Control.Monad.Trans.Control (MonadBaseControl, control)
