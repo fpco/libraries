@@ -10,7 +10,8 @@ module FP.Redis.Command.Hash
     , hmget
     , hset
     , hmset
-    , hdel )
+    , hdel
+    , hincrby )
     where
 
 import ClassyPrelude.Conduit
@@ -50,3 +51,9 @@ hmset key fieldValuePairs =
 hdel :: HKey -> NonEmpty HashField -> CommandRequest Int64
 hdel key fields =
     makeCommand "HDEL" (encodeArg key : map encodeArg (toList fields))
+
+-- | Increments the number stored at field in the hash stored at key by increment.
+-- See <http://redis.io/commands/hincrby>.
+hincrby :: HKey -> HashField -> Int64 -> CommandRequest Int64
+hincrby key field increment =
+    makeCommand "HINCRBY" [encodeArg key, encodeArg field, encodeArg increment]
