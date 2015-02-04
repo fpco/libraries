@@ -212,12 +212,16 @@ sendResponse r (WorkerInfo wid expiry) k bid x = do
 -- | Retrieves the response for the specified 'RequestId'.  This
 -- function is usually called in the body of a 'subscribeToResponses'
 -- handler, in order to fetch the response after notification of its
--- existence.  It throws a 'KeyMissing' error if there is no response
--- for the specified 'RequestId'.
+-- existence.  It throws a 'ResponseMissing' error if there is no
+-- response for the specified 'RequestId'.
 readResponse
     :: MonadCommand m
     => RedisInfo -> RequestId -> m ByteString
-readResponse r k = getExisting r (responseDataKey r k)
+readResponse r k = do
+    mx <- run r $ get (responseDataKey r k)
+    case mx of
+        Nothing -> liftIO $ throwIO (ResponseMissing k)
+        Just x -> return x
 
 -- | Subscribes to responses on the channel specified by this client's
 -- 'BackchannelId'.  It changes the @subscribed@ 'TVar' to 'True' when
@@ -397,17 +401,10 @@ run = runCommand . redisConnection
 run_ :: MonadCommand m => RedisInfo -> CommandRequest a -> m ()
 run_ = runCommand_ . redisConnection
 
-getExisting :: MonadCommand m => RedisInfo -> VKey -> m ByteString
-getExisting r k = do
-    mresult <- run r $ get k
-    case mresult of
-        Nothing -> liftIO $ throwIO (KeyMissing (unVKey k))
-        Just result -> return result
-
 -- * Exceptions
 
 data DistributedRedisQueueException
-    = KeyMissing Key
+    = ResponseMissing RequestId
     | WorkerHeartbeatFailed WorkerId
     deriving (Eq, Show, Typeable)
 
