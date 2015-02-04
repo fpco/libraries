@@ -67,6 +67,7 @@ import qualified Data.ByteString.Char8 as BS8
 import           Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
 import           FP.Redis
 import           FP.Redis.Mutex
+import           System.Random (randomRIO)
 
 -- | Info required to submit requests to the queue ('pushRequest'),
 -- wait for responses ('subscribeToResponses'), and retrieve them
@@ -341,8 +342,10 @@ getUnusedWorkerId
 getUnusedWorkerId r initial = go (0 :: Int)
   where
     go n = do
+        let toWord8 = fromIntegral . fromEnum
+        postfix <- liftIO $ replicateM n $ randomRIO (toWord8 'a', toWord8 'z')
         let k | n == 0 = initial
-              | otherwise = initial <> "-" <> BS8.pack (show n)
+              | otherwise = initial <> "-" <> postfix
         numberAdded <- run r $ sadd (workersKey r) (k :| [])
         if numberAdded == 0
             then go (n+1)
