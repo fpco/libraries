@@ -18,7 +18,7 @@ main = hspec spec
 spec :: Spec
 spec = do
     it "throws exceptions from within withSubscriptionsEx" $ do
-        let sub = subscribe ["test-channel"]
+        let sub = subscribe ("test-channel" :| [])
         subThread <- async $ void $ runStdoutLoggingT $
             withSubscriptionsEx localhost (sub :| []) $ \_msg ->
                 liftIO $ throwIO RedisTestException
