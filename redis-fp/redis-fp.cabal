@@ -77,4 +77,5 @@ test-suite test
                      , semigroups
                      , transformers
                      , async
+                     , lifted-base
   ghc-options:         -Wall -threaded

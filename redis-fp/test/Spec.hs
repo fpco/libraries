@@ -3,10 +3,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import Control.Concurrent.Async (async, waitCatch)
-import Control.Exception (Exception, fromException, throwIO)
+import Control.Concurrent.Lifted (threadDelay, fork)
+import Control.Exception (Exception, fromException, throwIO, finally)
 import Control.Monad (void)
 import Control.Monad.IO.Class
 import Control.Monad.Logger (runStdoutLoggingT, LoggingT)
+import Data.IORef (newIORef, writeIORef, readIORef)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Typeable (Typeable)
 import FP.Redis
@@ -39,6 +41,23 @@ spec = do
         res <- timeout (1000 * 1000) $ withRedis $ \redis ->
             runCommand redis $ brpop ("foobar_list" :| []) (Seconds 0)
         res `shouldBe` (Just (Just ("foobar_list", "my data")))
+    it "can interrupt subscriptions" $ do
+        let sub = subscribe ("chan" :| [])
+        messageSeenRef <- newIORef False
+        timeoutSucceededRef <- newIORef False
+        _ <- fork $
+            (void $ timeout (1000 * 10) $ runStdoutLoggingT $ withSubscriptionsWrapped localhost (sub :| []) $ \msg ->
+                case msg of
+                    Message {} -> liftIO $ writeIORef messageSeenRef True
+                    _ -> return ()
+            ) `finally` writeIORef timeoutSucceededRef True
+        threadDelay (1000 * 50)
+        withRedis $ \r -> runCommand_ r $ publish "test-chan" ""
+        threadDelay (1000 * 50)
+        messageSeen <- readIORef messageSeenRef
+        messageSeen `shouldBe` False
+        timeoutSucceded <- readIORef timeoutSucceededRef
+        timeoutSucceded `shouldBe` True
 
 withRedis :: (Connection -> LoggingT IO a) -> IO a
 withRedis = runStdoutLoggingT . withConnection localhost
