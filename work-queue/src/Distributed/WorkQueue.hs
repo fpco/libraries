@@ -12,21 +12,22 @@
 module Distributed.WorkQueue
     ( withMaster
     , runSlave
+    , RunMode (..)
+    , runModeParser
     , runArgs
     , DistributedWorkQueueException (..)
     , module Data.WorkQueue
     ) where
 
-import ClassyPrelude
+import ClassyPrelude                 hiding ((<>))
 import Control.Concurrent.Async      (withAsync)
 import Control.Monad.Trans.Control
 import Data.Binary                   (Binary)
 import Data.Function                 (fix)
 import Data.Streaming.Network
 import Data.Streaming.NetworkMessage
-import Data.Text.Read                (decimal)
 import Data.WorkQueue
-import System.Environment            (getProgName)
+import Options.Applicative
 
 data ToSlave initialData payload
     = TSInit initialData
@@ -35,11 +36,56 @@ data ToSlave initialData payload
     deriving (Generic, Typeable)
 instance (Binary a, Binary b) => Binary (ToSlave a b)
 
+
+data RunMode
+    = DevMode
+        { numSlaves :: Int
+        }
+    | MasterMode
+        { numSlaves :: Int
+        , masterPort :: Int
+        }
+    | SlaveMode
+        { masterHost :: String
+        , masterPort :: Int
+        }
+    deriving (Eq, Ord, Show, Generic)
+
+
+runModeParser :: Parser RunMode
+runModeParser = subparser
+    (
+        metavar "MODE"
+
+        <> command "dev" (info
+            (DevMode
+                <$> (argument auto (metavar "<local slave count>"))
+            )
+            (progDesc "Run program locally (no distribution)")
+        )
+
+        <> command "master" (info
+            (MasterMode
+                <$> (argument auto (metavar "<local slave count>"))
+                <*> (argument auto (metavar "<port>"))
+            )
+            (progDesc "Start a master listening on given port")
+        )
+
+        <> command "slave" (info
+            (SlaveMode
+                <$> (argument str (metavar "<master host>"))
+                <*> (argument auto (metavar "<master port>"))
+            )
+            (progDesc "Connect to a master on the given host and port")
+        )
+    )
+
+
 -- | Decide what to run based on command line arguments.
 --
 -- This will either run in dev mode (everything on a single machine), master
--- mode, or slave mode. Command line interface should be written correctly via
--- optparse-applicative at some point.
+-- mode, or slave mode.
 runArgs
     :: ( MonadIO m
        , Sendable initialData
@@ -51,29 +97,11 @@ runArgs
     -> (initialData -> WorkQueue payload result -> IO ())
     -> m ()
 runArgs getInitialData calc inner = liftIO $ do
-    args <- getArgs
-    case args of
-        ["dev", slavesT]
-            | Right (slaves, "") <- decimal slavesT -> dev slaves
-        ["master", lslavesT, portT]
-            | Right (lslaves, "") <- decimal lslavesT
-            , Right (port, "") <- decimal portT -> master lslaves port
-        ["slave", host, portT]
-            | Right (port, "") <- decimal portT -> slave host port
-        _ -> do
-            pn <- pack <$> getProgName
-            mapM_ putStrLn
-                [ "Usage:"
-                , ""
-                , pn ++ " dev <local slave count>"
-                , "    Run program locally (no distribution)"
-                , ""
-                , pn ++ " master <local slave count> <port>"
-                , "    Start a master listening on given port"
-                , ""
-                , pn ++ " slave <remote host> <remote port>"
-                , "    Connect to a master on the given host and port"
-                ]
+    runMode <- execParser $ info (helper <*> runModeParser) fullDesc
+    case runMode of
+        DevMode slaves -> dev slaves
+        MasterMode lslaves port -> master lslaves port
+        SlaveMode host port -> slave host port
   where
     dev slaves | slaves < 1 = error "Must use at least one slave"
     dev slaves = withWorkQueue $ \queue -> do
