@@ -9,7 +9,8 @@ import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async (race, async, wait, cancel, Async)
 import           Control.Concurrent.MVar (tryReadMVar)
 import           Control.Monad.Logger (runStdoutLoggingT)
-import           Data.Binary (Binary, encode)
+import           Control.Monad.Trans.Resource (ResourceT, register)
+import           Data.Binary (Binary)
 import           Data.Bits (xor, zeroBits)
 import           Data.List (intersect, delete)
 import           Data.List.Split (chunksOf)
@@ -17,7 +18,7 @@ import           Data.Streaming.Network (getSocketFamilyTCP)
 import           Distributed.JobQueue
 import           Distributed.RedisQueue
 import           Distributed.WorkQueue
-import           FP.Redis (connectInfo, Seconds(..))
+import           FP.Redis (connectInfo)
 import           Filesystem (isFile, removeFile)
 import qualified Network.Socket as NS
 import           Prelude (appendFile, read)
@@ -41,7 +42,6 @@ data Config
         }
     | RedisConfig
         { isLong :: Bool
-        , sharedConfig :: SharedConfig
         }
 
 data SharedConfig = SharedConfig
@@ -50,7 +50,7 @@ data SharedConfig = SharedConfig
     , checkSlaveRan :: Bool
     , checkAllSlavesRan :: Bool
     , wrapProcess :: IO () -> IO ()
-    , whileRunning :: Process -> IO Process -> IO ()
+    , whileRunning :: IO Process -> IO ()
     , expectedOutput :: Maybe String
     }
 
@@ -70,16 +70,13 @@ spec = do
 defaultXorConfig :: Int -> SharedConfig -> Config
 defaultXorConfig n c = XorConfig n 12 100 c { expectedOutput = Just (show n) }
 
-defaultRedisConfig :: SharedConfig -> Config
-defaultRedisConfig = RedisConfig False
-
 redisTestPrefix :: ByteString
 redisTestPrefix = "fpco:job-queue-test:"
 
 defaultSharedConfig :: SharedConfig
 defaultSharedConfig = SharedConfig 1 True True True id f Nothing
   where
-    f _ startSlave = void startSlave
+    f startSlave = void startSlave
 
 -- TODO: Use TH to generate this dispatch so that definitions can go
 -- in their respective Spec modules?
@@ -89,56 +86,47 @@ getConfig "xor0" = defaultXorConfig 0 defaultSharedConfig
 getConfig "xor1" = defaultXorConfig 1 defaultSharedConfig
     { checkSlaveRan = False
     , checkAllSlavesRan = False
-    , whileRunning = \_ _ -> return ()
+    , whileRunning = \_ -> return ()
     }
 getConfig "xor2" = defaultXorConfig 2 defaultSharedConfig
-    { whileRunning = \_ startSlave -> startSlave >> startSlave >> return () }
+    { whileRunning = \startSlave -> startSlave >> startSlave >> return () }
 getConfig "xor3" = defaultXorConfig 3 defaultSharedConfig
     { masterJobs = 0
     , checkMasterRan = False
-    , whileRunning = \_ startSlave -> startSlave >> startSlave >> return ()
+    , whileRunning = \startSlave -> startSlave >> startSlave >> return ()
     }
 getConfig "xor4" = defaultXorConfig 4 defaultSharedConfig
     { masterJobs = 0
     , checkMasterRan = False
     , checkAllSlavesRan = False
-    , whileRunning = \_ startSlave -> do
+    , whileRunning = \startSlave -> do
         let randomSlaveSpawner = forever $ do
-                _pid <- startSlave
+                pid <- startSlave
                 ms <- randomRIO (150, 300)
                 threadDelay (1000 * ms)
-
+                cancelProcess pid
         void $ randomSlaveSpawner `race` randomSlaveSpawner
     }
 getConfig "bench0" = defaultXorConfig 0 (benchConfig 0) { checkSlaveRan = False}
 getConfig "bench1" = defaultXorConfig 0 (benchConfig 1)
 getConfig "bench2" = defaultXorConfig 0 (benchConfig 2)
 getConfig "bench10" = defaultXorConfig 0 (benchConfig 10)
-getConfig "redis0" = defaultRedisConfig defaultSharedConfig { masterJobs = 0, whileRunning = \_ _ -> return () }
-getConfig "redis1" = defaultRedisConfig defaultSharedConfig
-getConfig "redis-long" = (defaultRedisConfig defaultSharedConfig) { isLong = True }
-
+getConfig "redis" = RedisConfig False
+getConfig "redis-long" = RedisConfig True
 getConfig which = error $ "No such config: " ++ unpack which
 
 benchConfig :: Int -> SharedConfig
 benchConfig n = defaultSharedConfig
     { checkAllSlavesRan = False
     , wrapProcess = void . tryAny . hSilence [stdout, stderr]
-    , whileRunning = \_ startSlave -> replicateM_ n startSlave
+    , whileRunning = \startSlave -> replicateM_ n startSlave
     }
 
-forkMasterSlaveNoBlock :: Text -> IO (IO ())
-forkMasterSlaveNoBlock which = do
-    let config = sharedConfig (getConfig which)
-        startSlave = execProcessOrFork ["work-queue", unpack which, "slave", "localhost", "2015"]
-    removeFileIfExists seenPidsPath
-    removeFileIfExists resultsPath
-    master <- execProcessOrFork ["work-queue", unpack which, "master", show (masterJobs config), "2015"]
-    waitForSocket
-    whileRunningThread <- async $ whileRunning config master startSlave
-    return $ do
-        cancel whileRunningThread
-        cancelProcess master
+forkWorker :: String -> Int -> ResourceT IO Process
+forkWorker which n = do
+    pid <- liftIO $ execProcessOrFork ["work-queue", which, show n]
+    _ <- register (cancelProcess pid)
+    return pid
 
 -- Run the master and slave in separate processes or threads, using
 -- files to communicate with the test process.
@@ -158,7 +146,7 @@ forkMasterSlave which = do
             master <- execProcessOrFork ["work-queue", unpack which, "master", show (masterJobs config), "2015"]
             mmasterPid <- processPid master
             waitForSocket
-            whileRunningThread <- async $ whileRunning config master startSlave
+            whileRunningThread <- async $ whileRunning config startSlave
             waitForExit master
             -- Ensure that both the master and slave processes have
             -- performed calculation.
@@ -219,38 +207,36 @@ runMasterOrSlave XorConfig {..} = do
             subresults <- mapQueue queue (chunksOf xorChunkSize xs)
             calc () subresults
     runArgs' sharedConfig initialData calc inner
-runMasterOrSlave RedisConfig {..} | isLong = do
+runMasterOrSlave RedisConfig {..} | isLong = runStdoutLoggingT $ do
+    [lslaves] <- liftIO getArgs
     let initialData = return ()
         calc :: () -> [Int] -> IO Int
         calc () _ = do
             threadDelay (5 * 1000 * 1000)
             return 0
-        inner () queue = runStdoutLoggingT $
-            withRedisInfo redisTestPrefix (connectInfo "localhost") $ \redis ->
-                void $ jobQueueWorker config redis queue $ \_ -> do
-                    return (toStrict (encode (0 :: Int)))
-        -- Response data expires every hour.
-        config = WorkerConfig (Seconds 3600)
-    runArgs' sharedConfig initialData calc inner
-runMasterOrSlave RedisConfig {..} = do
-    firstRunRef <- newIORef True
+        inner :: () -> RedisInfo -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
+        inner () redis _ _ = do
+            requestSlave config redis
+            return 0
+        config = (defaultWorkerConfig redisTestPrefix (connectInfo "localhost"))
+            { workerMasterLocalSlaves = read (unpack lslaves)
+            }
+    jobQueueWorker config initialData calc inner
+runMasterOrSlave RedisConfig {..} = runStdoutLoggingT $ do
+    [lslaves] <- liftIO getArgs
     let initialData = return ()
         calc :: () -> [Int] -> IO Int
-        calc () input = do
-            -- See similar comment above.
-            firstRun <- readIORef firstRunRef
-            when firstRun $ do
-                threadDelay (200 * 1000)
-                writeIORef firstRunRef False
-            return $ foldl' xor zeroBits input
-        inner () queue = runStdoutLoggingT $
-            withRedisInfo redisTestPrefix (connectInfo "localhost") $ \redis ->
-                void $ jobQueueWorker config redis queue $ \subresults -> do
-                    result <- liftIO $ calc () (otoList subresults)
-                    return (toStrict (encode result))
-        -- Response data expires every hour.
-        config = WorkerConfig (Seconds 3600)
-    runArgs' sharedConfig initialData calc inner
+        calc () input =  return $ foldl' xor zeroBits input
+        inner :: () -> RedisInfo -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
+        inner () redis request queue = do
+            requestSlave config redis
+            subresults <- mapQueue queue request
+            result <- liftIO $ calc () (otoList (subresults :: Vector Int))
+            return result
+        config = (defaultWorkerConfig redisTestPrefix (connectInfo "localhost"))
+            { workerMasterLocalSlaves = read (unpack lslaves)
+            }
+    jobQueueWorker config initialData calc inner
 
 runArgs'
     :: ( Typeable initialData
@@ -299,15 +285,15 @@ removeFileIfExists fp = do
 
 type Process = Either ProcessHandle (Async ())
 
-waitForExit :: Process -> IO ()
-waitForExit (Left pid) = do
+waitForExit :: MonadIO m => Process -> m ()
+waitForExit (Left pid) = liftIO $ do
     status <- waitForProcess pid
     status `shouldBe` ExitSuccess
-waitForExit (Right a) = wait a
+waitForExit (Right a) = liftIO $ wait a
 
-cancelProcess :: Process -> IO ()
-cancelProcess (Left pid) = terminateProcess pid
-cancelProcess (Right a) = cancel a
+cancelProcess :: MonadIO m => Process -> m ()
+cancelProcess (Left pid) = liftIO $ terminateProcess pid
+cancelProcess (Right a) = liftIO $ cancel a
 
 useForkIO :: Bool
 useForkIO =

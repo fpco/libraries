@@ -90,6 +90,7 @@ executable hpc-example-redis
                      , transformers
                      , lifted-base
                      , unix
+                     , semigroups
   ghc-options:         -Wall -threaded
 
 test-suite test
@@ -125,6 +126,7 @@ test-suite test
                      , lifted-base
                      , semigroups
                      , monad-control
+                     , resourcet
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
   if flag(coverage)
@@ -159,6 +161,9 @@ benchmark bench
                      , monad-logger
                      , redis-fp
                      , lifted-base
+                     , semigroups
+                     , monad-control
+                     , resourcet
                      , criterion
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
