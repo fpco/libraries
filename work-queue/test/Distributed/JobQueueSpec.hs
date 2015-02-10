@@ -43,7 +43,6 @@ spec = do
                 putStrLn "=================================="
                 putStrLn "Master cancelled"
                 putStrLn "=================================="
-
             -- One of these will become a master and one will become a
             -- slave.
             --
@@ -51,6 +50,11 @@ spec = do
             -- slave requests, they get ignored because the connection
             -- fails.
             _ <- forkWorker "redis" 0
+            _ <- forkWorker "redis" 0
+            --FIXME: once "Non-existent slave request is ignored" is
+            --fixed, this fork worker can be removed.  The issue is
+            --that one of the workers above takes a stale slave
+            --request.
             _ <- forkWorker "redis" 0
             checkResult resultVar 5 (Just 0)
     it "Long tasks complete" $ do
