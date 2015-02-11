@@ -67,5 +67,5 @@ prefix = "fpco:work-queue:"
 clearData :: IO ()
 clearData =
     runStdoutLoggingT $ withConnection localhost $ \redis -> do
-        matches <- runCommand redis $ keys (prefix <> "*")
+        matches <- runCommand redis $ FP.Redis.keys (prefix <> "*")
         mapM_ (runCommand_ redis . del) (nonEmpty matches)
