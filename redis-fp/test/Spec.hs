@@ -1,16 +1,14 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 
-import Control.Concurrent.Async (async, waitCatch)
+import ClassyPrelude
+import Control.Concurrent.Async (Async, async, waitCatch)
 import Control.Concurrent.Lifted (threadDelay, fork)
-import Control.Exception (Exception, fromException, throwIO, finally)
-import Control.Monad (void)
-import Control.Monad.IO.Class
+import Control.Concurrent.STM (check)
 import Control.Monad.Logger (runStdoutLoggingT, LoggingT)
-import Data.IORef (newIORef, writeIORef, readIORef)
 import Data.List.NonEmpty (NonEmpty((:|)))
-import Data.Typeable (Typeable)
 import FP.Redis
 import System.Timeout (timeout)
 import Test.Hspec (Spec, it, hspec, shouldBe)
@@ -21,15 +19,14 @@ main = hspec spec
 spec :: Spec
 spec = do
     it "throws exceptions from within withSubscriptionsEx" $ do
-        let sub = subscribe ("test-channel" :| [])
-        subThread <- async $ void $ runStdoutLoggingT $
-            withSubscriptionsEx localhost (sub :| []) $ \_msg ->
-                liftIO $ throwIO RedisTestException
-        withRedis $ \redis ->
-            runCommand_ redis $ publish "test-channel" "message"
-        eres <- waitCatch subThread
+        let chan = "test-chan-2"
+        (ready, thread) <- asyncSubscribe chan $ \_ _ _ ->
+            throwM RedisTestException
+        atomically $ check =<< readTVar ready
+        withRedis $ \redis -> runCommand_ redis $ publish chan "message"
+        eres <- waitCatch thread
         case eres of
-            Left (fromException -> Just RedisTestException) -> return ()
+            Right (Left (fromException -> Just RedisTestException)) -> return ()
             _ -> fail $ "Expected RedisTestException. Instead got " ++ show eres
     -- http://code.google.com/p/redis/issues/detail?id=199
     it "should block when there is no data available" $ do
@@ -42,7 +39,8 @@ spec = do
             runCommand redis $ brpop ("foobar_list" :| []) (Seconds 0)
         res `shouldBe` (Just (Just ("foobar_list", "my data")))
     it "can interrupt subscriptions" $ do
-        let sub = subscribe ("chan" :| [])
+        let chan = "test-chan-3"
+            sub = subscribe (chan :| [])
         messageSeenRef <- newIORef False
         timeoutSucceededRef <- newIORef False
         _ <- fork $
@@ -52,12 +50,22 @@ spec = do
                     _ -> return ()
             ) `finally` writeIORef timeoutSucceededRef True
         threadDelay (1000 * 50)
-        withRedis $ \r -> runCommand_ r $ publish "test-chan" ""
+        withRedis $ \r -> runCommand_ r $ publish chan ""
         threadDelay (1000 * 50)
         messageSeen <- readIORef messageSeenRef
         messageSeen `shouldBe` False
         timeoutSucceded <- readIORef timeoutSucceededRef
         timeoutSucceded `shouldBe` True
+
+asyncSubscribe :: Channel
+               -> (Connection -> Channel -> ByteString -> LoggingT IO ())
+               -> IO (TVar Bool, Async (Either SomeException ()))
+asyncSubscribe chan f = do
+    ready <- newTVarIO False
+    thread <- async $ tryAny $ void $ runStdoutLoggingT $
+        withSubscriptionsEx' localhost (subscribe (chan :| []) :| []) $
+            \conn -> trackSubscriptionStatus ready (f conn)
+    return (ready, thread)
 
 withRedis :: (Connection -> LoggingT IO a) -> IO a
 withRedis = runStdoutLoggingT . withConnection localhost

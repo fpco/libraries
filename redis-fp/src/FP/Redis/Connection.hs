@@ -9,6 +9,7 @@ module FP.Redis.Connection
     , Connection
     , connectInfo
     , connect
+    , disconnect
     , withConnection
     , connectionInfo
     ) where
@@ -226,10 +227,14 @@ connect cinfo = do
     maxPendingResponses = connectMaxPendingResponses cinfo
 
 -- | Disconnect from Redis server.
-disconnect :: MonadCommand m => Connection -> m ()
+disconnect :: (MonadCommand m, MonadThrow m) => Connection -> m ()
 disconnect conn@Connection{connectionThread} = do
-    runCommand_ conn quit
+    eres <- try $ runCommand_ conn quit
     liftIO (Async.cancel connectionThread)
+    case eres of
+        Left DisconnectedException -> return ()
+        Left err -> throwM err
+        Right () -> return ()
 
 -- | Default Redis server connection info.
 connectInfo :: ByteString -- ^ Server's hostname

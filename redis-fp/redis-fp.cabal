@@ -78,4 +78,6 @@ test-suite test
                      , transformers
                      , async
                      , lifted-base
+                     , classy-prelude
+                     , stm
   ghc-options:         -Wall -threaded
