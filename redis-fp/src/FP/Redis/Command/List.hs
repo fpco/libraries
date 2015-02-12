@@ -8,6 +8,8 @@
 module FP.Redis.Command.List
     ( rpush
     , lpush
+    , rpop
+    , lpop
     , lrange
     , lrem
     , llen
@@ -32,6 +34,16 @@ lpush key vals = makeCommand "LPUSH" (encodeArg key : map encodeArg (toList vals
 -- See <http://redis.io/commands/rpush>
 rpush :: LKey -> NonEmpty ByteString -> CommandRequest Int64
 rpush key vals = makeCommand "RPUSH" (encodeArg key : map encodeArg (toList vals))
+
+-- | Removes and returns the first element of the list stored at key.
+-- See <http://redis.io/commands/lpop>
+lpop :: LKey -> CommandRequest (Maybe ByteString)
+lpop key = makeCommand "LPOP" [encodeArg key]
+
+-- | Removes and returns the last element of the list stored at key.
+-- See <http://redis.io/commands/rpop>
+rpop :: LKey -> CommandRequest (Maybe ByteString)
+rpop key = makeCommand "RPOP" [encodeArg key]
 
 -- | BRPOP is a blocking list pop primitive.
 -- See <http://redis.io/commands/brpop>.
