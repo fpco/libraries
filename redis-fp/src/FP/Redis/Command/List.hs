@@ -10,9 +10,11 @@ module FP.Redis.Command.List
     , lpush
     , lrange
     , lrem
+    , llen
     , blpop
     , brpop
-    , brpoplpush )
+    , brpoplpush
+    , rpoplpush )
     where
 
 import ClassyPrelude.Conduit
@@ -52,6 +54,14 @@ brpoplpush source destination timeout =
                 ,encodeArg destination
                 ,encodeArg timeout]
 
+-- | Atmoically returns and removes the last element (tail) of the list stored at source, and pushes the element at the first element (head) of the list stored at destination.
+--  See <http://redis.io/commands/rpoplpush>.
+rpoplpush :: LKey -> LKey -> CommandRequest (Maybe ByteString)
+rpoplpush source destination =
+    makeCommand "RPOPLPUSH"
+                [encodeArg source
+                ,encodeArg destination]
+
 -- | Returns the specified elements of the list stored at key.
 -- See <http://redis.io/commands/lrange>.
 lrange :: LKey -> Int64 -> Int64 -> CommandRequest [ByteString]
@@ -63,3 +73,8 @@ lrange key start stop =
 lrem :: LKey -> Int64 -> ByteString -> CommandRequest Int64
 lrem key count_ value =
     makeCommand "LREM" [encodeArg key,encodeArg count_,encodeArg value]
+
+-- | Returns the length of the list stored at key.
+-- See <http://redis.io/commands/llen>.
+llen :: LKey -> CommandRequest Int64
+llen key = makeCommand "LLEN" [encodeArg key]
