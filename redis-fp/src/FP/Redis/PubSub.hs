@@ -164,25 +164,25 @@ sendSubscription (SubscriptionConnection conn _) (SubscriptionRequest request) =
 -- | Subscribes the client to the specified channels.
 subscribe :: NonEmpty Channel -- ^ Channels
           -> SubscriptionRequest
-subscribe channels = makeSubscription "SUBSCRIBE" (fmap encodeArg channels)
+subscribe channels = makeSubscription "SUBSCRIBE" (fmap encodeArg (toList channels))
 
 -- | Subscribes the client to the given patterns.
 psubscribe :: NonEmpty ByteString -- ^ Patterns
            -> SubscriptionRequest
-psubscribe channelPatterns = makeSubscription "PSUBSCRIBE" (fmap encodeArg channelPatterns)
+psubscribe channelPatterns = makeSubscription "PSUBSCRIBE" (fmap encodeArg (toList channelPatterns))
 
 -- | Unsubscribes the client from the given channels, or from all of them if none is given.
-unsubscribe :: NonEmpty Channel -- ^ Channels
+unsubscribe :: [Channel] -- ^ Channels
             -> SubscriptionRequest
 unsubscribe channels = makeSubscription "UNSUBSCRIBE" (fmap encodeArg channels)
 
 -- | Unsubscribes the client from the given patterns, or from all of them if none is given.
-punsubscribe :: NonEmpty ByteString -- Patterns
+punsubscribe :: [ByteString] -- Patterns
              -> SubscriptionRequest
 punsubscribe channelPatterns = makeSubscription "PUNSUBSCRIBE" (fmap encodeArg channelPatterns)
 
 -- | Make a subscription request
-makeSubscription :: ByteString -> NonEmpty ByteString -> SubscriptionRequest
+makeSubscription :: ByteString -> [ByteString] -> SubscriptionRequest
 makeSubscription cmd args =
     SubscriptionRequest (Subscription (renderRequest (encodeArg cmd:(toList args))))
 
