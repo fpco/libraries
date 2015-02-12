@@ -18,6 +18,28 @@ main = hspec spec
 
 spec :: Spec
 spec = do
+    -- Ideally, this could be done in a cleaner fashion.  See #34
+    it "can cancel subscriptions" $ do
+        let chan = "test-chan-1"
+        connRef <- newIORef (error "connRef uninitialized")
+        messageSeenRef <- newIORef False
+        (ready, _) <- asyncSubscribe chan $ \conn _ _ -> do
+            writeIORef connRef conn
+            writeIORef messageSeenRef True
+        -- Check that messages are received once we've subscribed.
+        -- This also causes connRef to be initialized.
+        atomically $ check =<< readTVar ready
+        withRedis $ \redis -> runCommand_ redis $ publish chan "message"
+        liftIO $ threadDelay (1000 * 100)
+        wasSeen <- readIORef messageSeenRef
+        wasSeen `shouldBe` True
+        disconnect =<< readIORef connRef
+        -- Check that messages aren't received once we've disconnected.
+        writeIORef messageSeenRef False
+        withRedis $ \redis -> runCommand_ redis $ publish chan "message"
+        liftIO $ threadDelay (1000 * 100)
+        wasSeen' <- readIORef messageSeenRef
+        wasSeen' `shouldBe` False
     it "throws exceptions from within withSubscriptionsEx" $ do
         let chan = "test-chan-2"
         (ready, thread) <- asyncSubscribe chan $ \_ _ _ ->
