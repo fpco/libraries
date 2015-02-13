@@ -51,11 +51,6 @@ spec = do
             -- fails.
             _ <- forkWorker "redis" 0
             _ <- forkWorker "redis" 0
-            --FIXME: once "Non-existent slave request is ignored" is
-            --fixed, this fork worker can be removed.  The issue is
-            --that one of the workers above takes a stale slave
-            --request.
-            _ <- forkWorker "redis" 0
             checkResult resultVar 10 (Just 0)
     it "Long tasks complete" $ do
         clearRedisKeys
