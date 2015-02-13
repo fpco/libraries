@@ -8,9 +8,9 @@
 module FP.Redis.PubSub
     ( module FP.Redis.Command.PubSub
     , withSubscriptionsWrapped
-    , withSubscriptionsWrapped'
+    , withSubscriptionsWrappedConn
     , withSubscriptionsEx
-    , withSubscriptionsEx'
+    , withSubscriptionsExConn
     , subscribe
     , psubscribe
     , unsubscribe
@@ -41,24 +41,26 @@ withSubscriptionsWrapped :: MonadConnect m
                          -> (Message -> m ()) -- ^ Callback to receive messages
                          -> m void
 withSubscriptionsWrapped connectionInfo_ subscriptions callback =
-    withSubscriptionsWrapped' connectionInfo_ subscriptions (const callback)
+    withSubscriptionsWrappedConn connectionInfo_ subscriptions (\_ -> return callback)
 
 -- | This provides the connection being used for the subscription, so
 -- that it can be cancelled with 'disconnect'.  Ideally, other
 -- approaches would allow this:
 -- https://github.com/fpco/libraries/issues/34
-withSubscriptionsWrapped' :: MonadConnect m
-                          => ConnectInfo -- ^ Redis connection info
-                          -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
-                          -> (Connection -> Message -> m ()) -- ^ Callback to receive messages
-                          -> m void
-withSubscriptionsWrapped' connectionInfo_ subscriptions callback =
-  withSubscriptionsEx' connectionInfo_ subscriptions wrappedCallback
+withSubscriptionsWrappedConn :: MonadConnect m
+                             => ConnectInfo -- ^ Redis connection info
+                             -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
+                             -> (Connection -> m (Message -> m ())) -- ^ Callback to receive messages
+                             -> m void
+withSubscriptionsWrappedConn connectionInfo_ subscriptions callback' =
+    withSubscriptionsExConn connectionInfo_ subscriptions wrappedCallback
     where
-      wrappedCallback conn msg = catchAny (callback conn msg) callbackHandler
+      wrappedCallback conn = do
+          callback <- callback' conn
+          return $ \msg -> catchAny (callback msg) callbackHandler
       callbackHandler ex =
           logErrorNS (connectLogSource connectionInfo_)
-                     ("withSubscrptionsWrapped callbackHandler: " ++ tshow ex)
+                     ("withSubscriptionsWrappedConn callbackHandler: " ++ tshow ex)
 
 -- | Open a connection that will listen for pub/sub messages.  Since a connection subscribed
 -- to any channels switches to a different mode, regular command and subscriptions cannot
@@ -75,30 +77,32 @@ withSubscriptionsEx :: MonadConnect m
                     -> (Message -> m ()) -- ^ Callback to receive messages
                     -> m void
 withSubscriptionsEx connectionInfo_ subscriptions callback =
-    withSubscriptionsEx' connectionInfo_ subscriptions (const callback)
+    withSubscriptionsExConn connectionInfo_ subscriptions (\_ -> return callback)
 
 -- | This provides the connection being used for the subscription, so
 -- that it can be cancelled with 'disconnect'.  Ideally, other
 -- approaches would allow this:
 -- https://github.com/fpco/libraries/issues/34
-withSubscriptionsEx' :: MonadConnect m
-                     => ConnectInfo -- ^ Redis connection info
-                     -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
-                     -> (Connection -> Message -> m ()) -- ^ Callback to receive messages
-                     -> m void
-withSubscriptionsEx' connectionInfo_ subscriptions callback = do
+withSubscriptionsExConn :: MonadConnect m
+                        => ConnectInfo -- ^ Redis connection info
+                        -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
+                        -> (Connection -> m (Message -> m ())) -- ^ Callback to receive messages
+                        -> m void
+withSubscriptionsExConn connectionInfo_ subscriptions callback' = do
     messageChan <- newChan
     withConnection
         (connectionInfo_{connectSubscriptionCallback = Just (writeChan messageChan)
                         ,connectInitialSubscriptions =
                             connectInitialSubscriptions connectionInfo_ ++ toList subscriptions})
-        (\conn -> forever (loop conn messageChan))
+        (\conn -> do
+            callback <- callback' conn
+            forever (loop callback messageChan))
   where
-    loop conn messageChan = do
+    loop callback messageChan = do
         msg <- catch (readChan messageChan)
                      (\BlockedIndefinitelyOnMVar -> throwM DisconnectedException)
         case decodeMessage msg of
-            Just msg' -> callback conn msg'
+            Just msg' -> callback msg'
             Nothing -> throwM ProtocolException
     decodeMessage [BulkString (Just "subscribe"),channel,subscriptionCount] =
         case (decodeResponse channel, decodeResponse subscriptionCount) of
