@@ -1,14 +1,13 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE DeriveGeneric #-}
 
 -- | This module provides a work-queue based on Redis.  It's
 -- recommended that the higher level "Distributed.JobQueue" be used
@@ -20,18 +19,6 @@
 --
 -- (2) Many workers can ask for incoming work requests, and block on
 -- these.
---
--- (3) A guarantee that enqueued work will not be lost until it's
--- completed, even in the presence of server failure.  A failure in
--- Redis persistence can invalidate this guarantee.
---
---     - This guarantee requires that workers run a 'sendHeartbeats'
---     thread, and clients run a 'checkHeartbeats' thread.
---
---     - SIDENOTE: We may need a high reliability redis configuration
---     for this guarantee as well. The redis wikipedia article
---     mentions that the default config can lose changes received
---     during the 2 seconds before failure.
 --
 -- One caveat is that it does not current make the guarantee that
 -- results are only delivered once.  It's up to the client to deal
@@ -53,27 +40,18 @@ module Distributed.RedisQueue
     , pushRequest
     , readResponse
     , subscribeToResponses
-    , checkHeartbeats
     -- * Compute API used by workers
     , popRequest
-    , unpopRequest
     , sendResponse
-    , sendHeartbeats
-    , deactivateWorker
-    , reactivateWorker
-    , getUnusedWorkerId
     ) where
 
 import           ClassyPrelude
-import           Control.Concurrent (threadDelay)
-import           Control.Monad.Logger (MonadLogger, logError)
+import           Control.Monad.Logger (MonadLogger, logErrorS)
 import qualified Crypto.Hash.SHA1 as SHA1
-import           Data.Binary (Binary, encode, decode)
-import qualified Data.ByteString.Char8 as BS8
-import           Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
+import           Data.Binary (encode, decode)
+import           Data.List.NonEmpty (NonEmpty((:|)))
+import           Distributed.RedisQueue.Internal
 import           FP.Redis
-import           FP.Redis.Mutex
-import           System.Random (randomRIO)
 
 -- | Info required to submit requests to the queue ('pushRequest'),
 -- wait for responses ('subscribeToResponses'), and retrieve them
@@ -89,41 +67,6 @@ data WorkerInfo = WorkerInfo
     { workerId :: WorkerId
     , workerResponseExpiry :: Seconds
     }
-
--- | Common information about redis, used by both client and worker.
-data RedisInfo = RedisInfo
-    { redisConnection :: Connection
-    , redisConnectInfo :: ConnectInfo
-    , redisKeyPrefix :: ByteString
-    }
-
--- | ID of a redis channel used for notifications about a particular
--- request.  One way to use this is to give each client server its own
--- 'BackchannelId', so that it is only informed of responses
--- associated with the requests it makes.
-newtype BackchannelId = BackchannelId { unBackchannelId :: ByteString }
-    deriving (Eq, Show, Binary, IsString)
-
--- | Every worker server has a 'WorkerId' to uniquely identify it.
--- It's needed for the fault tolerance portion - in the event that a
--- worker goes down we need to be able to re-enqueue its work.
-newtype WorkerId = WorkerId { unWorkerId :: ByteString }
-    deriving (Eq, Show, Binary, IsString)
-
--- | This is the key used for enqueued requests, and, later, the
--- response associated with it.  It's the hash of the request, which
--- allows responses to be cached.
-newtype RequestId = RequestId { unRequestId :: ByteString }
-    deriving (Eq, Show, Binary, Hashable)
-
--- | This acquires a Redis 'Connection' and wraps it up along with a
--- key prefix into a 'RedisInfo' value.  This 'RedisInfo' value can
--- then be used to run the various functions in this module.
-withRedis
-    :: MonadConnect m
-    => ByteString -> ConnectInfo -> (RedisInfo -> m a) -> m a
-withRedis redisKeyPrefix redisConnectInfo f =
-    withConnection redisConnectInfo $ \redisConnection -> f RedisInfo {..}
 
 -- | Pushes a request to the compute workers.  If the result has been
 -- computed previously, and the result is still cached, then it's
@@ -155,71 +98,32 @@ pushRequest r (ClientInfo bid expiry) request = do
 
 -- | This function is used by the compute workers to take work off of
 -- the queue.  When work is taken off the queue, it also gets moved to
--- an in-progress queue specific to the worker, atomically.  This is
--- done so that in the event of server failure, the work items can be
+-- an active queue specific to the worker, atomically.  This is done
+-- so that in the event of server failure, the work items can be
 -- re-enqueued.
 --
--- If items can't be enqueued to the in-progress list, then 'Nothing'
--- is returned.  This means that either the worker has failed the
--- heartbeat check, or deactivateWorker has been used.
+-- If there isn't any work available, 'Nothing' is returned.
 --
--- Note that this blocks the redis connection until it completes.
+-- If the request data is missing, then 'RequestMissing' is thrown.
 popRequest
     :: (MonadCommand m, MonadThrow m)
-    => RedisInfo -> WorkerInfo -> m (Maybe (RequestId, BackchannelId, ByteString))
+    => RedisInfo
+    -> WorkerInfo
+    -> m (Maybe (RequestId, BackchannelId, ByteString))
 popRequest r (WorkerInfo wid _) = do
-    -- 'inProgressKey' can either be a list or a dummy string value.
-    -- It gets replaced by a string when its in-progress items get
-    -- moved to the requests queue.  This causes this command to exit
-    -- without taking action.  So, the use of 'LKey' here is not
-    -- entirely valid, and this can cause 'brpoplpush' to yield a
-    -- 'CommandException'.
-    let src = requestsKey r
-        dest = LKey $ inProgressKey r wid
-    eres <- try $ run r $ brpoplpush src dest (Seconds 0)
-    case eres of
-        Left (CommandException (isPrefixOf "WRONGTYPE" -> True)) ->
-            return Nothing
-        Left ex ->
-            throwM ex
-        Right Nothing ->
-            fail "impossible: brpoplpush reported timeout"
-        Right (Just (decode . fromStrict -> RequestInfo k bid)) -> do
+    mreq <- run r $ rpoplpush (requestsKey r) (activeKey r wid)
+    case mreq of
+        Nothing -> return Nothing
+        Just (decode . fromStrict -> RequestInfo k bid) -> do
             mx <- run r $ get (requestDataKey r k)
             case mx of
                 Nothing -> throwM (RequestMissing k)
                 Just x -> return (Just (k, bid, x))
 
--- | This function is used by compute workers to put the most recently
--- popped work back on the queue.
---
--- Throws a 'CommandException' if the in-progress queue has been
--- replaced by a dummy string.
---
--- Throws 'NoRequestToUnpop' if the in-progress queue is empty.
-unpopRequest
-    :: (MonadCommand m, MonadThrow m)
-    => RedisInfo -> WorkerInfo -> m ()
-unpopRequest r (WorkerInfo wid _) = do
-    -- This is required because there's no "lpoprpush" command
-    -- https://github.com/antirez/redis/issues/658#issuecomment-21112910
-    success <- run r $ (eval script ks [] :: CommandRequest Bool)
-    when (not success) $ throwM (NoRequestToUnpop wid)
-  where
-    ks = [inProgressKey r wid, unLKey (requestsKey r)]
-    script = BS8.unlines
-        [ "local popped = redis.call('lpop', KEYS[1])"
-        , "if popped then"
-        , "    redis.call('rpush', KEYS['2'], popped)"
-        , "    return true"
-        , "else"
-        , "    return false"
-        , "end"
-        ]
-
 -- | Send a response for a particular request.  This is done by the
 -- compute workers once they're done with the computation, and have
--- results to send.
+-- results to send.  Once the response is successfully sent, this also
+-- removes the request data, as it's no longer needed.
 sendResponse
     :: (MonadCommand m, MonadLogger m)
     => RedisInfo -> WorkerInfo -> RequestId -> BackchannelId -> ByteString -> m ()
@@ -228,17 +132,15 @@ sendResponse r (WorkerInfo wid expiry) k bid x = do
     run_ r $ set (responseDataKey r k) x [EX expiry]
     run_ r $ publish (responseChannel r bid) (unRequestId k)
     -- Remove the RequestId associated with this response, from the
-    -- list of in-progress requests.  This is wrapped in a 'try'
-    -- because inProgressKey might point to a dummy value rather than
-    -- a list (see handleWorkerFailure).
-    let ipk = LKey $ inProgressKey r wid
-    removed <- try $ run r $ lrem ipk 1 (toStrict (encode (k, bid)))
-    case removed :: Either RedisException Int64 of
-        Right 1 -> return ()
-        _ -> $logError $
+    -- list of in-progress requests.
+    let ak = activeKey r wid
+    removed <- run r $ lrem ak 1 (toStrict (encode (k, bid)))
+    if removed == 1
+        then return ()
+        else $logErrorS "RedisQueue" $
             tshow k <>
-            " isn't a member of in-progress queue (" <>
-            tshow ipk <>
+            " isn't a member of active queue (" <>
+            tshow ak <>
             "), likely indicating that a heartbeat failure happened, causing\
             \ it to be erroneously re-enqueued.  This doesn't affect\
             \ correctness, but could mean that redundant work is performed."
@@ -276,231 +178,11 @@ subscribeToResponses r (ClientInfo bid _) subscribed f = do
         trackSubscriptionStatus subscribed $ \_ k ->
             f (RequestId k)
 
--- | This listens for a notification telling the worker to send a
--- heartbeat.  In this case, that means the worker needs to remove its
--- key from a Redis set.  If this doesn't happen in a timely fashion,
--- then the worker will be considered to be dead, and its work items
--- get re-enqueued.
---
--- The @TVar Bool@ is changed to 'True' once the subscription is made
--- and the 'WorkerId' has been added to the list of active workers.
-sendHeartbeats
-    :: MonadConnect m => RedisInfo -> WorkerInfo -> TVar Bool -> m void
-sendHeartbeats r (WorkerInfo wid _) ready = do
-    let sub = subscribe (heartbeatChannel r :| [])
-    withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $ \msg ->
-        case msg of
-            Subscribe {} -> do
-                run_ r $ sadd (activeKey r) (unWorkerId wid :| [])
-                atomically $ writeTVar ready True
-            Unsubscribe {} ->
-                atomically $ writeTVar ready False
-            Message {} ->
-                run_ r $ srem (inactiveKey r) (unWorkerId wid :| [])
-
--- | Periodically check worker heartbeats.  This uses
--- 'periodicActionWrapped' to share the responsibility of checking the
--- heartbeats amongst multiple client servers.  All invocations of
--- this should use the same time interval.
-checkHeartbeats
-    :: MonadConnect m => RedisInfo -> Seconds -> m void
-checkHeartbeats r ivl =
-    periodicActionWrapped (redisConnection r) (heartbeatTimeKey r) ivl $ do
-        -- Check if the last iteration of this heartbeat check ran
-        -- successfully.  If it did, then we can use the contents of
-        -- the inactive list.  The flag also gets set to False here,
-        -- such that if a failure happens in the middle, the next run
-        -- will know to not use the data.
-        functioning <- fmap (fmap (decode . fromStrict)) $
-            run r $ getset (heartbeatFunctioningKey r) (toStrict (encode False))
-        inactive <- if functioning == Just True
-            then do
-                -- Fetch the list of inactive workers and move their jobs
-                -- back to the requests queue.
-                inactive <- run r $ smembers (inactiveKey r)
-                mapM_ (handleWorkerFailure r . WorkerId) inactive
-                return inactive
-            else return []
-        -- Remove the inactive workers from the list of workers.
-        mapM_ (run_ r . srem (activeKey r)) (nonEmpty inactive)
-        -- Populate the list of inactive workers for the next
-        -- heartbeat.
-        workers <- run r $ smembers (activeKey r)
-        run_ r $ del (unSKey (inactiveKey r) :| [])
-        mapM_ (run_ r . sadd (inactiveKey r)) (nonEmpty workers)
-        -- Ask all of the workers to remove their IDs from the inactive
-        -- list.
-        -- TODO: Remove this threadDelay (see #26)
-        liftIO $ threadDelay (100 * 1000)
-        run_ r $ publish (heartbeatChannel r) ""
-        -- Record that the heartbeat check was successful.
-        run_ r $ set (heartbeatFunctioningKey r) (toStrict (encode True)) []
-
-handleWorkerFailure
-    :: (MonadCommand m, MonadLogger m) => RedisInfo -> WorkerId -> m ()
-handleWorkerFailure r wid = do
-    success <- run r $ (eval script
-        [inProgressKey r wid, unLKey (requestsKey r)]
-        [] :: CommandRequest Bool)
-    when (not success) $
-        $logError $ "Failed to read in-progress list for " <> tshow wid <> "."
-  where
-    script = BS8.unlines
-        [ "local xs = redis.pcall('lrange', KEYS[1], 0, -1)"
-        , "if xs['err'] then"
-        , "    return false"
-        , "else"
-               -- A step size of 1000 is a conservative choice.
-               -- Really this ought to be (LUAI_MAXCSTACK - 2), which
-               -- is usually 7998.  However, unfortunately there
-               -- doesn't seem to be a way to access LUAI_MAXCSTACK.
-        , "    local step = 1000"
-        , "    local len = table.getn(xs)"
-        , "    for i=1,len,step do"
-        , "        local upper = math.min(i + step - 1, len)"
-        , "        redis.call('rpush', KEYS[2], unpack(xs, i, upper))"
-        , "    end"
-               -- This is rather tricky - the inProgressKey is
-               -- replaced with a dummy string value.  This causes
-               -- popRequest's invocation of brpoplpush to exit
-               -- without causing any mutation.
-        , "    redis.call('del', KEYS[1])"
-        , "    redis.call('set', KEYS[1], 'done')"
-        , "    return true"
-        , "end"
-        ]
-
--- | This is used to remove the worker from the set of workers checked
--- for heartbeats.  It's used when a master becomes a slave.
---
--- It throws a 'WorkStillInProgress' exception if there is enqueued
--- work, so callers should ensure that this isn't the case.  In order
--- to ensure that work isn't enqueued to the deactivated worker, it
--- also replaces the list with a dummy string value.  This will cause
--- 'popRequest' to yield 'Nothing'.
-deactivateWorker :: (MonadCommand m, MonadThrow m)
-                 => RedisInfo -> WorkerInfo -> m ()
-deactivateWorker r (WorkerInfo wid _) = do
-    success <- run r $ (eval script
-        [inProgressKey r wid, unSKey (activeKey r)]
-        [unWorkerId wid] :: CommandRequest Bool)
-    when (not success) $ throwM (WorkStillInProgress wid)
-  where
-    script = BS8.unlines
-        [ "local l = redis.pcall('llen', KEYS[1])"
-        -- If the in-progress list has already been replaced by a
-        -- 'done' string value, then it's still valid to deactivate
-        -- the worker.
-        , "if ((type(l) == 'table') and l['err']) or (l == 0) then"
-              -- Remove from the list of active workers.
-        , "    redis.call('srem', KEYS[2], ARGV[1])"
-               -- See note in handleWorkerFailure, lines of code
-               -- identical to the next two.
-        , "    redis.call('del', KEYS[1])"
-        , "    redis.call('set', KEYS[1], 'done')"
-        , "    return true"
-        , "else"
-        , "    return false"
-        , "end"
-        ]
-
--- | This is used to re-activate the worker after an invocation of
--- 'deactivateWorker'.  It removes the dummy string value which
--- prevents the worker's in-progress queue from being used.
---
--- This doesn't immediately re-add the worker to the set of active
--- workers.  Instead, the caller should invoke 'sendHeartbeats' soon
--- after calling this function.  'sendHeartbeats' will handle adding
--- the worker to the set of active workers.
-reactivateWorker :: MonadCommand m => RedisInfo -> WorkerInfo -> m ()
-reactivateWorker r (WorkerInfo wid _) =
-    run_ r $ del (inProgressKey r wid :| [])
-
--- | Given a name to start with, this finds a 'WorkerId' which has
--- never been used before.  It also adds the new 'WorkerId' to the set
--- of all worker IDs.
-getUnusedWorkerId
-    :: MonadCommand m => RedisInfo -> ByteString -> m WorkerId
-getUnusedWorkerId r initial = go (0 :: Int)
-  where
-    go n = do
-        let toWord8 = fromIntegral . fromEnum
-        postfix <- liftIO $ replicateM n $ randomRIO (toWord8 'a', toWord8 'z')
-        let k | n == 0 = initial
-              | otherwise = initial <> "-" <> postfix
-        numberAdded <- run r $ sadd (workersKey r) (k :| [])
-        if numberAdded == 0
-            then go (n+1)
-            else return (WorkerId k)
-
--- * Datatypes used for serialization / deserialization
-
-data RequestInfo = RequestInfo RequestId BackchannelId
-    deriving (Generic)
-
-instance Binary RequestInfo
-
--- * Functions to compute Redis keys
-
--- List of "Data.Binary" encoded @RequestInfo@.
-requestsKey :: RedisInfo -> LKey
-requestsKey  r = LKey $ Key $ redisKeyPrefix r <> "requests"
-
--- Given a 'RequestId', computes the key for the request or response
--- data.
-requestDataKey, responseDataKey :: RedisInfo -> RequestId -> VKey
-requestDataKey  r k = VKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k
-responseDataKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestId k
-
--- Given a 'BackchannelId', computes the name of the 'Channel'.
-responseChannel :: RedisInfo -> BackchannelId -> Channel
-responseChannel r k =
-    Channel $ redisKeyPrefix r <> "responses:" <> unBackchannelId k
-
--- Given a 'WorkerId', computes the key of its in-progress list.
-inProgressKey :: RedisInfo -> WorkerId -> Key
-inProgressKey r k = Key $ redisKeyPrefix r <> "in-progress:" <> unWorkerId k
-
-inactiveKey, activeKey, workersKey :: RedisInfo -> SKey
--- A set of 'WorkerId' who have not yet removed their keys (indicating
--- that they're still alive and responding to heartbeats).
-inactiveKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:inactive"
--- A set of 'WorkerId's that are currently thought to be running.
-activeKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:active"
--- A set of all 'WorkerId's that have ever been known.
-workersKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:workers"
-
--- Stores a "Data.Binary" encoded 'Bool'.
-heartbeatFunctioningKey :: RedisInfo -> VKey
-heartbeatFunctioningKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:functioning"
-
--- Channel used for requesting that the workers remove their
--- 'WorkerId' from the set at 'inactiveKey'.
-heartbeatChannel :: RedisInfo -> Channel
-heartbeatChannel r = Channel $ redisKeyPrefix r <> "heartbeat:channel"
-
--- Prefix used for the 'periodicActionWrapped' invocation, which is
--- used to share the responsibility of periodically checking
--- heartbeats.
-heartbeatTimeKey :: RedisInfo -> PeriodicPrefix
-heartbeatTimeKey r = PeriodicPrefix $ redisKeyPrefix r <> "heartbeat:time"
-
--- * Redis utilities
-
-run :: MonadCommand m => RedisInfo -> CommandRequest a -> m a
-run = runCommand . redisConnection
-
-run_ :: MonadCommand m => RedisInfo -> CommandRequest a -> m ()
-run_ = runCommand_ . redisConnection
-
 -- * Exceptions
 
 data DistributedRedisQueueException
     = ResponseMissing RequestId
     | RequestMissing RequestId
-    | WorkStillInProgress WorkerId
-    | WorkerAlreadyDeactivated WorkerId
-    | NoRequestToUnpop WorkerId
     deriving (Eq, Show, Typeable)
 
 instance Exception DistributedRedisQueueException

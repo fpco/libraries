@@ -22,6 +22,7 @@ library
                        Data.Streaming.NetworkMessage
                        Distributed.JobQueue
                        Distributed.RedisQueue
+                       Distributed.RedisQueue.Internal
                        Distributed.WorkQueue
                        Control.Concurrent.ThreadPool
   build-depends:       base

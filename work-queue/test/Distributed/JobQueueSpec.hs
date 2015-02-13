@@ -56,7 +56,7 @@ spec = do
             --that one of the workers above takes a stale slave
             --request.
             _ <- forkWorker "redis" 0
-            checkResult resultVar 5 (Just 0)
+            checkResult resultVar 10 (Just 0)
     it "Long tasks complete" $ do
         clearRedisKeys
         runResourceT $ do
@@ -108,13 +108,13 @@ clearRedisKeys =
 clearSlaveRequests :: MonadIO m => m ()
 clearSlaveRequests =
     liftIO $ runStdoutLoggingT $ withRedis redisTestPrefix localhost $ \r -> do
-        runCommand_ (redisConnection r) $ del (unLKey (slaveRequestKey r) :| [])
+        runCommand_ (redisConnection r) $ del (unLKey (slaveRequestsKey r) :| [])
 
 enqueueSlaveRequest :: MonadIO m => SlaveRequest -> m ()
 enqueueSlaveRequest sr =
     liftIO $ runStdoutLoggingT $ withRedis redisTestPrefix localhost $ \r -> do
         let encoded = toStrict (encode sr)
-        runCommand_ (redisConnection r) $ lpush (slaveRequestKey r) (encoded :| [])
+        runCommand_ (redisConnection r) $ lpush (slaveRequestsKey r) (encoded :| [])
 
 localhost :: ConnectInfo
 localhost = connectInfo "localhost"
