@@ -80,4 +80,5 @@ test-suite test
                      , lifted-base
                      , classy-prelude
                      , stm
+                     , monad-control
   ghc-options:         -Wall -threaded
