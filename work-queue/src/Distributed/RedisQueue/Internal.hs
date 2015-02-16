@@ -9,15 +9,8 @@
 module Distributed.RedisQueue.Internal where
 
 import           ClassyPrelude
-import           Control.Concurrent (threadDelay)
-import           Control.Monad.Logger (MonadLogger, logError)
-import qualified Crypto.Hash.SHA1 as SHA1
-import           Data.Binary (Binary, encode, decode)
-import qualified Data.ByteString.Char8 as BS8
-import           Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
+import           Data.Binary (Binary)
 import           FP.Redis
-import           FP.Redis.Mutex
-import           System.Random (randomRIO)
 
 -- * Types used in the API
 
