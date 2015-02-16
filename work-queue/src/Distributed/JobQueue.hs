@@ -39,7 +39,7 @@ module Distributed.JobQueue
 
 import           ClassyPrelude
 import           Control.Concurrent.Async (Async, async, link, withAsync, race)
-import           Control.Concurrent.Lifted (fork, threadDelay)
+import           Control.Concurrent.Lifted (fork)
 import           Control.Concurrent.STM (check)
 import           Control.Monad.Logger (MonadLogger, logWarnS, logErrorS, logDebugS)
 import           Control.Monad.Trans.Control (control, liftBaseWith, MonadBaseControl, StM)
@@ -463,8 +463,6 @@ checkHeartbeats r ivl =
         mapM_ (run_ r . sadd (heartbeatInactiveKey r)) (nonEmpty workers)
         -- Ask all of the workers to remove their IDs from the inactive
         -- list.
-        -- TODO: Remove this threadDelay (see #26)
-        liftIO $ threadDelay (100 * 1000)
         run_ r $ publish (heartbeatChannel r) ""
         -- Record that the heartbeat check was successful.
         run_ r $ set (heartbeatFunctioningKey r) (toStrict (encode True)) []
