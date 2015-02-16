@@ -16,6 +16,7 @@ import Distributed.JobQueue
 import Distributed.RedisQueue
 import Distributed.WorkQueueSpec (redisTestPrefix, forkWorker, cancelProcess)
 import FP.Redis
+import System.Random (randomRIO)
 import System.Timeout.Lifted (timeout)
 import Test.Hspec (Spec, it, shouldBe)
 
@@ -62,16 +63,23 @@ spec = do
         _ <- forkWorker "redis" 0
         resultVar <- forkDispatcher
         checkResult resultVar 5 (Just 0)
-    jqit "preserves data despite slaves being started and killed periodically" $ do
+    jqit "Preserves data despite slaves being started and killed periodically" $ do
         resultVar <- forkDispatcher
-        let randomSlaveSpawner = forever $ do
-                pid <- forkWorker
-                ms <- randomRIO (150, 300)
+        let randomSlaveSpawner = runResourceT $ forever $ do
+                pid <- forkWorker "redis" 0
+                ms <- liftIO $ randomRIO (0, 200)
                 threadDelay (1000 * ms)
                 cancelProcess pid
-        void $ randomSlaveSpawner `race`
+            -- TODO: determine why this is needed.
+            eventuallySpawnWithoutKilling = runResourceT $ do
+                threadDelay (1000 * 1000 * 5)
+                forkWorker "redis" 0
+        liftIO $ void $
             randomSlaveSpawner `race`
-            checkResult resultVar 5 (Just 0)
+            randomSlaveSpawner `race`
+            eventuallySpawnWithoutKilling `race`
+            eventuallySpawnWithoutKilling `race`
+            checkResult resultVar 10 (Just 0)
 
 
 jqit :: String -> ResourceT IO () -> Spec
