@@ -105,10 +105,6 @@ data WorkerConfig = WorkerConfig
       -- ^ Which port to use when the worker is acting as a master.
     , workerMasterLocalSlaves :: Int
       -- ^ How many local slaves a master server should run.
-    , workerPopRequestRetry :: Int
-      -- ^ Microseconds to retry popRequest.  This is only used in the
-      -- erroneous case where the in-progress queue is blocked yet the
-      -- slave isn't running.
     }
 
 -- | Given a redis key prefix and redis connection information, builds
@@ -124,7 +120,6 @@ defaultWorkerConfig prefix ci hostname port = WorkerConfig
     , workerHostName = hostname
     , workerPort = port
     , workerMasterLocalSlaves = 0
-    , workerPopRequestRetry = 1000 * 1000 * 5
     }
 
 -- Hostname and port of the master the slave should connect to.
