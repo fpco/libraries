@@ -76,6 +76,9 @@ import           System.Random (randomRIO)
 -- * Pass in the host name, rather than using the 'getHostName'
 --
 -- * Add a wrapper like 'Distributed.WorkQueue.runArgs'
+--
+-- * Consider wrapping up some of the arguments to 'inner' in a new
+-- datatype, and also passing this into 'requestSlave'.
 
 data DistributedJobQueueException
     = WorkStillInProgress WorkerId
@@ -95,10 +98,13 @@ data WorkerConfig = WorkerConfig
       -- ^ Prefix used for redis keys.
     , workerConnectInfo :: ConnectInfo
       -- ^ Info used to connect to the redis server.
+    , workerHostName :: ByteString
+      -- ^ The host name sent to slaves, so that they can connect to
+      -- this worker when it's acting as a master.
+    , workerPort :: Int
+      -- ^ Which port to use when the worker is acting as a master.
     , workerMasterLocalSlaves :: Int
       -- ^ How many local slaves a master server should run.
-    , workerMasterPort :: Int
-      -- ^ Which port to use.
     , workerPopRequestRetry :: Int
       -- ^ Microseconds to retry popRequest.  This is only used in the
       -- erroneous case where the in-progress queue is blocked yet the
@@ -110,13 +116,14 @@ data WorkerConfig = WorkerConfig
 --
 -- This config has response data expire every hour, and configures
 -- masters to have 0 local slaves.
-defaultWorkerConfig :: ByteString -> ConnectInfo -> WorkerConfig
-defaultWorkerConfig prefix ci = WorkerConfig
+defaultWorkerConfig :: ByteString -> ConnectInfo -> ByteString -> Int -> WorkerConfig
+defaultWorkerConfig prefix ci hostname port = WorkerConfig
     { workerResponseDataExpiry = Seconds 3600
     , workerKeyPrefix = prefix
     , workerConnectInfo = ci
+    , workerHostName = hostname
+    , workerPort = port
     , workerMasterLocalSlaves = 0
-    , workerMasterPort = 4000
     , workerPopRequestRetry = 1000 * 1000 * 5
     }
 
@@ -242,8 +249,8 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                     response <- liftIO $ inner initialData redis decoded queue
                     let encoded = toStrict (encode response)
                     sendResponse redis worker rid bid encoded
-        ss = setAfterBind (const $ putStrLn $ "Listening on " ++ tshow (workerMasterPort config))
-                          (serverSettingsTCP (workerMasterPort config) "*")
+        ss = setAfterBind (const $ putStrLn $ "Listening on " ++ tshow (workerPort config))
+                          (serverSettingsTCP (workerPort config) "*")
         start = do
             atomically $ check =<< readTVar heartbeatsReady
             loop CheckRequests
@@ -284,9 +291,7 @@ requestSlave
     -> RedisInfo
     -> m ()
 requestSlave config r = do
-    --TODO: store hostName somewhere?
-    hostName <- liftIO getHostName
-    let request = SlaveRequest (encodeUtf8 (pack hostName :: Text)) (workerMasterPort config)
+    let request = SlaveRequest (workerHostName config) (workerPort config)
         encoded = toStrict (encode request)
     runCommand_ (redisConnection r) $ lpush (slaveRequestsKey r) (encoded :| [])
     notifyRequestAvailable r

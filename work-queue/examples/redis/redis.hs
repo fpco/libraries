@@ -45,7 +45,7 @@ masterOrSlave :: IO ()
 masterOrSlave =
     runStdoutLoggingT $ jobQueueWorker config initialData calc inner
   where
-    config = defaultWorkerConfig prefix localhost
+    config = defaultWorkerConfig prefix localhost "localhost" 4000
     initialData = return ()
     calc () input = return $ foldl' xor zeroBits (input :: [Int])
     inner () redis request queue = do

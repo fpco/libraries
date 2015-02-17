@@ -218,7 +218,7 @@ runMasterOrSlave RedisConfig {..} | isLong = runStdoutLoggingT $ do
         inner () redis _ _ = do
             requestSlave config redis
             return 0
-        config = (defaultWorkerConfig redisTestPrefix (connectInfo "localhost"))
+        config = workerConfig
             { workerMasterLocalSlaves = read (unpack lslaves)
             }
     jobQueueWorker config initialData calc inner
@@ -233,10 +233,13 @@ runMasterOrSlave RedisConfig {..} = runStdoutLoggingT $ do
             subresults <- mapQueue queue request
             result <- liftIO $ calc () (otoList (subresults :: Vector Int))
             return result
-        config = (defaultWorkerConfig redisTestPrefix (connectInfo "localhost"))
+        config = workerConfig
             { workerMasterLocalSlaves = read (unpack lslaves)
             }
     jobQueueWorker config initialData calc inner
+
+workerConfig :: WorkerConfig
+workerConfig = defaultWorkerConfig redisTestPrefix (connectInfo "localhost") "localhost" 4000
 
 runArgs'
     :: ( Typeable initialData
