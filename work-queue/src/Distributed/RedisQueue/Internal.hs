@@ -6,6 +6,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
+-- | Functions and types shared by "Distributed.RedisQueue" and
+-- "Distributed.JobQueue".
 module Distributed.RedisQueue.Internal where
 
 import           ClassyPrelude

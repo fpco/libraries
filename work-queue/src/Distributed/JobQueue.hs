@@ -73,7 +73,9 @@ import           System.Random (randomRIO)
 --
 -- * Check types at runtime.
 --
--- * Add a timeout to the slave connection
+-- * Pass in the host name, rather than using the 'getHostName'
+--
+-- * Add a wrapper like 'Distributed.WorkQueue.runArgs'
 
 data DistributedJobQueueException
     = WorkStillInProgress WorkerId
@@ -106,8 +108,8 @@ data WorkerConfig = WorkerConfig
 -- | Given a redis key prefix and redis connection information, builds
 -- a default 'WorkerConfig'.
 --
--- This config has response data expire every hour, and masters have 0
--- local slaves.
+-- This config has response data expire every hour, and configures
+-- masters to have 0 local slaves.
 defaultWorkerConfig :: ByteString -> ConnectInfo -> WorkerConfig
 defaultWorkerConfig prefix ci = WorkerConfig
     { workerResponseDataExpiry = Seconds 3600
@@ -249,6 +251,33 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
             withRedis' config $ \r -> sendHeartbeats r worker heartbeatsReady
     start `raceLifted` heartbeats
 
+-- | This command is used by a master work server to request that a
+-- slave connect to it.
+--
+-- This currently has the following caveats:
+--
+--   (1) The slave request is not guaranteed to be fulfilled, for
+--   multiple reasons:
+--
+--       - All workers may be busy doing other work.
+--
+--       - The queue of slave requests might already be long.
+--
+--       - A worker might pop the slave request and then shut down
+--       before establishing a connection to the master.
+--
+--   (2) A master may get slaves connecting to it that it didn't
+--   request.  Here's why:
+--
+--       - When a worker stops being a master, it does not remove its
+--       pending slave requests from the list.  This means they can
+--       still be popped by workers.  Usually this means that the
+--       worker will attempt to connect, fail, and find something else
+--       to do.  However, in the case that the server becomes a master
+--       again, it's possible that a slave will pop its request.
+--
+-- These caveats are not necessitated by any aspect of the overall
+-- design, and may be resolved in the future.
 requestSlave
     :: MonadCommand m
     => WorkerConfig

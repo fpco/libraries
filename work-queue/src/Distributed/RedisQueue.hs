@@ -14,11 +14,10 @@
 -- instead, as it uses this API properly.  The Redis queue has the
 -- following features:
 --
--- (1) Many clients can enqueue work and block on responses, without
+-- (1) Many clients can push work requests and read responses, without
 -- knowing anything about the workers.
 --
--- (2) Many workers can ask for incoming work requests, and block on
--- these.
+-- (2) Many workers can pop work requests, and send responses.
 --
 -- One caveat is that it does not current make the guarantee that
 -- results are only delivered once.  It's up to the client to deal
@@ -31,6 +30,10 @@
 -- to figure out their 'RequestId'.  If a response already exists for
 -- a given 'RequestId', then it is returned instead of enqueuing a
 -- redundant computation.
+--
+-- By moving items off of 'activeKey', and onto "requestsKey", the
+-- user of this API can handle the circumstance that a worker has
+-- failed.  This is handled by "Distributed.JobQueue".
 module Distributed.RedisQueue
     ( ClientInfo(..), WorkerInfo(..), RedisInfo(..)
     , RequestId(..), BackchannelId(..), WorkerId(..)
