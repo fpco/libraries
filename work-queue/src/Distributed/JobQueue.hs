@@ -119,7 +119,7 @@ defaultWorkerConfig prefix ci hostname port = WorkerConfig
     , workerConnectInfo = ci
     , workerHostName = hostname
     , workerPort = port
-    , workerMasterLocalSlaves = 0
+    , workerMasterLocalSlaves = 1
     }
 
 -- Hostname and port of the master the slave should connect to.
