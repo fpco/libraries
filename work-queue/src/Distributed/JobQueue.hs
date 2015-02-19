@@ -171,6 +171,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
     wid <- getWorkerId redis
     initialDataRef <- newIORef Nothing
     heartbeatsReady <- liftIO $ newTVarIO False
+    nmSettings <- liftIO defaultNMSettings
     let worker = WorkerInfo wid (workerResponseDataExpiry config)
         loop soc = do
             -- If there's slave work to be done, then do it.
@@ -220,7 +221,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
         becomeSlave req@(SlaveRequest host port) = do
             $logDebugS "JobQueue" "Becoming Slave"
             deactivateWorker redis worker
-            eres <- try $ runSlave (clientSettingsTCP port host) defaultNMSettings calc
+            eres <- try $ runSlave (clientSettingsTCP port host) nmSettings calc
             case eres of
                 Right () -> return ()
                 -- This indicates that the slave couldn't connect.
@@ -238,7 +239,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                         initialData <- liftIO init
                         writeIORef initialDataRef (Just initialData)
                         return initialData
-            withMaster (runTCPServer ss) defaultNMSettings initialData $ \queue ->
+            withMaster (runTCPServer ss) nmSettings initialData $ \queue ->
                 withLocalSlaves queue (workerMasterLocalSlaves config) (calc initialData) $ do
                     let decoded = decode (fromStrict req)
                     response <- liftIO $ inner initialData redis decoded queue

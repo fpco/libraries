@@ -3,6 +3,7 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 module Data.Streaming.NetworkMessageSpec (spec) where
 
+import           Control.Applicative
 import           Control.Concurrent
 import           Control.Concurrent.Async
 import           Control.Exception
@@ -64,8 +65,8 @@ spec = do
         res `shouldBe` Left (DecodeFailure "Unknown encoding for constructor")
     it "throws HeartbeatFailure when heartbeat intervals are too small" $ do
         exitedLateRef <- newIORef False
-        let settings = setNMHeartbeat 10 defaultNMSettings
-            both :: NMApp () () IO ()
+        settings <- setNMHeartbeat 10 <$> defaultNMSettings
+        let both :: NMApp () () IO ()
             both _ = do
                 threadDelay (1000 * 200)
                 writeIORef exitedLateRef True
@@ -81,7 +82,8 @@ expectMismatchedHandshakes _ _ _ _ = do
     exitedLateRef <- newIORef False
     let client (_ :: NMAppData a b) = writeIORef exitedLateRef True
         server (_ :: NMAppData c d) = writeIORef exitedLateRef True
-    res <- try $ runClientAndServer' defaultNMSettings client server
+    nmSettings <- defaultNMSettings
+    res <- try $ runClientAndServer' nmSettings client server
     case res of
         Left MismatchedHandshakes {} -> return ()
         _ -> fail $ "Expected MismatchedHandshakes, got " ++ show res
@@ -90,7 +92,9 @@ expectMismatchedHandshakes _ _ _ _ = do
 
 runClientAndServer :: forall a b. (Binary a, Binary b, Typeable a, Typeable b)
                    => NMApp a b IO () -> NMApp b a IO () -> IO ()
-runClientAndServer = runClientAndServer' defaultNMSettings
+runClientAndServer client server = do
+    nmSettings <- defaultNMSettings
+    runClientAndServer' nmSettings client server
 
 runClientAndServer' :: forall a b c d. (Binary a, Binary b, Binary c, Binary d, Typeable a, Typeable b, Typeable c, Typeable d)
                     => NMSettings -> NMApp a b IO () -> NMApp c d IO () -> IO ()

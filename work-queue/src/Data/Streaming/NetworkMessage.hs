@@ -120,9 +120,8 @@ runNMApp :: (MonadBaseControl IO m, Sendable iSend, Sendable youSend)
          -> NMApp iSend youSend m a
          -> AppData
          -> m a
-runNMApp (NMSettings heartbeat) app ad = do
+runNMApp (NMSettings heartbeat exeHash) app ad = do
     (yourHS, leftover) <- liftBase $ do
-        exeHash <- executableHash
         let myHS = mkHandshake app heartbeat exeHash
         forM_ (toChunks $ B.encode myHS) (appWrite ad)
         (yourHS, leftover) <- appGet mempty (appRead ad)
@@ -261,17 +260,24 @@ instance Exception NetworkMessageException
 -- setter functions.
 data NMSettings = NMSettings
     { _nmHeartbeat :: !Int
+    , _nmExeHash :: !(Maybe ByteString)
     }
 
 -- | Default settings value.
 --
+-- This is in the IO monad because it reads / computes the
+-- executable's hash.
+--
 -- Heartbeat set at 200ms. This value is quite low, and intended for
 -- low-latency LAN connections. You may need to set this higher, depending on
 -- your needs.
-defaultNMSettings :: NMSettings
-defaultNMSettings = NMSettings
-    { _nmHeartbeat = 200000
-    }
+defaultNMSettings :: IO NMSettings
+defaultNMSettings = do
+    exeHash <- executableHash
+    return NMSettings
+        { _nmHeartbeat = 200000
+        , _nmExeHash = exeHash
+        }
 
 -- | Set the heartbeat timeout to the given number of microseconds (to be used
 -- by 'threadDelay').

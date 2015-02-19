@@ -82,7 +82,8 @@ runArgs getInitialData calc inner = liftIO $ do
 
     master lslaves port = do
         initialData <- getInitialData
-        withMaster (runTCPServer ss) defaultNMSettings initialData $ \queue ->
+        nmSettings <- defaultNMSettings
+        withMaster (runTCPServer ss) nmSettings initialData $ \queue ->
             withLocalSlaves
                 queue
                 lslaves
@@ -92,10 +93,11 @@ runArgs getInitialData calc inner = liftIO $ do
         ss = setAfterBind (const $ putStrLn $ "Listening on " ++ tshow port)
                           (serverSettingsTCP port "*")
 
-    slave host port = runSlave
-        (clientSettingsTCP port $ fromString $ unpack host)
-        defaultNMSettings
-        calc
+    slave host port = do
+        nmSettings <- defaultNMSettings
+        runSlave cs nmSettings calc
+      where
+        cs = clientSettingsTCP port $ fromString $ unpack host
 
 -- | Start running a server in the background to listen for slaves, create a
 -- 'WorkQueue', and assign jobs as necessary.
