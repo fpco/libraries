@@ -47,12 +47,11 @@ mapTP_ :: (MonoFoldable mono, Element mono ~ a, MonadIO m)
        -> (a -> IO b)
        -> mono
        -> m ()
-mapTP_ (ThreadPool queue) f mono = liftIO $ do
-    let xs = otoList mono
-    itemsCount <- newIORef (length xs)
+mapTP_ (ThreadPool queue) f t = liftIO $ do
+    itemsCount <- newIORef (olength t)
     done <- newEmptyMVar
     let decrement = do
             cnt <- atomicModifyIORef itemsCount (\x -> (x - 1, x - 1))
             when (cnt == 0) $ putMVar done ()
-    atomically $ queueItems queue $ map (\a -> (void $ f a, const decrement)) xs
+    oforM_ t $ \a -> atomically $ queueItem queue (void (f a)) (const decrement)
     takeMVar done

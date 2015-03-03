@@ -181,12 +181,11 @@ mapQueue_ :: (MonadIO m, MonoFoldable mono, Element mono ~ payload)
           => WorkQueue payload result
           -> mono
           -> m ()
-mapQueue_ queue mono = liftIO $ do
-    let xs = otoList mono
-    itemsCount <- newIORef (length xs)
+mapQueue_ queue t = liftIO $ do
+    itemsCount <- newIORef (olength t)
     done <- newEmptyMVar
     let decrement = do
             cnt <- atomicModifyIORef itemsCount (\x -> (x - 1, x - 1))
             when (cnt == 0) $ putMVar done ()
-    atomically $ queueItems queue $ map (, const decrement) xs
+    oforM_ t $ \a -> atomically $ queueItem queue a (const decrement)
     takeMVar done
