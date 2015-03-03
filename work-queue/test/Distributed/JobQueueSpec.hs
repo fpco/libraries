@@ -3,7 +3,7 @@
 
 module Distributed.JobQueueSpec where
 
-import ClassyPrelude
+import ClassyPrelude hiding (keys)
 import Control.Concurrent.Async (withAsync, race)
 import Control.Concurrent.Lifted (threadDelay, fork, killThread)
 import Control.Monad.Logger (runStdoutLoggingT)

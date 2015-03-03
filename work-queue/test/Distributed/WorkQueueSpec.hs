@@ -4,7 +4,7 @@
 {-# LANGUAGE RecordWildCards #-}
 module Distributed.WorkQueueSpec where
 
-import           ClassyPrelude hiding (intersect)
+import           ClassyPrelude hiding (intersect, tryReadMVar)
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async (race, async, wait, cancel, Async)
 import           Control.Concurrent.MVar (tryReadMVar)
