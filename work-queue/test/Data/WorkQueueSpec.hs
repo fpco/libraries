@@ -55,15 +55,13 @@ spec = do
             results <- readIORef ref
             sort results `shouldBe` xs
     it "withLocalSlave" $ do
-        -- Since there is only one slave, these actions will be run
-        -- sequentially (which will build up the reversed list).
         ref <- newIORef []
         let calc x = randomTinyDelay >> modifyIORef ref (x:)
             xs = [1..100] :: [Int]
         results <- withWorkQueue $ \queue -> withLocalSlave queue calc $ do
             mapQueue_ queue xs
             readIORef ref
-        results `shouldBe` reverse xs
+        sort results `shouldBe` xs
     it "provideWorker unblocks on close" $ do
         done <- newEmptyMVar
         withWorkQueue $ \queue -> do
