@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE ConstraintKinds #-}
 module Data.Streaming.NetworkMessageSpec (spec) where
 
 import           Control.Applicative
@@ -8,14 +9,12 @@ import           Control.Concurrent
 import           Control.Concurrent.Async
 import           Control.Exception
 import           Control.Monad
-import           Data.Binary
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import           Data.IORef
 import           Data.Maybe (isNothing)
 import           Data.Streaming.Network
 import           Data.Streaming.NetworkMessage
-import           Data.Typeable
 import           System.Timeout (timeout)
 import           Test.Hspec
 
@@ -76,7 +75,7 @@ spec = do
         exitedLate `shouldBe` False
     --TODO: add test for (DecodeFailure "demandInput: not enough bytes")
 
-expectMismatchedHandshakes :: forall a b c d. (Binary a, Binary b, Binary c, Binary d, Typeable a, Typeable b, Typeable c, Typeable d)
+expectMismatchedHandshakes :: forall a b c d. (Sendable a, Sendable b, Sendable c, Sendable d)
                            => a -> b -> c -> d -> IO ()
 expectMismatchedHandshakes _ _ _ _ = do
     exitedLateRef <- newIORef False
@@ -90,13 +89,13 @@ expectMismatchedHandshakes _ _ _ _ = do
     exitedLate <- readIORef exitedLateRef
     exitedLate `shouldBe` False
 
-runClientAndServer :: forall a b. (Binary a, Binary b, Typeable a, Typeable b)
+runClientAndServer :: forall a b. (Sendable a, Sendable b)
                    => NMApp a b IO () -> NMApp b a IO () -> IO ()
 runClientAndServer client server = do
     nmSettings <- defaultNMSettings
     runClientAndServer' nmSettings client server
 
-runClientAndServer' :: forall a b c d. (Binary a, Binary b, Binary c, Binary d, Typeable a, Typeable b, Typeable c, Typeable d)
+runClientAndServer' :: forall a b c d. (Sendable a, Sendable b, Sendable c, Sendable d)
                     => NMSettings -> NMApp a b IO () -> NMApp c d IO () -> IO ()
 runClientAndServer' settings client server = do
     serverReady <- newEmptyMVar

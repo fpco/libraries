@@ -1,7 +1,8 @@
-{-# LANGUAGE NoImplicitPrelude  #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ConstraintKinds #-}
 module Distributed.WorkQueueSpec where
 
 import           ClassyPrelude hiding (intersect, tryReadMVar)
@@ -10,11 +11,11 @@ import           Control.Concurrent.Async (race, async, wait, cancel, Async)
 import           Control.Concurrent.MVar (tryReadMVar)
 import           Control.Monad.Logger (runStdoutLoggingT)
 import           Control.Monad.Trans.Resource (ResourceT, register)
-import           Data.Binary (Binary)
 import           Data.Bits (xor, zeroBits)
 import           Data.List (intersect, delete)
 import           Data.List.Split (chunksOf)
 import           Data.Streaming.Network (getSocketFamilyTCP)
+import           Data.Streaming.NetworkMessage (Sendable)
 import           Distributed.JobQueue
 import           Distributed.RedisQueue
 import           Distributed.WorkQueue
@@ -242,12 +243,9 @@ workerConfig :: WorkerConfig
 workerConfig = defaultWorkerConfig redisTestPrefix (connectInfo "localhost") "localhost" 4000
 
 runArgs'
-    :: ( Typeable initialData
-       , Typeable payload
-       , Typeable result
-       , Binary initialData
-       , Binary payload
-       , Binary result
+    :: ( Sendable initialData
+       , Sendable payload
+       , Sendable result
        , Show output
        )
     => SharedConfig
