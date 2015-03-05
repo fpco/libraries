@@ -15,6 +15,7 @@ import           Data.IORef
 import           Data.Maybe (isNothing)
 import           Data.Streaming.Network
 import           Data.Streaming.NetworkMessage
+import           System.IO.Unsafe (unsafePerformIO)
 import           System.Timeout (timeout)
 import           Test.Hspec
 
@@ -32,19 +33,31 @@ spec = do
         finished <- timeout (1000 * 1000) $
             runClientAndServer client server
         when (isNothing finished) $ fail "Client / server needed to be killed"
-    it "successfully transfers a 10MB bytestring both ways" $ do
-        let xs = BS.replicate (10 * 1024 * 1024) 42
-            client app = do
-                res <- nmRead app
-                res `shouldBe` xs
-                nmWrite app xs
+    it "can yield a value from the client" $ do
+        let client app = do
+                nmWrite app True -- Just to make the type unambiguous
+                nmRead app
             server app = do
-                nmWrite app xs
-                res <- nmRead app
-                res `shouldBe` xs
-        finished <- timeout (10 * 1000 * 1000) $
+                nmWrite app (1 :: Int)
+        finished <- timeout (1000 * 1000 * 2) $
             runClientAndServer client server
-        when (isNothing finished) $ fail "Client / server needed to be killed"
+        finished `shouldBe` Just 1
+    it "doesn't fail when a lazy value takes more than the heartbeat time" $ do
+        settings <- defaultNMSettings
+        let client app = do
+                nmWrite app True
+                nmRead app
+            server app = do
+                nmWrite app $ unsafePerformIO $ do
+                    threadDelay (_nmHeartbeat settings * 3)
+                    return (1 :: Int)
+        finished <- timeout (1000 * 1000 * 2) $
+            runClientAndServer' settings client server
+        finished `shouldBe` Just 1
+    it "successfully transfers a 10MB bytestring both ways" $
+        largeSendTest =<< defaultNMSettings
+    it "successfully transfers a 10MB bytestring both ways, even when heartbeat is low" $
+        largeSendTest =<< setNMHeartbeat (1000 * 20) <$> defaultNMSettings
     it "throws MismatchedHandshakes when client -> server types mismatch" $ do
         expectMismatchedHandshakes () True (Just True) ()
     it "throws MismatchedHandshakes when server -> client types mismatch" $ do
@@ -74,6 +87,21 @@ spec = do
         exitedLate <- readIORef exitedLateRef
         exitedLate `shouldBe` False
 
+largeSendTest :: NMSettings -> IO ()
+largeSendTest settings = do
+     let xs = BS.replicate (10 * 1024 * 1024) 42
+         client app = do
+             res <- nmRead app
+             res `shouldBe` xs
+             nmWrite app xs
+         server app = do
+             nmWrite app xs
+             res <- nmRead app
+             res `shouldBe` xs
+     finished <- timeout (1000 * 1000 * 10) $
+         runClientAndServer' settings client server
+     when (isNothing finished) $ fail "Client / server needed to be killed"
+
 expectMismatchedHandshakes :: forall a b c d. (Sendable a, Sendable b, Sendable c, Sendable d)
                            => a -> b -> c -> d -> IO ()
 expectMismatchedHandshakes _ _ _ _ = do
@@ -81,27 +109,34 @@ expectMismatchedHandshakes _ _ _ _ = do
     let client (_ :: NMAppData a b) = writeIORef exitedLateRef True
         server (_ :: NMAppData c d) = writeIORef exitedLateRef True
     nmSettings <- defaultNMSettings
-    res <- try $ runClientAndServer' nmSettings client server
+    res <- try $ runClientAndServer'' nmSettings client server
     case res of
         Left MismatchedHandshakes {} -> return ()
         _ -> fail $ "Expected MismatchedHandshakes, got " ++ show res
     exitedLate <- readIORef exitedLateRef
     exitedLate `shouldBe` False
 
-runClientAndServer :: forall a b. (Sendable a, Sendable b)
-                   => NMApp a b IO () -> NMApp b a IO () -> IO ()
+runClientAndServer :: forall a b r. (Sendable a, Sendable b)
+                   => NMApp a b IO r -> NMApp b a IO () -> IO r
 runClientAndServer client server = do
     nmSettings <- defaultNMSettings
     runClientAndServer' nmSettings client server
 
-runClientAndServer' :: forall a b c d. (Sendable a, Sendable b, Sendable c, Sendable d)
-                    => NMSettings -> NMApp a b IO () -> NMApp c d IO () -> IO ()
-runClientAndServer' settings client server = do
+runClientAndServer' :: forall a b r. (Sendable a, Sendable b)
+                   => NMSettings -> NMApp a b IO r -> NMApp b a IO () -> IO r
+runClientAndServer' = runClientAndServer''
+
+runClientAndServer'' :: forall a b c d r. (Sendable a, Sendable b, Sendable c, Sendable d)
+                      => NMSettings -> NMApp a b IO r -> NMApp c d IO () -> IO r
+runClientAndServer'' settings client server = do
     serverReady <- newEmptyMVar
     let serverSettings' = setAfterBind (\_ -> putMVar serverReady ()) serverSettings
-    void $
+    result <-
         (takeMVar serverReady >> runTCPClient clientSettings (runNMApp settings client)) `race`
         runTCPServer serverSettings' (runNMApp settings server)
+    case result of
+        Left x -> return x
+        Right () -> fail "Expected client to return a value."
 
 serverSettings :: ServerSettings
 serverSettings = serverSettingsTCP port "*"

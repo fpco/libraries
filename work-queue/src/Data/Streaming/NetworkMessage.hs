@@ -28,7 +28,7 @@ module Data.Streaming.NetworkMessage
     , nmRead
     , nmAppData
       -- * Settings
-    , NMSettings
+    , NMSettings (..)
     , defaultNMSettings
     , setNMHeartbeat
     ) where
