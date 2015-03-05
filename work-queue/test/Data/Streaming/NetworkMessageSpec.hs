@@ -73,7 +73,6 @@ spec = do
         res `shouldBe` Left HeartbeatFailure
         exitedLate <- readIORef exitedLateRef
         exitedLate `shouldBe` False
-    --TODO: add test for (DecodeFailure "demandInput: not enough bytes")
 
 expectMismatchedHandshakes :: forall a b c d. (Sendable a, Sendable b, Sendable c, Sendable d)
                            => a -> b -> c -> d -> IO ()

@@ -124,10 +124,15 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
     (yourHS, leftover) <- liftBase $ do
         let myHS = mkHandshake app heartbeat exeHash
         forM_ (toChunks $ B.encode myHS) (appWrite ad)
-        (yourHS, leftover) <- appGet mempty (appRead ad)
-        when (hsISend myHS /= hsYouSend yourHS || hsYouSend myHS /= hsISend yourHS || hsExeHash myHS /= hsExeHash yourHS)
-            $ throwIO $ MismatchedHandshakes myHS yourHS
-        return (yourHS, leftover)
+        mgot <- appGet mempty (appRead ad)
+        case mgot of
+            Just (yourHS, leftover) -> do
+                when (hsISend myHS /= hsYouSend yourHS ||
+                      hsYouSend myHS /= hsISend yourHS ||
+                      hsExeHash myHS /= hsExeHash yourHS) $ do
+                    throwIO $ MismatchedHandshakes myHS yourHS
+                return (yourHS, leftover)
+            Nothing -> throwIO ConnectionClosedBeforeHandshake
     control $ \runInBase -> do
         -- FIXME use a bounded chan perhaps? will mess up heartbeat...
         -- actually, with the blocked variable below, we should be able to
@@ -138,7 +143,7 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
         outgoing <- newChan
         incoming <- newChan
 
-        -- Our heartbeat logic involves two threads: the recvWorker thread sets
+        -- Our heartbeat logic involves two threads: the recvWorker thread
         -- increments lastPing every time it reads a chunk of data, and the
         -- checkHeartbeat thread calls threadDelay and then checks that
         -- lastPing has been incremented over this run. If it hasn't been
@@ -198,18 +203,24 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
         loop leftover0
       where
         loop leftover = do
-            (msg, leftover') <- appGet leftover $ do
-                writeIORef blocked True
-                bs <- appRead ad
-                writeIORef blocked False
-                modifyIORef lastPing (+ 1)
-                return bs
-            case msg of
-                Ping -> loop leftover'
-                (Payload p) -> writeChan incoming (return p) >> loop leftover'
-                Complete -> do
-                    writeChan incoming (throwIO NMConnectionClosed)
-                    writeIORef active False
+            mgot <- appGet leftover $ do
+               writeIORef blocked True
+               bs <- appRead ad
+               writeIORef blocked False
+               modifyIORef lastPing (+ 1)
+               return bs
+            case mgot of
+                Just (Ping, leftover') ->
+                    loop leftover'
+                Just (Payload p, leftover') ->
+                    writeChan incoming (return p) >> loop leftover'
+                -- We're done when the "Complete" message is received
+                -- or the connection is closed
+                Just (Complete, _) -> done
+                Nothing -> done
+        done = do
+            writeChan incoming (throwIO NMConnectionClosed)
+            writeIORef active False
 
     sendWorker outgoing = fix $ \loop -> do
         x <- readChan outgoing
@@ -223,7 +234,7 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
 appGet :: B.Binary a
        => ByteString -- ^ leftover bytes from previous parse.
        -> IO ByteString -- ^ function to get more bytes
-       -> IO (a, ByteString) -- ^ result and leftovers
+       -> IO (Maybe (a, ByteString)) -- ^ result and leftovers
 appGet bs0 readChunk
     | null bs0 = loop initial
     | otherwise =
@@ -231,15 +242,17 @@ appGet bs0 readChunk
             B.Partial f -> loop $ f $ Just bs0
             -- neither of the following two cases should ever occur
             B.Fail _ _ str -> throwIO (DecodeFailure str)
-            B.Done bs _ res -> return (res, bs0 ++ bs)
+            B.Done bs _ res -> return (Just (res, bs0 ++ bs))
   where
     initial = B.runGetIncremental B.get
 
     loop (B.Fail _ _ str) = throwIO (DecodeFailure str)
     loop (B.Partial f) = do
         bs <- readChunk
-        loop $ f $ if null bs then Nothing else Just bs
-    loop (B.Done bs _ res) = return (res, bs)
+        if null bs
+            then return Nothing
+            else loop (f (Just bs))
+    loop (B.Done bs _ res) = return (Just (res, bs))
 
 data Message payload
     = Ping
@@ -250,6 +263,7 @@ instance B.Binary payload => B.Binary (Message payload)
 
 data NetworkMessageException
     = MismatchedHandshakes Handshake Handshake
+    | ConnectionClosedBeforeHandshake
     | HeartbeatFailure
     | NMConnectionClosed
     | DecodeFailure String
