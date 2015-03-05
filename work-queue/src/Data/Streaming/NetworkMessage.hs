@@ -115,7 +115,8 @@ mkHandshake _ hb eh = Handshake
     }
 
 -- | Convert an 'NMApp' into an "Data.Streaming.Network" application.
-runNMApp :: (MonadBaseControl IO m, Sendable iSend, Sendable youSend)
+runNMApp :: forall iSend youSend m a.
+            (MonadBaseControl IO m, Sendable iSend, Sendable youSend)
          => NMSettings
          -> NMApp iSend youSend m a
          -> AppData
@@ -169,16 +170,20 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
 
         let nad = NMAppData
                 { _nmAppData = ad
-                , _nmWrite = writeChan outgoing . Payload
+                , _nmWrite = send . Payload
                 , _nmRead = join $ readChan incoming
                 }
+            -- FIXME Manny's going to write an equivalent to
+            -- toByteStringIO, use that instead
+            send :: Message iSend -> IO ()
+            send x = writeChan outgoing $! toStrict (B.encode x)
         A.runConcurrently $
-            A.Concurrently (sendPing outgoing yourHS active) *>
+            A.Concurrently (sendPing send yourHS active) *>
             A.Concurrently (checkHeartbeat lastPing active blocked) *>
             A.Concurrently (recvWorker leftover incoming lastPing active blocked) *>
             A.Concurrently (sendWorker outgoing) *>
             A.Concurrently (runInBase (app nad) `finally`
-                            writeChan outgoing Complete `finally`
+                            send Complete `finally`
                             writeIORef active False)
   where
     while ref inner = do
@@ -186,8 +191,8 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
       where
         loop = whenM (readIORef ref) (inner >> loop)
 
-    sendPing outgoing yourHS active = while active $ do
-        writeChan outgoing Ping
+    sendPing send yourHS active = while active $ do
+        () <- send Ping
         threadDelay $ hsHeartbeat yourHS
 
     checkHeartbeat lastPing active blocked = while active $ do
@@ -223,12 +228,15 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
             writeIORef active False
 
     sendWorker outgoing = fix $ \loop -> do
-        x <- readChan outgoing
-        -- FIXME Manny's going to write an equivalent to toByteStringIO, use that instead
-        forM_ (toChunks $ B.encode x) (appWrite ad)
-        case x of
-            Complete -> return ()
-            _ -> loop
+        bs <- readChan outgoing
+        -- NOTE: even though bs could be quite large, appRead will
+        -- receive small chunks of it.  This means that 'appRead'
+        -- won't block for very long, and the heartbeat code will
+        -- function properly.
+        appWrite ad bs
+        if bs == toStrict (B.encode (Complete :: Message iSend))
+            then return ()
+            else loop
 
 -- | Streaming decode function.
 appGet :: B.Binary a
