@@ -128,7 +128,7 @@ withLocalSlave :: MonadBaseControl IO m
                -> m a
 withLocalSlave queue = withLocalSlaves queue 1
 
--- | Start a local slave against the given work queue.
+-- | Start local slaves against the given work queue.
 --
 -- Any exception thrown by a slave will be rethrown. This call will
 -- not return until the work queue is empty.
