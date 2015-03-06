@@ -209,11 +209,11 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
       where
         loop leftover = do
             mgot <- appGet leftover $ do
-               writeIORef blocked True
-               bs <- appRead ad
-               writeIORef blocked False
-               modifyIORef lastPing (+ 1)
-               return bs
+                writeIORef blocked True
+                bs <- appRead ad
+                writeIORef blocked False
+                modifyIORef lastPing (+ 1)
+                return bs
             case mgot of
                 Just (Ping, leftover') ->
                     loop leftover'
