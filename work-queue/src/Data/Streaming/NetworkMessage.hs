@@ -174,8 +174,6 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
                 , _nmWrite = send . Payload
                 , _nmRead = join $ readChan incoming
                 }
-            -- FIXME Manny's going to write an equivalent to
-            -- toByteStringIO, use that instead
             send :: Message iSend -> IO ()
             send x = writeChan outgoing $! toStrict (B.encode x)
         A.runConcurrently $
