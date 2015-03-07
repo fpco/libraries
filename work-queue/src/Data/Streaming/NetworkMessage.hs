@@ -28,9 +28,10 @@ module Data.Streaming.NetworkMessage
     , nmRead
     , nmAppData
       -- * Settings
-    , NMSettings (..)
+    , NMSettings
     , defaultNMSettings
     , setNMHeartbeat
+    , getNMHeartbeat
     ) where
 
 import           ClassyPrelude
@@ -305,3 +306,6 @@ defaultNMSettings = do
 -- by 'threadDelay').
 setNMHeartbeat :: Int -> NMSettings -> NMSettings
 setNMHeartbeat x y = y { _nmHeartbeat = x }
+
+getNMHeartbeat :: NMSettings -> Int
+getNMHeartbeat = _nmHeartbeat

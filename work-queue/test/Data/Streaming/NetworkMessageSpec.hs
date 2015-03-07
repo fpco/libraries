@@ -49,7 +49,7 @@ spec = do
                 nmRead app
             server app = do
                 nmWrite app $ unsafePerformIO $ do
-                    threadDelay (_nmHeartbeat settings * 3)
+                    threadDelay (getNMHeartbeat settings * 3)
                     return (1 :: Int)
         finished <- timeout (1000 * 1000 * 2) $
             runClientAndServer' settings client server
