@@ -216,8 +216,9 @@ runMasterOrSlave RedisConfig {..} | isLong = runStdoutLoggingT $ do
             threadDelay (5 * 1000 * 1000)
             return 0
         inner :: () -> RedisInfo -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
-        inner () redis _ _ = do
+        inner () redis _ queue = do
             requestSlave config redis
+            void $ mapQueue queue [[]]
             return 0
         config = workerConfig
             { workerMasterLocalSlaves = read (unpack lslaves)

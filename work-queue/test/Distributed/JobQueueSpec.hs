@@ -87,7 +87,9 @@ spec = do
         _ <- forkWorker "redis" 0
         _ <- forkWorker "redis" 0
         ex <- getException 5 (resultVar :: MVar (Either DistributedJobQueueException Bool))
-        print ex
+        case ex of
+            TypeMismatch {} -> return ()
+            _ -> fail $ "Expected TypeMismatch, but got " <> show ex
 
 jqit :: String -> ResourceT IO () -> Spec
 jqit name f = it name $ clearRedisKeys >> runResourceT f
