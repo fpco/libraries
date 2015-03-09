@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE ConstraintKinds #-}
 
 module Distributed.JobQueueSpec where
 
@@ -19,6 +20,7 @@ import FP.Redis
 import System.Random (randomRIO)
 import System.Timeout.Lifted (timeout)
 import Test.Hspec (Spec, it, shouldBe)
+import Data.Streaming.NetworkMessage
 
 spec :: Spec
 spec = do
@@ -26,7 +28,7 @@ spec = do
         _ <- forkWorker "redis" 0
         _ <- forkWorker "redis" 0
         resultVar <- forkDispatcher
-        checkResult resultVar 5 (Just 0)
+        checkResult 5 resultVar 0
     jqit "Doesn't lose data when master fails" $ do
         -- This worker will take the request and become a master.
         master <- forkWorker "redis" 0
@@ -35,7 +37,7 @@ spec = do
         -- Expect no results, because there are no slaves.
         noResult <- tryTakeMVar resultVar
         liftIO $ do
-            noResult `shouldBe` Nothing
+            isNothing noResult `shouldBe` True
             cancelProcess master
             putStrLn "=================================="
             putStrLn "Master cancelled"
@@ -48,12 +50,12 @@ spec = do
         -- fails.
         _ <- forkWorker "redis" 0
         _ <- forkWorker "redis" 0
-        checkResult resultVar 10 (Just 0)
+        checkResult 10 resultVar 0
     jqit "Long tasks complete" $ do
         _ <- forkWorker "redis-long" 0
         _ <- forkWorker "redis-long" 0
         resultVar <- forkDispatcher
-        checkResult resultVar 15 (Just 0)
+        checkResult 15 resultVar 0
     jqit "Non-existent slave request is ignored" $ do
         -- Enqueue an erroneous slave request
         enqueueSlaveRequest (SlaveRequest "localhost" 1337)
@@ -62,7 +64,7 @@ spec = do
         _ <- forkWorker "redis" 0
         _ <- forkWorker "redis" 0
         resultVar <- forkDispatcher
-        checkResult resultVar 5 (Just 0)
+        checkResult 5 resultVar 0
     jqit "Preserves data despite slaves being started and killed periodically" $ do
         resultVar <- forkDispatcher
         let randomSlaveSpawner = runResourceT $ forever $ do
@@ -79,19 +81,27 @@ spec = do
             randomSlaveSpawner `race`
             eventuallySpawnWithoutKilling `race`
             eventuallySpawnWithoutKilling `race`
-            checkResult resultVar 10 (Just 0)
-
+            checkResult 10 resultVar 0
+    jqit "Sends an exception to the client on type mismatch" $ do
+        resultVar <- forkDispatcher'
+        _ <- forkWorker "redis" 0
+        _ <- forkWorker "redis" 0
+        ex <- getException 5 (resultVar :: MVar (Either DistributedJobQueueException Bool))
+        print ex
 
 jqit :: String -> ResourceT IO () -> Spec
 jqit name f = it name $ clearRedisKeys >> runResourceT f
 
-forkDispatcher :: ResourceT IO (MVar Int)
-forkDispatcher = do
+forkDispatcher :: ResourceT IO (MVar (Either DistributedJobQueueException Int))
+forkDispatcher = forkDispatcher'
+
+forkDispatcher' :: Sendable a => ResourceT IO (MVar (Either DistributedJobQueueException a))
+forkDispatcher' = do
     resultVar <- newEmptyMVar
     void $ allocate (fork $ runDispatcher resultVar) killThread
     return resultVar
 
-runDispatcher :: MVar Int -> IO ()
+runDispatcher :: Sendable a => MVar (Either DistributedJobQueueException a) -> IO ()
 runDispatcher resultVar =
     runStdoutLoggingT $ withRedis redisTestPrefix localhost $ \redis -> do
         client <- liftIO (newClientVars (Seconds 2) (Seconds 3600))
@@ -99,14 +109,24 @@ runDispatcher resultVar =
             withAsync (restore $ jobQueueClient client redis) $ \_ -> restore $ do
                 -- Push a single set of work requests.
                 let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
-                response <- jobQueueRequest client redis workItems
-                putStrLn "Putting"
-                putMVar resultVar response
+                result <- try $ jobQueueRequest client redis workItems
+                putMVar resultVar result
 
-checkResult :: MonadIO m => MVar Int -> Int -> Maybe Int -> m ()
-checkResult resultVar seconds expected = liftIO $ do
+checkResult :: MonadIO m => Int -> MVar (Either DistributedJobQueueException Int) -> Int -> m ()
+checkResult seconds resultVar expected = liftIO $ do
     result <- timeout (seconds * 1000 * 1000) $ takeMVar resultVar
-    result `shouldBe` expected
+    case result of
+        Just (Left ex) -> throwM ex
+        Just (Right x) -> x `shouldBe` expected
+        Nothing -> fail "Timed out waiting for value"
+
+getException :: (Show r, MonadIO m) => Int -> MVar (Either DistributedJobQueueException r) -> m DistributedJobQueueException
+getException seconds resultVar = liftIO $ do
+    result <- timeout (seconds * 1000 * 1000) $ takeMVar resultVar
+    case result of
+        Nothing -> fail "Timed out waiting for exception"
+        Just (Right n) -> fail $ "Expected exception, but got " ++ show n
+        Just (Left err) -> return err
 
 clearRedisKeys :: MonadIO m => m ()
 clearRedisKeys =
