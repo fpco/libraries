@@ -51,7 +51,7 @@ module Distributed.RedisQueue
 import           ClassyPrelude
 import           Control.Monad.Logger (MonadLogger, logErrorS)
 import qualified Crypto.Hash.SHA1 as SHA1
-import           Data.Binary (encode, decode)
+import           Data.Binary (Binary, encode, decode)
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Distributed.RedisQueue.Internal
 import           FP.Redis
@@ -186,6 +186,7 @@ subscribeToResponses r (ClientInfo bid _) subscribed f = do
 data DistributedRedisQueueException
     = ResponseMissing RequestId
     | RequestMissing RequestId
-    deriving (Eq, Show, Typeable)
+    deriving (Eq, Show, Typeable, Generic)
 
 instance Exception DistributedRedisQueueException
+instance Binary DistributedRedisQueueException

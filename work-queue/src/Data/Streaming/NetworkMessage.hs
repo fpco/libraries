@@ -274,8 +274,9 @@ data NetworkMessageException
     | HeartbeatFailure
     | NMConnectionClosed
     | DecodeFailure String
-    deriving (Show, Typeable, Eq)
+    deriving (Show, Typeable, Eq, Generic)
 instance Exception NetworkMessageException
+instance B.Binary NetworkMessageException
 
 -- | Settings to be used by 'runNMApp'. Use 'defaultNMSettings' and modify with
 -- setter functions.
