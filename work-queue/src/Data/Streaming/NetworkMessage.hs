@@ -165,6 +165,22 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
         -- - If blocked is False, then we know that the receive thread is
         -- simply asleep, and have no data about whether the heartbeat has
         -- actually failed. In this case, threadDelay and check again.
+        --
+        -- It is unnecessary to use atomic operations when modifying
+        -- these IORefs.  Here's why:
+        --
+        -- - lastPing is read by the 'checkHeartbeat' thread, and
+        -- written by the 'recvWorker' thread.  The checking is done
+        -- periodically at a user specified interval, and so
+        -- reordering of concurrent reads / writes is acceptable.
+        --
+        -- - blocked doesn't require atomicity, for the same reason as
+        -- lastPing.
+        --
+        -- - active is only written to on termination, and causes all
+        -- the threads to exit.  They will eventually see that it got
+        -- set to 'False', so reordering of concurrent reads and
+        -- writes is acceptable.
         lastPing <- newIORef (0 :: Int)
         active <- newIORef True
         blocked <- newIORef False
@@ -211,7 +227,7 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
                 writeIORef blocked True
                 bs <- appRead ad
                 writeIORef blocked False
-                modifyIORef lastPing (+ 1)
+                modifyIORef' lastPing (+ 1)
                 return bs
             case mgot of
                 Just (Ping, leftover') ->
