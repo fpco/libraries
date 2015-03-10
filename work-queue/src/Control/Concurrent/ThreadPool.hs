@@ -1,5 +1,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies     #-}
+-- | A simple thread pool based on "Data.WorkQueue".  It allows you to
+-- run 'IO' actions on a fixed number of threads.
 module Control.Concurrent.ThreadPool
     ( ThreadPool
     , withThreadPool
@@ -18,18 +20,26 @@ import Data.Traversable
 import Data.WorkQueue
 import Prelude                     hiding (sequence)
 
+-- | This stores info required to enqueue 'IO' actions to a thread
+-- pool.
 newtype ThreadPool = ThreadPool (WorkQueue (IO ()) ())
 
+-- | Create a 'ThreadPool', and pass it to the inner function.  This
+-- uses the bracket pattern to ensure that the 'ThreadPool' resources
+-- get cleaned up when the inner function exits (either due to
+-- finishing and yielding a value, or due to an exception).
 withThreadPool :: MonadBaseControl IO m
                => Int -- ^ number of threads
-               -> (ThreadPool -> m a)
+               -> (ThreadPool -> m a) -- ^ inner function
                -> m a
 withThreadPool threads inner = withWorkQueue $ \queue ->
     withLocalSlaves queue threads id (inner $ ThreadPool queue)
 
--- NOTE: changes to 'mapTP' and 'mapTP_' should probably also be
--- made to 'mapQueue' and 'mapQueue_'
+-- NOTE: changes to 'mapTP' and 'mapTP_' should probably also be made
+-- to 'mapQueue' and 'mapQueue_', since they have very similar code.
 
+-- | This is like 'Data.Traversable.mapM', but it runs the 'IO'
+-- actions concurrently on the 'ThreadPool'.
 mapTP :: (Traversable t, MonadIO m)
       => ThreadPool
       -> (a -> IO b)
@@ -42,6 +52,9 @@ mapTP (ThreadPool queue) f t = liftIO $ do
         return $ takeMVar var
     sequence t'
 
+-- | This is like 'Data.Traversable.mapM', but it runs the 'IO'
+-- actions concurrently on the 'ThreadPool', and ignores the resulting
+-- values.
 mapTP_ :: (MonoFoldable mono, Element mono ~ a, MonadIO m)
        => ThreadPool
        -> (a -> IO b)
