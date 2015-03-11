@@ -187,7 +187,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
             A.Concurrently (sendWorker outgoing) *>
             A.Concurrently (runInBase (nmApp nad) `finally`
                             send Complete `finally`
-                            atomicWriteIORef active False)
+                            finished incoming active)
   where
     while ref inner = do
         loop
@@ -226,12 +226,12 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                 writeChan incoming (return p) >> loop leftover'
             -- We're done when the "Complete" message is received
             -- or the connection is closed
-            Just (Complete, _) -> done
-            Nothing -> done
-      where
-        done = do
-            atomicWriteIORef active False
-            writeChan incoming (throwIO NMConnectionClosed)
+            Just (Complete, _) -> finished incoming active
+            Nothing -> finished incoming active
+
+    finished incoming active = do
+         atomicWriteIORef active False
+         writeChan incoming (throwIO NMConnectionClosed)
 
     sendWorker outgoing = fix $ \loop -> do
         bs <- readChan outgoing
