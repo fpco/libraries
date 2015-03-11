@@ -165,22 +165,6 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
         -- - If blocked is False, then we know that the receive thread is
         -- simply asleep, and have no data about whether the heartbeat has
         -- actually failed. In this case, threadDelay and check again.
-        --
-        -- It is unnecessary to use atomic operations when modifying
-        -- these IORefs.  Here's why:
-        --
-        -- - lastPing is read by the 'checkHeartbeat' thread, and
-        -- written by the 'recvWorker' thread.  The checking is done
-        -- periodically at a user specified interval, and so
-        -- reordering of concurrent reads / writes is acceptable.
-        --
-        -- - blocked doesn't require atomicity, for the same reason as
-        -- lastPing.
-        --
-        -- - active is only written to on termination, and causes all
-        -- the threads to exit.  They will eventually see that it got
-        -- set to 'False', so reordering of concurrent reads and
-        -- writes is acceptable.
         lastPing <- newIORef (0 :: Int)
         active <- newIORef True
         blocked <- newIORef False
@@ -188,7 +172,9 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
         let nad = NMAppData
                 { _nmAppData = ad
                 , _nmWrite = send . Payload
-                , _nmRead = join $ readChan incoming
+                , _nmRead = do
+                    whenM (not <$> readIORef active) $ throwM NMConnectionClosed
+                    join (readChan incoming)
                 }
             send :: Message iSend -> IO ()
             send x = writeChan outgoing $! toStrict (B.encode x)
@@ -199,7 +185,7 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
             A.Concurrently (sendWorker outgoing) *>
             A.Concurrently (runInBase (app nad) `finally`
                             send Complete `finally`
-                            writeIORef active False)
+                            atomicWriteIORef active False)
   where
     while ref inner = do
         loop
@@ -219,6 +205,11 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
             $ whenM (readIORef blocked)
             $ throwIO HeartbeatFailure
 
+    -- It is unnecessary to use atomic operations when modifying the
+    -- IORefs passed into this thread.  This is because lastPing and
+    -- blocked are only read by the 'checkHeartbeat' thread.  That
+    -- checking is done periodically at a user specified interval, and
+    -- so reordering of concurrent reads / writes is acceptable.
     recvWorker leftover0 incoming lastPing active blocked =
         loop leftover0
       where
@@ -239,8 +230,8 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
                 Just (Complete, _) -> done
                 Nothing -> done
         done = do
+            atomicWriteIORef active False
             writeChan incoming (throwIO NMConnectionClosed)
-            writeIORef active False
 
     sendWorker outgoing = fix $ \loop -> do
         bs <- readChan outgoing

@@ -64,11 +64,14 @@ spec = do
         expectMismatchedHandshakes True () () (Just True)
     it "throws MismatchedHandshakes when types mismatch, even when unqualified names match" $ do
         expectMismatchedHandshakes () LBS.empty BS.empty ()
-    it "throws NMConnectionClosed when server completes while client is waiting" $ do
-        res <- try $ runClientAndServer
-            (void . nmRead :: NMApp Int Int IO ())
-            (\_ -> return ())
-        res `shouldBe` Left NMConnectionClosed
+    it "throws NMConnectionClosed for every nmRead, when server completes while client is waiting" $ do
+        let client :: NMApp Int Int IO Bool
+            client app = do
+                nmRead app `shouldThrow` (== NMConnectionClosed)
+                nmRead app `shouldThrow` (== NMConnectionClosed)
+                return True
+        res <- timeout (1000 * 1000) $ runClientAndServer client (\_ -> return ())
+        res `shouldBe` Just True
     it "throws DecodeFailed when fed bogus data" $ do
         let client :: NMApp Bool Int IO ()
             client app = void $ nmRead app
