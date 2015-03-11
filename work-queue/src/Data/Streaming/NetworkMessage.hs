@@ -138,12 +138,10 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                 return (yourHS, leftover)
             Nothing -> throwIO ConnectionClosedBeforeHandshake
     control $ \runInBase -> do
-        -- FIXME use a bounded chan perhaps? will mess up heartbeat...
-        -- actually, with the blocked variable below, we should be able to
-        -- avoid heartbeat issues on the receiving side. And since any data
-        -- sent will count as a ping, it should be safe on the outgoing side
-        -- too. So should be safe to add this. (Make the queue size
-        -- configuration in NMSettings.)
+        -- FIXME use a bounded chan perhaps? (Make the queue size
+        -- configuration in NMSettings.) Since any data sent will
+        -- count as a ping, this would not interfere with the
+        -- heartbeat.
         outgoing <- newChan :: IO (Chan ByteString)
         incoming <- newChan :: IO (Chan (IO youSend))
 
