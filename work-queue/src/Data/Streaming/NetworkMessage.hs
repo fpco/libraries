@@ -41,11 +41,12 @@ import           Control.Monad.Base          (liftBase)
 import           Control.Monad.Trans.Control (MonadBaseControl, control)
 import qualified Data.Binary                 as B
 import qualified Data.Binary.Get             as B
-import           Data.ConcreteTypeRep        (ConcreteTypeRep, cTypeOf)
+import           Data.ConcreteTypeRep        (ConcreteTypeRep, fromTypeRep)
 import           Data.Function               (fix)
 import           Data.Streaming.Network      (AppData, appRead, appWrite)
 import           Data.Vector.Binary          () -- commonly needed orphans
 import           System.Executable.Hash      (executableHash)
+import           Data.Typeable               (typeRep)
 
 -- | A network message application.
 --
@@ -54,11 +55,12 @@ import           System.Executable.Hash      (executableHash)
 -- (@youSend@), the monad we live in (@m@), and the return value of the
 -- application (@a@). Restrictions on these types:
 --
--- * @iSend@ and @youSend@ must both be instances of 'Typeable' and 'Binary'.
+-- * @iSend@ and @youSend@ must both be instances of 'Sendable'.  In
+-- other words, they must both implement 'Typeable' and 'Binary'.
 --
 -- * @m@ must be an instance of 'MonadBaseControl' 'IO'.
 --
--- * When writing a server, @a@ must be unit (@()@), otherwise no restrictions.
+-- * When writing a server, @a@ must be unit, @()@, otherwise no restrictions.
 --
 -- Like the "Data.Streaming.Network" API, your application takes a value- in
 -- this case of type 'NMAppData'- which is used to interact with the other side
@@ -109,8 +111,8 @@ instance B.Binary Handshake
 mkHandshake :: forall iSend youSend m a. (Typeable iSend, Typeable youSend)
             => NMApp iSend youSend m a -> Int -> Maybe ByteString -> Handshake
 mkHandshake _ hb eh = Handshake
-    { hsISend = cTypeOf (error "impossible: iSend shouldn't be evaluated" :: iSend)
-    , hsYouSend = cTypeOf (error "impossible: youSend shouldn't be evaluated" :: youSend)
+    { hsISend = fromTypeRep (typeRep (Nothing :: Maybe iSend))
+    , hsYouSend = fromTypeRep (typeRep (Nothing :: Maybe youSend))
     , hsHeartbeat = hb
     , hsExeHash = eh
     }
@@ -122,9 +124,9 @@ runNMApp :: forall iSend youSend m a.
          -> NMApp iSend youSend m a
          -> AppData
          -> m a
-runNMApp (NMSettings heartbeat exeHash) app ad = do
+runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
     (yourHS, leftover) <- liftBase $ do
-        let myHS = mkHandshake app heartbeat exeHash
+        let myHS = mkHandshake nmApp heartbeat exeHash
         forM_ (toChunks $ B.encode myHS) (appWrite ad)
         mgot <- appGet mempty (appRead ad)
         case mgot of
@@ -142,8 +144,8 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
         -- sent will count as a ping, it should be safe on the outgoing side
         -- too. So should be safe to add this. (Make the queue size
         -- configuration in NMSettings.)
-        outgoing <- newChan
-        incoming <- newChan
+        outgoing <- newChan :: IO (Chan ByteString)
+        incoming <- newChan :: IO (Chan (IO youSend))
 
         -- Our heartbeat logic involves two threads: the recvWorker thread
         -- increments lastPing every time it reads a chunk of data, and the
@@ -157,7 +159,7 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
         --
         -- - Due to how GHC green threads work, it's possible that the receive
         -- thread has been asleep this entire time. Therefore, we check the
-        -- blocked thread. If it's True, it means that the receive thread is
+        -- blocked IORef. If it's True, it means that the receive thread is
         -- currently blocking on a call to recv, which means that we have not
         -- received any data from the client. In this case, throw a
         -- HeartbeatFailure exception.
@@ -181,9 +183,9 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
         A.runConcurrently $
             A.Concurrently (sendPing send yourHS active) *>
             A.Concurrently (checkHeartbeat lastPing active blocked) *>
-            A.Concurrently (recvWorker leftover incoming lastPing active blocked) *>
+            A.Concurrently (recvWorker incoming lastPing active blocked leftover) *>
             A.Concurrently (sendWorker outgoing) *>
-            A.Concurrently (runInBase (app nad) `finally`
+            A.Concurrently (runInBase (nmApp nad) `finally`
                             send Complete `finally`
                             atomicWriteIORef active False)
   where
@@ -210,25 +212,23 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
     -- blocked are only read by the 'checkHeartbeat' thread.  That
     -- checking is done periodically at a user specified interval, and
     -- so reordering of concurrent reads / writes is acceptable.
-    recvWorker leftover0 incoming lastPing active blocked =
-        loop leftover0
+    recvWorker incoming lastPing active blocked = fix $ \loop leftover -> do
+        mgot <- appGet leftover $ do
+            writeIORef blocked True
+            bs <- appRead ad
+            writeIORef blocked False
+            modifyIORef' lastPing (+ 1)
+            return bs
+        case mgot of
+            Just (Ping, leftover') ->
+                loop leftover'
+            Just (Payload p, leftover') ->
+                writeChan incoming (return p) >> loop leftover'
+            -- We're done when the "Complete" message is received
+            -- or the connection is closed
+            Just (Complete, _) -> done
+            Nothing -> done
       where
-        loop leftover = do
-            mgot <- appGet leftover $ do
-                writeIORef blocked True
-                bs <- appRead ad
-                writeIORef blocked False
-                modifyIORef' lastPing (+ 1)
-                return bs
-            case mgot of
-                Just (Ping, leftover') ->
-                    loop leftover'
-                Just (Payload p, leftover') ->
-                    writeChan incoming (return p) >> loop leftover'
-                -- We're done when the "Complete" message is received
-                -- or the connection is closed
-                Just (Complete, _) -> done
-                Nothing -> done
         done = do
             atomicWriteIORef active False
             writeChan incoming (throwIO NMConnectionClosed)
@@ -244,22 +244,16 @@ runNMApp (NMSettings heartbeat exeHash) app ad = do
             then return ()
             else loop
 
--- | Streaming decode function.
+-- | Streaming decode function.  If the function to get more bytes
+-- yields "", then it's assumed to be the end of the input, and
+-- 'Nothing' is returned.
 appGet :: B.Binary a
        => ByteString -- ^ leftover bytes from previous parse.
        -> IO ByteString -- ^ function to get more bytes
        -> IO (Maybe (a, ByteString)) -- ^ result and leftovers
-appGet bs0 readChunk
-    | null bs0 = loop initial
-    | otherwise =
-        case initial of
-            B.Partial f -> loop $ f $ Just bs0
-            -- neither of the following two cases should ever occur
-            B.Fail _ _ str -> throwIO (DecodeFailure str)
-            B.Done bs _ res -> return (Just (res, bs0 ++ bs))
+appGet bs0 readChunk =
+    loop (B.runGetIncremental B.get `B.pushChunk` bs0)
   where
-    initial = B.runGetIncremental B.get
-
     loop (B.Fail _ _ str) = throwIO (DecodeFailure str)
     loop (B.Partial f) = do
         bs <- readChunk
@@ -276,10 +270,23 @@ data Message payload
 instance B.Binary payload => B.Binary (Message payload)
 
 data NetworkMessageException
+    -- | This is thrown by 'runNMApp', during the initial handshake,
+    -- when the two sides of the connection disagree about the
+    -- datatypes being sent, or when there is a mismatch in executable
+    -- hash.
     = MismatchedHandshakes Handshake Handshake
+    -- | This is thrown by 'runNMApp' if the connection closed during
+    -- the initial handshake.
     | ConnectionClosedBeforeHandshake
+    -- | This is thrown by 'runNMApp' if we haven't received a data
+    -- packet or ping from the other side of the connection within
+    -- @heartbeat * 2@ time.
     | HeartbeatFailure
+    -- | This is thrown by 'nmRead' when the connection is closed.
     | NMConnectionClosed
+    -- | This is thrown by 'runNMApp' when there's an error decoding
+    -- data sent by the other side of the connection.  This either
+    -- indicates a bug in this library, or a misuse of 'nmAppData'.
     | DecodeFailure String
     deriving (Show, Typeable, Eq, Generic)
 instance Exception NetworkMessageException
@@ -308,10 +315,19 @@ defaultNMSettings = do
         , _nmExeHash = exeHash
         }
 
--- | Set the heartbeat timeout to the given number of microseconds (to be used
--- by 'threadDelay').
+-- | Set the heartbeat timeout to the given number of microseconds.
+--
+-- This determines the `threadDelay` between sending a 'Ping' to the
+-- other side of the connection.
+--
+-- The heartbeat is sent as part of the handshake, so that the other
+-- side knows how often it should a ping.  The other 'NMApp' will wait
+-- @heartbeat * 2@ microseconds of not receiving any packets before
+-- assuming that the other server is dead and throwing
+-- 'HeartbeatFailure'.
 setNMHeartbeat :: Int -> NMSettings -> NMSettings
 setNMHeartbeat x y = y { _nmHeartbeat = x }
 
+-- | Gets the heartbeat time, in microseconds.
 getNMHeartbeat :: NMSettings -> Int
 getNMHeartbeat = _nmHeartbeat
