@@ -54,6 +54,8 @@ import           Data.Streaming.Network (clientSettingsTCP, runTCPServer, setAft
 import           Data.Streaming.NetworkMessage (NetworkMessageException, Sendable, defaultNMSettings)
 import           Data.Text.Binary ()
 import           Data.Typeable (typeOf)
+import           Data.UUID as UUID
+import           Data.UUID.V4 as UUID
 import           Data.WorkQueue
 import           Distributed.RedisQueue
 import           Distributed.RedisQueue.Internal
@@ -62,10 +64,7 @@ import           FP.Redis
 import           FP.Redis.Mutex
 import           Focus (Decision(Remove, Replace))
 import           GHC.IO.Exception (IOException(IOError), ioe_type, IOErrorType(NoSuchThing))
-import           Network.HostName (getHostName)
 import qualified STMContainers.Map as SM
-import           System.Posix.Process (getProcessID)
-import           System.Random (randomRIO)
 
 --TODO:
 --
@@ -177,7 +176,7 @@ jobQueueWorker
     -- back to the client.
     -> m ()
 jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
-    wid <- getWorkerId redis
+    wid <- liftIO getWorkerId
     initialDataRef <- newIORef Nothing
     heartbeatsReady <- liftIO $ newTVarIO False
     nmSettings <- liftIO defaultNMSettings
@@ -622,33 +621,14 @@ deactivateWorker r (WorkerInfo wid _) = do
     when (activeCount /= 0) $ throwM (WorkStillInProgress wid)
     run_ r $ srem (heartbeatActiveKey r) (unWorkerId wid :| [])
 
--- | Given a name to start with, this finds a 'WorkerId' which has
--- never been used before.  It also adds the new 'WorkerId' to the set
--- of all worker IDs.
-getUnusedWorkerId
-    :: MonadCommand m => RedisInfo -> ByteString -> m WorkerId
-getUnusedWorkerId r initial = go (0 :: Int)
-  where
-    go n = do
-        let toWord8 = fromIntegral . fromEnum
-        postfix <- liftIO $ replicateM n $ randomRIO (toWord8 'a', toWord8 'z')
-        let k | n == 0 = initial
-              | otherwise = initial <> "-" <> postfix
-        numberAdded <- run r $ sadd (workersKey r) (k :| [])
-        if numberAdded == 0
-            then go (n+1)
-            else return (WorkerId k)
-
 -- * Functions to compute Redis keys
 
-heartbeatInactiveKey, heartbeatActiveKey, workersKey :: RedisInfo -> SKey
+heartbeatInactiveKey, heartbeatActiveKey :: RedisInfo -> SKey
 -- A set of 'WorkerId' who have not yet removed their keys (indicating
 -- that they're still alive and responding to heartbeats).
 heartbeatInactiveKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:inactive"
 -- A set of 'WorkerId's that are currently thought to be running.
 heartbeatActiveKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:active"
--- A set of all 'WorkerId's that have ever been known.
-workersKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:workers"
 
 -- Stores a "Data.Binary" encoded 'Bool'.
 heartbeatFunctioningKey :: RedisInfo -> VKey
@@ -705,16 +685,10 @@ withRedis' :: MonadConnect m => WorkerConfig -> (RedisInfo -> m a) -> m a
 withRedis' config = withRedis (workerKeyPrefix config) (workerConnectInfo config)
 
 getBackchannelId :: IO BackchannelId
-getBackchannelId = BackchannelId <$> getHostAndProcessId
+getBackchannelId = BackchannelId . toStrict . UUID.toByteString <$> UUID.nextRandom
 
-getWorkerId :: MonadCommand m => RedisInfo -> m WorkerId
-getWorkerId redis = getUnusedWorkerId redis =<< liftIO getHostAndProcessId
-
-getHostAndProcessId :: IO ByteString
-getHostAndProcessId = do
-    hostName <- getHostName
-    pid <- getProcessID
-    return $ encodeUtf8 $ pack $ hostName <> ":" <> show pid
+getWorkerId :: IO WorkerId
+getWorkerId = WorkerId . toStrict . UUID.toByteString <$> UUID.nextRandom
 
 -- Note: Ideally this would yield (Either a b)
 --
