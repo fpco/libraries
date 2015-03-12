@@ -42,7 +42,6 @@ library
                      , concrete-typerep
                      , bytestring
                      , redis-fp
-                     , time
                      , executable-hash
                      , unix
                      , hostname
