@@ -47,7 +47,7 @@ import           Control.Concurrent.STM (check)
 import           Control.Exception (BlockedIndefinitelyOnSTM(..))
 import           Control.Monad.Logger (MonadLogger, logWarnS, logErrorS, logDebugS)
 import           Control.Monad.Trans.Control (control, liftBaseWith, MonadBaseControl, StM)
-import           Data.Binary (Binary, decode, encode)
+import           Data.Binary (Binary, encode)
 import           Data.ConcreteTypeRep (ConcreteTypeRep, cTypeOf)
 import           Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
 import           Data.Streaming.Network (clientSettingsTCP, runTCPServer, setAfterBind, serverSettingsTCP)
@@ -499,8 +499,9 @@ jobQueueRequest' cvs r request handler = do
         Nothing -> do
             notifyRequestAvailable r
             atomically $ SM.focus addOrExtend k (clientDispatch cvs)
-        Just response -> do
-            void $ fork $ runHandler (Right (decode (fromStrict response)))
+        Just response ->
+            decodeOrThrow "jobQueueRequest'" response >>=
+            void . fork . runHandler
   where
     addOrExtend Nothing = return ((), Replace runHandler)
     addOrExtend (Just old) = return ((), Replace (\x -> old x >> runHandler x))
@@ -559,9 +560,9 @@ checkHeartbeats r ivl =
         -- the inactive list.  The flag also gets set to False here,
         -- such that if a failure happens in the middle, the next run
         -- will know to not use the data.
-        functioning <- fmap (fmap (decode . fromStrict)) $
-            run r $ getset (heartbeatFunctioningKey r) (toStrict (encode False))
-        inactive <- if functioning == Just True
+        functioning <-
+            run r (getset (heartbeatFunctioningKey r) (toStrict (encode False)))
+        inactive <- if functioning == Just (toStrict (encode True))
             then do
                 -- Fetch the list of inactive workers and move their
                 -- jobs back to the requests queue.  If we re-enqueued
