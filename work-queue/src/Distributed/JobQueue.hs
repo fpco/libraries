@@ -33,6 +33,7 @@ module Distributed.JobQueue
     , jobQueueClient
     , jobQueueRequest
     , jobQueueRequest'
+    , BlockedIndefinitelyOnBackchannelSubscription(..)
     , DistributedJobQueueException(..)
     -- * Internals, used by tests
     , slaveRequestsKey
