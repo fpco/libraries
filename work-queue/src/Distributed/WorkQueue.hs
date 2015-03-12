@@ -162,6 +162,10 @@ withMaster runApp nmSettings initial inner =
             $ \queue -> withAsync (server queue)
             $ const $ runInBase $ inner queue
   where
+    -- Runs a 'forkIO' based server to which slaves connect. Each
+    -- connection to a slave runs 'provideWorker' to run a local
+    -- worker on the master that delegates the payloads it receives to
+    -- the slave.
     server queue = runApp $ runNMApp nmSettings $ \nm -> do
         nmWrite nm $ TSInit initial
         provideWorker queue $ \payload -> do

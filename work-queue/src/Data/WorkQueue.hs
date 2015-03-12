@@ -46,7 +46,7 @@ import Prelude                     hiding (sequence)
 data WorkQueue payload result = WorkQueue
     (TVar [(payload, result -> IO ())])
     (TVar Int) -- active workers
-    (TMVar ())
+    (TMVar ()) -- filled when the work queue is closed
 
 -- | Create a new, empty, open work queue.
 newWorkQueue :: STM (WorkQueue payload result)
@@ -65,7 +65,8 @@ withWorkQueue = bracket
     (liftBase $ atomically newWorkQueue)
     (liftBase . atomically . closeWorkQueue)
 
--- | Queue a single item in the work queue.
+-- | Queue a single item in the work queue.  This prepends the item,
+-- so it will be the next item taken by a worker.
 queueItem :: WorkQueue payload result
           -> payload -- ^ payload to be computed
           -> (result -> IO ()) -- ^ action to be performed with its result
@@ -74,7 +75,13 @@ queueItem (WorkQueue var _ _) p f = modifyTVar' var ((p, f):)
 
 -- | Queue multiple work items. This is only provided for convenience
 -- and performance vs 'queueItem'; it gives identical atomicity
--- guarantees as calling 'queueItem' multiple times.
+-- guarantees as calling 'queueItem' multiple times in the same STM
+-- transaction.
+--
+-- Note that this will enqueue the items in the opposite order as
+-- @mapM (\(x, f) -> queueItem queue x f)@.  This is because
+-- 'queueItem' prepends each element, so that last item will end up on
+-- the front of the queue.
 queueItems :: WorkQueue payload result -> [(payload, result -> IO ())] -> STM ()
 queueItems (WorkQueue var _ _) items = modifyTVar' var (items ++)
 
@@ -90,6 +97,12 @@ checkEmptyWorkQueue (WorkQueue work active _) = do
 -- given computation and provide the result back (using the function provided
 -- in 'queueItem'). This function will block if the work queue is empty, and
 -- will only exit after the queue is closed via 'closeWorkQueue'.
+--
+-- When the computation throws an exception, the exception is thrown
+-- and the request gets re-enqueued on the queue.  This also applies
+-- to exceptions thrown by the result handling functions passed to
+-- 'queueItem' and 'queueItems', because this result handling function
+-- is run by the worker.
 --
 -- While 'provideWorker' must perform actions on the local machine, it can be
 -- leveraged to send payloads to remote machines. This is what the
@@ -130,8 +143,8 @@ withLocalSlave queue = withLocalSlaves queue 1
 
 -- | Start local slaves against the given work queue.
 --
--- Any exception thrown by a slave will be rethrown. This call will
--- not return until the work queue is empty.
+-- Any exception thrown by a slave will be rethrown, halting further
+-- progress. This call will not return until the work queue is empty.
 --
 -- Note that you may run as many local slaves as desired, by nesting calls to
 -- @withLocalSlave@. A convenience function for doing so is 'withLocalSlaves'.

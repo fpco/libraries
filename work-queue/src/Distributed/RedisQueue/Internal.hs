@@ -51,23 +51,23 @@ instance Binary RequestInfo
 
 -- * Functions to compute Redis keys
 
--- List of "Data.Binary" encoded @RequestInfo@.
+-- | List of "Data.Binary" encoded @RequestInfo@.
 requestsKey :: RedisInfo -> LKey
 requestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests"
 
--- Given a 'RequestId', computes the key for the request or response
+-- | Given a 'RequestId', computes the key for the request or response
 -- data.
 requestDataKey, responseDataKey :: RedisInfo -> RequestId -> VKey
 requestDataKey  r k = VKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k
 responseDataKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestId k
 
--- Given a 'BackchannelId', computes the name of a 'Channel'.  This
+-- | Given a 'BackchannelId', computes the name of a 'Channel'.  This
 -- 'Channel' is used to notify clients when responses are available.
 responseChannel :: RedisInfo -> BackchannelId -> Channel
 responseChannel r k =
     Channel $ redisKeyPrefix r <> "responses:" <> unBackchannelId k
 
--- Given a 'WorkerId', computes the name of a list which holds the
+-- | Given a 'WorkerId', computes the name of a list which holds the
 -- items it's currently working on.
 activeKey :: RedisInfo -> WorkerId -> LKey
 activeKey r k = LKey $ Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
@@ -83,8 +83,10 @@ withRedis
 withRedis redisKeyPrefix redisConnectInfo f =
     withConnection redisConnectInfo $ \redisConnection -> f RedisInfo {..}
 
+-- | Convenience function to run a redis command.
 run :: MonadCommand m => RedisInfo -> CommandRequest a -> m a
 run = runCommand . redisConnection
 
+-- | Convenience function to run a redis command, ignoring the result.
 run_ :: MonadCommand m => RedisInfo -> CommandRequest a -> m ()
 run_ = runCommand_ . redisConnection
