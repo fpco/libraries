@@ -179,6 +179,10 @@ withLocalSlaves queue count0 calc inner =
 -- NOTE: changes to 'mapQueue' and 'mapQueue_' should probably also be
 -- made to 'mapTP' and 'mapTP_'
 
+-- | This the items within the 'Traversable' and enqueues it on the
+-- 'WorkQueue'.  Once all of this work is completed, the results are
+-- yielded as a 'Traversable' with the same structure, where the
+-- payloads have been replaced with their results.
 mapQueue :: (MonadIO m, Traversable t)
          => WorkQueue payload result
          -> t payload
@@ -190,6 +194,7 @@ mapQueue queue t = liftIO $ do
         return $ takeMVar var
     sequence t'
 
+-- | This is similar to 'mapQueue', except it ignores the results.
 mapQueue_ :: (MonadIO m, MonoFoldable mono, Element mono ~ payload)
           => WorkQueue payload result
           -> mono
