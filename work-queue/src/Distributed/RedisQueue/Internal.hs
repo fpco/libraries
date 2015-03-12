@@ -108,19 +108,22 @@ decodeOrThrow src lbs =
             if null remaining
                 then return x
                 else throwErr $ unwords
-                    [ "Expected end of binary data for "
-                    , show (typeRep (Nothing :: Maybe a))
-                    , "-"
+                    [ "Expected end of binary data."
                     , show (length remaining)
-                    , " bytes remain."
+                    , "bytes remain."
                     ]
   where
-    throwErr = liftIO . throwIO . DecodeError src
+    throwErr = liftIO . throwIO . DecodeError src typ
+    typ = show (typeRep (Nothing :: Maybe a))
 
 -- | Since the users of 'decodeOrThrow' attempt to ensure that types
 -- and executable hashes match up, the occurance of this exception
 -- indicates a bug in the library.
-data DecodeError = DecodeError String String
+data DecodeError = DecodeError
+    { deLoc :: String
+    , deTyp :: String
+    , deErr :: String
+    }
     deriving (Show, Typeable)
 
 instance Exception DecodeError
