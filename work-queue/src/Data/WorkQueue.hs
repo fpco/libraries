@@ -146,8 +146,9 @@ withLocalSlave queue = withLocalSlaves queue 1
 
 -- | Start local slaves against the given work queue.
 --
--- Any exception thrown by a slave will be rethrown, halting further
--- progress. This call will not return until the work queue is empty.
+-- Any exception thrown by a slave will be rethrown, and also cancel
+-- all of the other workers. This call will not return until the work
+-- queue is empty.
 --
 -- Note that you may run as many local slaves as desired, by nesting calls to
 -- @withLocalSlave@. A convenience function for doing so is 'withLocalSlaves'.
