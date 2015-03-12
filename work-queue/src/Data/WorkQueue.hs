@@ -6,6 +6,15 @@
 --
 -- To distribute workloads to remote nodes, see "Distributed.WorkQueue", which
 -- builds on top of this module.
+--
+-- The WorkQueue guarantees that if it has workers (see
+-- 'provideWorker' and 'withLocalSlaves'), then the work will
+-- eventually be completed.  This work will be done concurrently if
+-- there are multiple workers.
+--
+-- Exceptions during work are guaranteed to not cause work to be lost
+-- (it gets re-enqueued).  However, these exceptions will be re-thrown
+-- by the worker, and it will cease work.
 module Data.WorkQueue
     ( WorkQueue
     , newWorkQueue
