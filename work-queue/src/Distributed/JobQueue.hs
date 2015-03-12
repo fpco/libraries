@@ -56,7 +56,7 @@ import           Data.Text.Binary ()
 import           Data.Typeable (typeOf)
 import           Data.WorkQueue
 import           Distributed.RedisQueue
-import           Distributed.RedisQueue.Internal (run, run_, activeKey, requestsKey)
+import           Distributed.RedisQueue.Internal
 import           Distributed.WorkQueue
 import           FP.Redis
 import           FP.Redis.Mutex
@@ -250,7 +250,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
             settings <- liftIO defaultNMSettings
             eres <- tryAny $ withMaster (runTCPServer ss) settings initialData $ \queue ->
                 withLocalSlaves queue (workerMasterLocalSlaves config) (calc initialData) $ do
-                    let JobRequest {..} = decode (fromStrict req)
+                    JobRequest {..} <- decodeOrThrow "jobQueueWorker" req
                     when (jrRequestType /= requestType ||
                           jrResponseType /= responseType) $
                         throwM TypeMismatch
@@ -259,7 +259,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                             , expectedRequestType = requestType
                             , actualRequestType = jrRequestType
                             }
-                    let decoded = decode (fromStrict jrBody)
+                    decoded <- decodeOrThrow "jobQueueWorker" jrBody
                     liftIO $ inner initialData redis decoded queue
             case eres of
                 Right result -> do
@@ -328,8 +328,8 @@ notifyRequestAvailable r =
 
 popSlaveRequest :: MonadCommand m => RedisInfo -> m (Maybe SlaveRequest)
 popSlaveRequest r =
-    fmap (decode . fromStrict) <$>
-    runCommand (redisConnection r) (rpop (slaveRequestsKey r))
+    runCommand (redisConnection r) (rpop (slaveRequestsKey r)) >>=
+    mapM (decodeOrThrow "popSlaveRequest")
 
 -- TODO: Ideally, errors should either be on the response channel or
 -- share the subscription connection.
@@ -348,8 +348,8 @@ subscribeToErrors
 subscribeToErrors r (ClientInfo bid _) subscribed f = do
     let sub = subscribe (errorsChannel r bid :| [])
     withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $
-        trackSubscriptionStatus subscribed $ \_ bs ->
-            f (decode (fromStrict bs))
+        trackSubscriptionStatus subscribed $ \_ ->
+            decodeOrThrow "subscribeToErrors" >=> f
 
 -- Key used to for storing requests for slaves.
 slaveRequestsKey :: RedisInfo -> LKey
@@ -424,9 +424,10 @@ jobQueueClient cvs r = do
     checker = checkHeartbeats r (clientHeartbeatCheckIvl cvs)
     handleResponses =
         subscribeToResponses r (clientInfo cvs) (clientSubscribedResponses cvs)
-            $ \rid -> withHandler "response" rid $ \handler -> do
-                response <- readResponse r rid
-                handler (Right (decode (fromStrict response)))
+            $ \rid -> withHandler "response" rid $ \handler ->
+                readResponse r rid >>=
+                decodeOrThrow "jobQueueClient" >>=
+                handler . Right
     handleErrors =
         subscribeToErrors r (clientInfo cvs) (clientSubscribedErrors cvs)
             $ \ErrorResponse {..} -> withHandler "error" erRequest $ \handler ->

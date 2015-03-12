@@ -51,7 +51,7 @@ module Distributed.RedisQueue
 import           ClassyPrelude
 import           Control.Monad.Logger (MonadLogger, logErrorS)
 import qualified Crypto.Hash.SHA1 as SHA1
-import           Data.Binary (Binary, encode, decode)
+import           Data.Binary (Binary, encode)
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Distributed.RedisQueue.Internal
 import           FP.Redis
@@ -117,7 +117,8 @@ popRequest r (WorkerInfo wid _) = do
     mreq <- run r $ rpoplpush (requestsKey r) (activeKey r wid)
     case mreq of
         Nothing -> return Nothing
-        Just (decode . fromStrict -> RequestInfo k bid) -> do
+        Just bs -> do
+            RequestInfo k bid <- decodeOrThrow "popRequest" bs
             mx <- run r $ get (requestDataKey r k)
             case mx of
                 Nothing -> throwM (RequestMissing k)

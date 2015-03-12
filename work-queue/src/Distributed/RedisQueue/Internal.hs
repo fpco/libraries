@@ -5,15 +5,17 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
 -- | Functions and types shared by "Distributed.RedisQueue" and
 -- "Distributed.JobQueue".
 module Distributed.RedisQueue.Internal where
 
-import           ClassyPrelude
-import           Data.Binary (Binary)
-import           FP.Redis
+import ClassyPrelude
+import Data.Binary (Binary, decodeOrFail)
+import Data.Typeable (typeRep)
+import FP.Redis
 
 -- * Types used in the API
 
@@ -91,3 +93,34 @@ run = runCommand . redisConnection
 -- | Convenience function to run a redis command, ignoring the result.
 run_ :: MonadCommand m => RedisInfo -> CommandRequest a -> m ()
 run_ = runCommand_ . redisConnection
+
+-- * Binary utilities
+
+-- | Attempt to decode the given 'ByteString'.  If this fails, then
+-- throw a 'DecodeError' tagged with a 'String' indicating the source
+-- of the decode error.
+decodeOrThrow :: forall m a. (MonadIO m, Binary a, Typeable a)
+              => String -> ByteString -> m a
+decodeOrThrow src lbs =
+    case decodeOrFail (fromStrict lbs) of
+        Left (_, _, err) -> throwErr err
+        Right (remaining, _, x) ->
+            if null remaining
+                then return x
+                else throwErr $ unwords
+                    [ "Expected end of binary data for "
+                    , show (typeRep (Nothing :: Maybe a))
+                    , "-"
+                    , show (length remaining)
+                    , " bytes remain."
+                    ]
+  where
+    throwErr = liftIO . throwIO . DecodeError src
+
+-- | Since the users of 'decodeOrThrow' attempt to ensure that types
+-- and executable hashes match up, the occurance of this exception
+-- indicates a bug in the library.
+data DecodeError = DecodeError String String
+    deriving (Show, Typeable)
+
+instance Exception DecodeError
