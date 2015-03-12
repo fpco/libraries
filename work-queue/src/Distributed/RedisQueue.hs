@@ -62,14 +62,14 @@ import           FP.Redis
 data ClientInfo = ClientInfo
     { clientBackchannelId :: BackchannelId
     , clientRequestExpiry :: Seconds
-    }
+    } deriving (Typeable)
 
 -- | Info required to wait for incoming requests ('popRequest'), and
 -- yield corresponding responses ('sendResponse').
 data WorkerInfo = WorkerInfo
     { workerId :: WorkerId
     , workerResponseExpiry :: Seconds
-    }
+    } deriving (Typeable)
 
 -- | Pushes a request to the compute workers.  If the result has been
 -- computed previously, and the result is still cached, then it's

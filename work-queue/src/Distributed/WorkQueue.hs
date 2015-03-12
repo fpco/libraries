@@ -49,7 +49,7 @@ data RunMode
         { masterHost :: String
         , masterPort :: Int
         }
-    deriving (Eq, Ord, Show, Generic)
+    deriving (Eq, Ord, Show, Generic, Typeable)
 
 
 runModeParser :: Parser RunMode

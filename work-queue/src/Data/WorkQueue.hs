@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE TypeFamilies     #-}
-{-# LANGUAGE TupleSections    #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 -- | A work queue, for distributed workloads among multiple local threads.
 --
 -- To distribute workloads to remote nodes, see "Distributed.WorkQueue", which
@@ -38,6 +39,7 @@ import Control.Monad.Trans.Control (MonadBaseControl, control)
 import Data.IORef
 import Data.MonoTraversable
 import Data.Traversable
+import Data.Typeable               (Typeable)
 import Data.Void                   (absurd)
 import Prelude                     hiding (sequence)
 
@@ -47,6 +49,7 @@ data WorkQueue payload result = WorkQueue
     (TVar [(payload, result -> IO ())])
     (TVar Int) -- active workers
     (TMVar ()) -- filled when the work queue is closed
+    deriving (Typeable)
 
 -- | Create a new, empty, open work queue.
 newWorkQueue :: STM (WorkQueue payload result)

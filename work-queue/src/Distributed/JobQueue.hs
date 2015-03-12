@@ -98,7 +98,7 @@ data WorkerConfig = WorkerConfig
       -- ^ Which port to use when the worker is acting as a master.
     , workerMasterLocalSlaves :: Int
       -- ^ How many local slaves a master server should run.
-    }
+    } deriving (Typeable)
 
 -- | Given a redis key prefix and redis connection information, builds
 -- a default 'WorkerConfig'.
@@ -117,21 +117,21 @@ defaultWorkerConfig prefix ci hostname port = WorkerConfig
 
 -- Hostname and port of the master the slave should connect to.
 data SlaveRequest = SlaveRequest ByteString Int
-    deriving (Generic, Show)
+    deriving (Generic, Show, Typeable)
 
 instance Binary SlaveRequest
 
 data JobRequest = JobRequest
     { jrRequestType, jrResponseType :: ConcreteTypeRep
     , jrBody :: ByteString
-    } deriving (Generic, Show)
+    } deriving (Generic, Show, Typeable)
 
 instance Binary JobRequest
 
 data ErrorResponse = ErrorResponse
     { erRequest :: RequestId
     , erError :: DistributedJobQueueException
-    } deriving (Generic, Show)
+    } deriving (Generic, Show, Typeable)
 
 instance Binary ErrorResponse
 
@@ -148,6 +148,7 @@ data SubscribeOrCheck
     -- successfully popped work last time, there's no reason to
     -- believe there isn't more work immediately available.
     | CheckRequests
+    deriving (Typeable)
 
 -- | This runs a job queue worker.
 jobQueueWorker
@@ -387,7 +388,7 @@ data ClientVars m response = ClientVars
     , clientInfo :: ClientInfo
       -- ^ Information about the client needed to invoke the client
       -- functions in "Distributed.RedisQueue".
-    }
+    } deriving (Typeable)
 
 -- | Create a new 'ClientVars' value.  This uses a default method of
 -- computing a 'BackChannelId', which combines the host name with the

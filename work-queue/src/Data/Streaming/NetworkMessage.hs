@@ -81,7 +81,7 @@ data NMAppData iSend youSend = NMAppData
     { _nmAppData :: AppData
     , _nmWrite   :: iSend -> IO ()
     , _nmRead    :: IO youSend
-    }
+    } deriving (Typeable)
 
 -- | Get the raw @AppData@. This is useful, for example, to get the @SockAddr@ for
 -- this connection. While technically you can use @appRead@ and @appWrite@ as
@@ -264,7 +264,7 @@ data Message payload
     = Ping
     | Payload payload
     | Complete
-    deriving Generic
+    deriving (Generic, Typeable)
 instance B.Binary payload => B.Binary (Message payload)
 
 data NetworkMessageException
@@ -295,7 +295,7 @@ instance B.Binary NetworkMessageException
 data NMSettings = NMSettings
     { _nmHeartbeat :: !Int
     , _nmExeHash :: !(Maybe ByteString)
-    }
+    } deriving (Typeable)
 
 -- | Default settings value.
 --

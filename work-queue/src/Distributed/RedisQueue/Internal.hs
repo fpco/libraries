@@ -5,6 +5,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 
 -- | Functions and types shared by "Distributed.RedisQueue" and
 -- "Distributed.JobQueue".
@@ -21,31 +22,31 @@ data RedisInfo = RedisInfo
     { redisConnection :: Connection
     , redisConnectInfo :: ConnectInfo
     , redisKeyPrefix :: ByteString
-    }
+    } deriving (Typeable)
 
 -- | ID of a redis channel used for notifications about a particular
 -- request.  One way to use this is to give each client server its own
 -- 'BackchannelId', so that it is only informed of responses
 -- associated with the requests it makes.
 newtype BackchannelId = BackchannelId { unBackchannelId :: ByteString }
-    deriving (Eq, Show, Binary, IsString)
+    deriving (Eq, Show, Binary, IsString, Typeable)
 
 -- | Every worker has a 'WorkerId' to uniquely identify it.  It's
 -- needed for the fault tolerance portion - in the event that a worker
 -- goes down we need to be able to re-enqueue its work.
 newtype WorkerId = WorkerId { unWorkerId :: ByteString }
-    deriving (Eq, Show, Binary, IsString)
+    deriving (Eq, Show, Binary, IsString, Typeable)
 
 -- | This is the key used for enqueued requests, and, later, the
 -- response associated with it.  It's the hash of the request, which
 -- allows responses to be cached.
 newtype RequestId = RequestId { unRequestId :: ByteString }
-    deriving (Eq, Show, Binary, Hashable)
+    deriving (Eq, Show, Binary, Hashable, Typeable)
 
 -- * Datatypes used for serialization / deserialization
 
 data RequestInfo = RequestInfo RequestId BackchannelId
-    deriving (Generic)
+    deriving (Generic, Typeable)
 
 instance Binary RequestInfo
 
