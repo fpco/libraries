@@ -9,15 +9,14 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE RecordWildCards #-}
 
--- | This module provides a particular way of using
--- "Distributed.WorkQueue" along with "Distributed.RedisQueue".  It
--- also makes rather non-generic decisions like using 'Vector' and
--- "STMContainers.Map".
+-- | This module uses "Distributed.RedisQueue" atop
+-- "Distributed.WorkQueue" to implement robust distribution of work
+-- among many slaves.
 --
 -- Because it has heartbeats, it adds the guarantee that enqueued work
 -- will not be lost until it's completed, even in the presence of
--- server failure.  A failure in Redis persistence can invalidate this
--- guarantee.
+-- server failure.  A failure in Redis persistence can invalidate
+-- this.
 --
 -- SIDENOTE: We may need a high reliability redis configuration
 -- for this guarantee as well. The redis wikipedia article
@@ -50,7 +49,7 @@ import           Control.Monad.Trans.Control (control, liftBaseWith, MonadBaseCo
 import           Data.Binary (Binary, encode)
 import           Data.ConcreteTypeRep (ConcreteTypeRep, fromTypeRep)
 import           Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
-import           Data.Streaming.Network (clientSettingsTCP, runTCPServer, setAfterBind, serverSettingsTCP)
+import           Data.Streaming.Network (clientSettingsTCP, runTCPServer, serverSettingsTCP)
 import           Data.Streaming.NetworkMessage (NetworkMessageException, Sendable, defaultNMSettings)
 import           Data.Text.Binary ()
 import           Data.Typeable (typeRep, typeOf)
@@ -66,24 +65,11 @@ import           Focus (Decision(Remove, Replace))
 import           GHC.IO.Exception (IOException(IOError), ioe_type, IOErrorType(NoSuchThing))
 import qualified STMContainers.Map as SM
 
---TODO:
---
--- * Consider what happens when an error is thrown by the response
--- handler.  Gotta make this consistent between the 'fork' used when
--- the response is already available, and the one that's inside a
--- subscription.
---
--- * Make heartbeats only subscribe when needed.
---
--- * Pass in the host name, rather than using the 'getHostName'.
---
--- * Add a wrapper like 'Distributed.WorkQueue.runArgs'
-
 -- | Configuration of a 'jobQueueWorker'.
 data WorkerConfig = WorkerConfig
     { workerResponseDataExpiry :: Seconds
-      -- ^ How many seconds the response data should be kept around.
-      -- The longer it's kept around, the more opportunity there is to
+      -- ^ How many seconds the response data should be kept in redis.
+      -- The longer it's kept in redis, the more opportunity there is to
       -- eliminate redundant work, if identical requests are made.  A
       -- longer expiry also allows more time between sending a
       -- response notification and the client reading its data.
@@ -104,7 +90,11 @@ data WorkerConfig = WorkerConfig
 -- a default 'WorkerConfig'.
 --
 -- This config has response data expire every hour, and configures
--- masters to have 0 local slaves.
+-- masters to have one local slave.  The default of one local slave is
+-- because there are cases in which masters may be starved of slaves.
+-- For example, if a bunch of work items come in and they all
+-- immediately become masters, then progress won't be made without
+-- local slaves.
 defaultWorkerConfig :: ByteString -> ConnectInfo -> ByteString -> Int -> WorkerConfig
 defaultWorkerConfig prefix ci hostname port = WorkerConfig
     { workerResponseDataExpiry = Seconds 3600
@@ -115,8 +105,11 @@ defaultWorkerConfig prefix ci hostname port = WorkerConfig
     , workerMasterLocalSlaves = 1
     }
 
--- Hostname and port of the master the slave should connect to.
-data SlaveRequest = SlaveRequest ByteString Int
+-- | Hostname and port of the master the slave should connect to.
+data SlaveRequest = SlaveRequest
+    { srHost :: ByteString
+    , srPort :: Int
+    }
     deriving (Generic, Show, Typeable)
 
 instance Binary SlaveRequest
@@ -144,13 +137,16 @@ data SubscribeOrCheck
     -- established.
     = SubscribeToRequests (MVar ()) (IORef Connection)
     -- | This constructor indicates that 'loop' should just check for
-    -- work, without subscribing to requestChannel.  When the worker
+    -- work, without subscribing to requestChannel. When the worker
     -- successfully popped work last time, there's no reason to
     -- believe there isn't more work immediately available.
     | CheckRequests
     deriving (Typeable)
 
--- | This runs a job queue worker.
+-- | This runs a job queue worker.  The data that's being sent between
+-- the servers all need to be 'Sendable' so that they can be
+-- serialized, and so that agreement on types can be checked at
+-- runtime.
 jobQueueWorker
     :: forall m initialData request response payload result.
        ( MonadConnect m
@@ -165,22 +161,43 @@ jobQueueWorker
     -- ^ This is run once per worker, if it ever becomes a master
     -- server.  The data is then sent to the slaves.
     -> (initialData -> payload -> IO result)
-    -- ^ This is the computation function run by slaves.  It computes
-    -- @result@ from @payload@.  These types need to 'Sendable' such
-    -- that they can be sent with "Data.Streaming.NetworkMessage".
+    -- ^ This is the computation function run by slaves. It computes
+    -- @result@ from @payload@.
     -> (initialData -> RedisInfo -> request -> WorkQueue payload result -> IO response)
     -- ^ This function runs on the master after it's received a
-    -- request.  It's expected that the master will use this request
-    -- to enqueue work items on the provided 'WorkQueue'.  The results
-    -- of this can then be accumulated into a @response@ to be sent
-    -- back to the client.
+    -- request. It's expected that the master will use this request to
+    -- enqueue work items on the provided 'WorkQueue'.  The results of
+    -- this can then be accumulated into a @response@ to be sent back
+    -- to the client.
+    --
+    -- It's expected that this function will use 'queueItem',
+    -- 'mapQueue', or related functions to enqueue work which is
+    -- dispatched to the slaves.
     -> m ()
 jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
+    -- Here's how this works:
+    --
+    -- 1) The worker starts out as neither a slave or master.
+    --
+    -- 2) If there is a pending 'SlaveRequest', then it connects to
+    -- the specified master and starts working.
+    --
+    -- 3) If there is a 'JobRequest', then it becomes a master and
+    -- runs @inner@.
+    --
+    -- 4) If there are neither, then it queries for requests once
+    -- again, this time with a subscription to the 'requestsChannel'.
     wid <- liftIO getWorkerId
     initialDataRef <- newIORef Nothing
-    heartbeatsReady <- liftIO $ newTVarIO False
     nmSettings <- liftIO defaultNMSettings
+    -- heartbeatsReady is used to track whether we're subscribed to
+    -- redis heartbeats or not.  We must wait for this subscription
+    -- before dequeuing a 'JobRequest', because otherwise the
+    -- heartbeat checking won't function, and the request could be
+    -- lost.
+    heartbeatsReady <- liftIO $ newTVarIO False
     let worker = WorkerInfo wid (workerResponseDataExpiry config)
+        loop :: SubscribeOrCheck -> m ()
         loop soc = do
             -- If there's slave work to be done, then do it.
             mslave <- popSlaveRequest redis
@@ -192,7 +209,8 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                 Nothing -> do
                     -- If there isn't any slave work, then check if
                     -- there's a request, and become a master if there
-                    -- is one.
+                    -- is one.  If our server dies, then the heartbeat
+                    -- code will re-enqueue the request.
                     mreq <- popRequest redis worker
                     case (mreq, soc) of
                         (Just req, _) -> do
@@ -200,7 +218,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                             becomeMaster req
                             loop CheckRequests
                         (Nothing, CheckRequests) -> do
-                            subscribeToRequests
+                            loop =<< subscribeToRequests
                         (Nothing, SubscribeToRequests notified _) -> do
                             takeMVar notified
                             loop soc
@@ -221,20 +239,22 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                         void $ tryPutMVar notified ()
             liftIO $ link thread
             atomically $ check =<< readTVar ready
-            loop $ SubscribeToRequests notified connVar
+            return $ SubscribeToRequests notified connVar
         unsubscribeToRequests CheckRequests = return ()
         unsubscribeToRequests (SubscribeToRequests _ connVar) =
             disconnect =<< readIORef connVar
         becomeSlave :: SlaveRequest -> m ()
         becomeSlave req@(SlaveRequest host port) = do
             $logDebugS "JobQueue" "Becoming slave"
-            deactivateWorker redis worker
             eres <- try $ runSlave (clientSettingsTCP port host) nmSettings calc
             case eres of
                 Right () -> return ()
                 -- This indicates that the slave couldn't connect.
                 Left (IOError { ioe_type = NoSuchThing }) ->
-                    $logDebugS "JobQueue" $ "Failed to connect with " <> tshow req
+                    $logDebugS "JobQueue" $
+                        "Failed to connect to master, with " <>
+                        tshow req <>
+                        ".  This probably isn't an issue - the master likely already finished or died."
                 Left err -> throwM err
         becomeMaster :: (RequestId, BackchannelId, ByteString) -> m ()
         becomeMaster (rid, bid, req) = do
@@ -273,8 +293,8 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                         { erRequest = rid
                         , erError = wrapException err
                         }
-        ss = setAfterBind (const $ putStrLn $ "Listening on " ++ tshow (workerPort config))
-                          (serverSettingsTCP (workerPort config) "*")
+            deactivateWorker redis worker
+        ss = serverSettingsTCP (workerPort config) "*"
         requestType = fromTypeRep (typeRep (Nothing :: Maybe request))
         responseType = fromTypeRep (typeRep (Nothing :: Maybe response))
         start = do
@@ -331,9 +351,6 @@ popSlaveRequest r =
     runCommand (redisConnection r) (rpop (slaveRequestsKey r)) >>=
     mapM (decodeOrThrow "popSlaveRequest")
 
--- TODO: Ideally, errors should either be on the response channel or
--- share the subscription connection.
-
 sendErrorResponse
     :: MonadCommand m
     => RedisInfo -> BackchannelId -> ErrorResponse -> m ()
@@ -351,16 +368,16 @@ subscribeToErrors r (ClientInfo bid _) subscribed f = do
         trackSubscriptionStatus subscribed $ \_ ->
             decodeOrThrow "subscribeToErrors" >=> f
 
--- Key used to for storing requests for slaves.
+-- | Key used to for storing requests for slaves.
 slaveRequestsKey :: RedisInfo -> LKey
 slaveRequestsKey r = LKey $ Key $ redisKeyPrefix r <> "slave-requests"
 
--- 'Channel' which is used to notify idle workers that there is a new
+-- | 'Channel' which is used to notify idle workers that there is a new
 -- client request or slave request available.
 requestChannel :: RedisInfo -> Channel
 requestChannel r = Channel $ redisKeyPrefix r <> "request-channel"
 
--- 'Channel' which is used to notify of exceptions which ought to be
+-- | 'Channel' which is used to notify of exceptions which ought to be
 -- temporary.  Error responses aren't yielded in response bodies so
 -- that they don't get cached.
 errorChannel :: RedisInfo -> BackchannelId -> Channel
@@ -454,7 +471,7 @@ jobQueueClient cvs r = do
 -- ensure that the types of @payload@ match up, and that the
 -- 'ByteString' responses are encoded as expected.
 --
--- If the worker throws a 'DistributedJobQueueException', then this
+-- If the worker yields a 'DistributedJobQueueException', then this
 -- function rethrows it.
 jobQueueRequest
     :: (MonadCommand m, MonadLogger m, MonadThrow m, Sendable request, Sendable response)
@@ -468,10 +485,10 @@ jobQueueRequest cvs r request = do
     eres <- takeMVar resultVar
     either throwM return eres
 
--- | This is a non-blocking version of jobQueueRequest.  When the
+-- | This is a non-blocking version of 'jobQueueRequest'.  When the
 -- response comes back, the provided callback is invoked.  One thing
 -- to note is that exceptions thrown by the callback do not get
--- rethrown.  Instead, they're printed, due to jobQueueClient using
+-- rethrown.  Instead, they're printed, due to 'jobQueueClient' using
 -- 'FP.Redis.withSubscriptionsWrapped'.
 --
 -- This command does block on the request being enqueued.  First, it
@@ -500,6 +517,10 @@ jobQueueRequest' cvs r request handler = do
             notifyRequestAvailable r
             atomically $ SM.focus addOrExtend k (clientDispatch cvs)
         Just response ->
+            -- TODO: What should happen to exceptions that get thrown
+            -- by response handlers?  Maybe we shouldn't expose
+            -- jobQueueRequest', in order to avoid this issue?
+            -- (handlers are also run by 'jobQueueClient')
             decodeOrThrow "jobQueueRequest'" response >>=
             void . fork . runHandler
   where
@@ -569,9 +590,9 @@ checkHeartbeats r ivl =
                 -- some requests, then send out a notification about
                 -- it.
                 inactive <- run r $ smembers (heartbeatInactiveKey r)
-                reenqueedSome <- any id <$>
+                reenquedSome <- any id <$>
                     mapM (handleWorkerFailure r . WorkerId) inactive
-                when reenqueedSome $ notifyRequestAvailable r
+                when reenquedSome $ notifyRequestAvailable r
                 return inactive
             else do
                 -- The reasoning here is that if the last heartbeat
@@ -608,13 +629,14 @@ handleWorkerFailure r wid = do
     return $ isJust (nonEmpty requests)
 
 -- | This is used to remove the worker from the set of workers checked
--- for heartbeats.  It's used when a master becomes a slave.
+-- for heartbeats.  It's used after a worker stops being a master.
 --
 -- It throws a 'WorkStillInProgress' exception if there is enqueued
--- work, so callers should ensure that this isn't the case.  In order
--- to ensure that work isn't enqueued to the deactivated worker, it
--- also replaces the list with a dummy string value.  This will cause
--- 'popRequest' to yield 'Nothing'.
+-- work, so callers should ensure that this isn't the case.
+--
+-- The usage of this function in 'jobQueueWorker' is guaranteed to not
+-- throw this exception, because it is called after 'sendResponse',
+-- which removes the work from the active queue.
 deactivateWorker :: (MonadCommand m, MonadThrow m)
                  => RedisInfo -> WorkerInfo -> m ()
 deactivateWorker r (WorkerInfo wid _) = do
@@ -638,7 +660,7 @@ heartbeatFunctioningKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:function
 -- Channel used for requesting that the workers remove their
 -- 'WorkerId' from the set at 'heartbeatInactiveKey'.
 heartbeatChannel :: RedisInfo -> Channel
-heartbeatChannel r = Channel $ redisKeyPrefix r <> "heartbeat:channel"
+heartbeatChannel r = Channel $ redisKeyPrefix r <> "heart]beat:channel"
 
 -- Prefix used for the 'periodicActionWrapped' invocation, which is
 -- used to share the responsibility of periodically checking

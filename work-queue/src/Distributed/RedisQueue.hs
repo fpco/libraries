@@ -19,7 +19,7 @@
 --
 -- (2) Many workers can pop work requests, and send responses.
 --
--- One caveat is that it does not current make the guarantee that
+-- One caveat is that it does not currently make the guarantee that
 -- results are only delivered once.  It's up to the client to deal
 -- with this. The higher level "Distributed.JobQueue" handles this
 -- gracefully by deregistering the callback when a response comes
@@ -31,7 +31,7 @@
 -- a given 'RequestId', then it is returned instead of enqueuing a
 -- redundant computation.
 --
--- By moving items off of 'activeKey', and onto "requestsKey", the
+-- By moving items off of 'activeKey', and onto 'requestsKey', the
 -- user of this API can handle the circumstance that a worker has
 -- failed.  This is handled by "Distributed.JobQueue".
 module Distributed.RedisQueue
@@ -49,7 +49,7 @@ module Distributed.RedisQueue
     ) where
 
 import           ClassyPrelude
-import           Control.Monad.Logger (MonadLogger, logErrorS)
+import           Control.Monad.Logger (MonadLogger, logWarnS)
 import qualified Crypto.Hash.SHA1 as SHA1
 import           Data.Binary (Binary, encode)
 import           Data.List.NonEmpty (NonEmpty((:|)))
@@ -61,14 +61,19 @@ import           FP.Redis
 -- ('readResponse').
 data ClientInfo = ClientInfo
     { clientBackchannelId :: BackchannelId
+    -- ^ Identifies the channel used to notify about a response.
     , clientRequestExpiry :: Seconds
+    -- ^ The expiry time of the request data stored in redis.
     } deriving (Typeable)
 
 -- | Info required to wait for incoming requests ('popRequest'), and
 -- yield corresponding responses ('sendResponse').
 data WorkerInfo = WorkerInfo
     { workerId :: WorkerId
+    -- ^ A unique identity for the worker, this is used to identify
+    -- its list of active work items.
     , workerResponseExpiry :: Seconds
+    -- ^ The expiry time of the response data stored in redis.
     } deriving (Typeable)
 
 -- | Pushes a request to the compute workers.  If the result has been
@@ -141,7 +146,7 @@ sendResponse r (WorkerInfo wid expiry) k bid x = do
     removed <- run r $ lrem ak 1 (toStrict (encode (k, bid)))
     if removed == 1
         then return ()
-        else $logErrorS "RedisQueue" $
+        else $logWarnS "RedisQueue" $
             tshow k <>
             " isn't a member of active queue (" <>
             tshow ak <>

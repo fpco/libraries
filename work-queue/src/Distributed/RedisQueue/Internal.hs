@@ -47,6 +47,7 @@ newtype RequestId = RequestId { unRequestId :: ByteString }
 
 -- * Datatypes used for serialization / deserialization
 
+-- | Encoding used when enqueuing to the 'requestsKey' list.
 data RequestInfo = RequestInfo RequestId BackchannelId
     deriving (Generic, Typeable)
 
@@ -54,7 +55,8 @@ instance Binary RequestInfo
 
 -- * Functions to compute Redis keys
 
--- | List of "Data.Binary" encoded @RequestInfo@.
+-- | List of "Data.Binary" encoded @RequestInfo@.  The client enqueues
+-- requests to this list, and the workers pop them off.
 requestsKey :: RedisInfo -> LKey
 requestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests"
 
@@ -71,7 +73,7 @@ responseChannel r k =
     Channel $ redisKeyPrefix r <> "responses:" <> unBackchannelId k
 
 -- | Given a 'WorkerId', computes the name of a list which holds the
--- items it's currently working on.
+-- items the worker is currently working on.
 activeKey :: RedisInfo -> WorkerId -> LKey
 activeKey r k = LKey $ Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
 
