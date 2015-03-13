@@ -65,7 +65,7 @@ runRound queue gen players = do
 
     let items = flip V.imap players $ \j player ->
             (player, \s -> VM.unsafeWrite scores j (s, player))
-    atomically $ queueItems queue $ V.toList items
+    atomically $ queueItems queue items
     atomically $ checkEmptyWorkQueue queue
 
     -- Sort the vector by score

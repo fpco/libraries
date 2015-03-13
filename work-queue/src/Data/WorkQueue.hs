@@ -46,11 +46,12 @@ import Control.Monad.Base          (liftBase)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Control (MonadBaseControl, control)
 import Data.IORef
+import Data.Foldable               (Foldable, foldr)
 import Data.MonoTraversable
 import Data.Traversable
 import Data.Typeable               (Typeable)
 import Data.Void                   (absurd)
-import Prelude                     hiding (sequence)
+import Prelude                     hiding (foldr, sequence)
 
 -- | A queue of work items to be performed, where each work item is of type
 -- @payload@ and whose computation gives a result of type @result@.
@@ -94,8 +95,11 @@ queueItem (WorkQueue var _ _) p f = modifyTVar' var ((p, f):)
 -- @mapM (\(x, f) -> queueItem queue x f)@.  This is because
 -- 'queueItem' prepends each element, so that last item will end up on
 -- the front of the queue.
-queueItems :: WorkQueue payload result -> [(payload, result -> IO ())] -> STM ()
-queueItems (WorkQueue var _ _) items = modifyTVar' var (items ++)
+queueItems :: Foldable f
+           => WorkQueue payload result
+           -> f (payload, result -> IO ())
+           -> STM ()
+queueItems (WorkQueue var _ _) items = modifyTVar' var (\orig -> foldr (:) orig items)
 
 -- | Block until the work queue is empty. That is, until there are no work
 -- items in the queue, and no work items checked out by a worker.
