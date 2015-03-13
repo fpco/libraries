@@ -187,6 +187,13 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
     --
     -- 4) If there are neither, then it queries for requests once
     -- again, this time with a subscription to the 'requestsChannel'.
+    --
+    -- Not having this subscription the first time through is an
+    -- optimization - it allows us to save redis connections and save
+    -- redis the overhead of notifying many workers.  When the system
+    -- isn't saturated in work, we don't really care about
+    -- performance, and so it doesn't matter that we have so many
+    -- connections to redis + it needs to notify many workers.
     wid <- liftIO getWorkerId
     initialDataRef <- newIORef Nothing
     nmSettings <- liftIO defaultNMSettings
