@@ -48,12 +48,12 @@ import           Control.Exception (BlockedIndefinitelyOnSTM(..))
 import           Control.Monad.Logger (MonadLogger, logWarnS, logErrorS, logDebugS)
 import           Control.Monad.Trans.Control (control, liftBaseWith, MonadBaseControl, StM)
 import           Data.Binary (Binary, encode)
-import           Data.ConcreteTypeRep (ConcreteTypeRep, cTypeOf)
+import           Data.ConcreteTypeRep (ConcreteTypeRep, fromTypeRep)
 import           Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
 import           Data.Streaming.Network (clientSettingsTCP, runTCPServer, setAfterBind, serverSettingsTCP)
 import           Data.Streaming.NetworkMessage (NetworkMessageException, Sendable, defaultNMSettings)
 import           Data.Text.Binary ()
-import           Data.Typeable (typeOf)
+import           Data.Typeable (typeRep, typeOf)
 import           Data.UUID as UUID
 import           Data.UUID.V4 as UUID
 import           Data.WorkQueue
@@ -275,8 +275,8 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                         }
         ss = setAfterBind (const $ putStrLn $ "Listening on " ++ tshow (workerPort config))
                           (serverSettingsTCP (workerPort config) "*")
-        requestType = cTypeOf (error "cTypeOf evaluated" :: request)
-        responseType = cTypeOf (error "cTypeOf evaluated" :: response)
+        requestType = fromTypeRep (typeRep (Nothing :: Maybe request))
+        responseType = fromTypeRep (typeRep (Nothing :: Maybe response))
         start = do
             atomically $ check =<< readTVar heartbeatsReady
             loop CheckRequests
@@ -490,8 +490,8 @@ jobQueueRequest' cvs r request handler = do
     -- Perhaps instead servers should block even accepting requests
     -- until it's subscribed.
     waitForSubscribed cvs
-    let jrRequestType = cTypeOf (error "cTypeOf evaluated" :: request)
-        jrResponseType = cTypeOf (error "cTypeOf evaluated" :: response)
+    let jrRequestType = fromTypeRep (typeRep (Nothing :: Maybe request))
+        jrResponseType = fromTypeRep (typeRep (Nothing :: Maybe response))
         jrBody = toStrict (encode request)
         encoded = toStrict (encode JobRequest {..})
     (k, mresponse) <- pushRequest r (clientInfo cvs) encoded
