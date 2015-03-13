@@ -220,6 +220,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                     return $ trackSubscriptionStatus ready $ \_ _ ->
                         void $ tryPutMVar notified ()
             liftIO $ link thread
+            atomically $ check =<< readTVar ready
             loop $ SubscribeToRequests notified connVar
         unsubscribeToRequests CheckRequests = return ()
         unsubscribeToRequests (SubscribeToRequests _ connVar) =
