@@ -144,15 +144,13 @@ sendResponse r (WorkerInfo wid expiry) k bid x = do
     -- list of in-progress requests.
     let ak = activeKey r wid
     removed <- run r $ lrem ak 1 (toStrict (encode (k, bid)))
-    if removed == 1
-        then return ()
-        else $logWarnS "RedisQueue" $
-            tshow k <>
-            " isn't a member of active queue (" <>
-            tshow ak <>
-            "), likely indicating that a heartbeat failure happened, causing\
-            \ it to be erroneously re-enqueued.  This doesn't affect\
-            \ correctness, but could mean that redundant work is performed."
+    when (removed /= 1) $ $logWarnS "RedisQueue" $
+        tshow k <>
+        " isn't a member of active queue (" <>
+        tshow ak <>
+        "), likely indicating that a heartbeat failure happened, causing\
+        \ it to be erroneously re-enqueued.  This doesn't affect\
+        \ correctness, but could mean that redundant work is performed."
     -- Remove the request data, as it's no longer needed.  We don't
     -- check if the removal succeeds, as this may not be the first
     -- time a response is sent for the request.  See the error message
