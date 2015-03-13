@@ -475,8 +475,9 @@ jobQueueClient cvs r = do
 -- | Once a 'jobQueueClient' has been run with the 'ClientVars' value,
 -- this function can be used to make requests and block on their
 -- response.  It's up to the user of this and 'jobQueueWorker' to
--- ensure that the types of @payload@ match up, and that the
--- 'ByteString' responses are encoded as expected.
+-- ensure that the types of @request@ and @response@ match up.
+-- Getting this wrong will cause a 'TypeMismatch' exception to be
+-- thrown.
 --
 -- If the worker yields a 'DistributedJobQueueException', then this
 -- function rethrows it.
