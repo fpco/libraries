@@ -138,13 +138,13 @@ instance Binary ErrorResponse
 data SubscribeOrCheck
     -- | When 'loop' doesn't find any work, it's called again using
     -- this constructor as its argument.  When this happens, it will
-    -- block on the 'MVar', waiting on the requestsChannel.  However,
+    -- block on the 'MVar', waiting on the requestChannel.  However,
     -- before blocking, it makes one more attempt at popping work,
     -- because some work may have come in before the subscription was
     -- established.
     = SubscribeToRequests (MVar ()) (IORef Connection)
     -- | This constructor indicates that 'loop' should just check for
-    -- work, without subscribing to requestsChannel.  When the worker
+    -- work, without subscribing to requestChannel.  When the worker
     -- successfully popped work last time, there's no reason to
     -- believe there isn't more work immediately available.
     | CheckRequests
@@ -213,7 +213,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
             -- below.  In order for 'ready' to be set to 'True', this
             -- IORef will have been set.
             connVar <- newIORef (error "impossible: connVar not initialized.")
-            let subs = subscribe (requestsChannel redis :| []) :| []
+            let subs = subscribe (requestChannel redis :| []) :| []
             thread <- asyncLifted $
                 withSubscriptionsExConn (redisConnectInfo redis) subs $ \conn -> do
                     writeIORef connVar conn
@@ -324,7 +324,7 @@ requestSlave config r = do
 
 notifyRequestAvailable :: MonadCommand m => RedisInfo -> m ()
 notifyRequestAvailable r =
-    runCommand_ (redisConnection r) $ publish (requestsChannel r) ""
+    runCommand_ (redisConnection r) $ publish (requestChannel r) ""
 
 popSlaveRequest :: MonadCommand m => RedisInfo -> m (Maybe SlaveRequest)
 popSlaveRequest r =
@@ -338,7 +338,7 @@ sendErrorResponse
     :: MonadCommand m
     => RedisInfo -> BackchannelId -> ErrorResponse -> m ()
 sendErrorResponse r bid ex =
-    runCommand_ (redisConnection r) (publish (errorsChannel r bid) encoded)
+    runCommand_ (redisConnection r) (publish (errorChannel r bid) encoded)
   where
     encoded = toStrict (encode ex)
 
@@ -346,7 +346,7 @@ subscribeToErrors
     :: MonadConnect m
     => RedisInfo -> ClientInfo -> TVar Bool -> (ErrorResponse -> m ()) -> m void
 subscribeToErrors r (ClientInfo bid _) subscribed f = do
-    let sub = subscribe (errorsChannel r bid :| [])
+    let sub = subscribe (errorChannel r bid :| [])
     withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $
         trackSubscriptionStatus subscribed $ \_ ->
             decodeOrThrow "subscribeToErrors" >=> f
@@ -357,15 +357,15 @@ slaveRequestsKey r = LKey $ Key $ redisKeyPrefix r <> "slave-requests"
 
 -- 'Channel' which is used to notify idle workers that there is a new
 -- client request or slave request available.
-requestsChannel :: RedisInfo -> Channel
-requestsChannel r = Channel $ redisKeyPrefix r <> "requests-channel"
+requestChannel :: RedisInfo -> Channel
+requestChannel r = Channel $ redisKeyPrefix r <> "request-channel"
 
 -- 'Channel' which is used to notify of exceptions which ought to be
 -- temporary.  Error responses aren't yielded in response bodies so
 -- that they don't get cached.
-errorsChannel :: RedisInfo -> BackchannelId -> Channel
-errorsChannel r k =
-    Channel $ redisKeyPrefix r <> "errors-channel:" <> unBackchannelId k
+errorChannel :: RedisInfo -> BackchannelId -> Channel
+errorChannel r k =
+    Channel $ redisKeyPrefix r <> "error-channel:" <> unBackchannelId k
 
 -- | Variables and settings used by 'jobQueueClient' /
 -- 'jobQueueRequest'.
