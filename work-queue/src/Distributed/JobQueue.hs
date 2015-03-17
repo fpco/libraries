@@ -27,12 +27,17 @@ module Distributed.JobQueue
     , defaultWorkerConfig
     , jobQueueWorker
     , requestSlave
+    -- * Main client API
+    , ClientConfig(..)
+    , defaultClientConfig
     , ClientVars(..)
+    , withJobQueueClient
+    , sendRequest
+    , registerResponseCallback
+    -- * Extra client APIs
     , newClientVars
     , jobQueueClient
     , jobQueueRequest
-    , jobQueueRequest'
-    , BlockedIndefinitelyOnBackchannelSubscription(..)
     , DistributedJobQueueException(..)
     -- * Internals, used by tests
     , slaveRequestsKey
@@ -41,10 +46,8 @@ module Distributed.JobQueue
 
 import           ClassyPrelude
 import           Control.Concurrent.Async (Async, async, link, withAsync, race)
-import           Control.Concurrent.Lifted (fork)
 import           Control.Concurrent.STM (check)
-import           Control.Exception (BlockedIndefinitelyOnSTM(..))
-import           Control.Monad.Logger (MonadLogger, logWarnS, logErrorS, logDebugS)
+import           Control.Monad.Logger (MonadLogger, logErrorS, logDebugS)
 import           Control.Monad.Trans.Control (control, liftBaseWith, MonadBaseControl, StM)
 import           Data.Binary (Binary, encode)
 import           Data.ConcreteTypeRep (ConcreteTypeRep, fromTypeRep)
@@ -121,13 +124,6 @@ data JobRequest = JobRequest
 
 instance Binary JobRequest
 
-data ErrorResponse = ErrorResponse
-    { erRequest :: RequestId
-    , erError :: DistributedJobQueueException
-    } deriving (Generic, Show, Typeable)
-
-instance Binary ErrorResponse
-
 data SubscribeOrCheck
     -- | When 'loop' doesn't find any work, it's called again using
     -- this constructor as its argument.  When this happens, it will
@@ -203,8 +199,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
     -- heartbeat checking won't function, and the request could be
     -- lost.
     heartbeatsReady <- liftIO $ newTVarIO False
-    let worker = WorkerInfo wid (workerResponseDataExpiry config)
-        loop :: SubscribeOrCheck -> m ()
+    let loop :: SubscribeOrCheck -> m ()
         loop soc = do
             -- If there's slave work to be done, then do it.
             mslave <- popSlaveRequest redis
@@ -218,7 +213,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                     -- there's a request, and become a master if there
                     -- is one.  If our server dies, then the heartbeat
                     -- code will re-enqueue the request.
-                    mreq <- popRequest redis worker
+                    mreq <- popRequest redis wid
                     case (mreq, soc) of
                         (Just req, _) -> do
                             unsubscribeToRequests soc
@@ -263,8 +258,8 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                         tshow req <>
                         ".  This probably isn't an issue - the master likely already finished or died."
                 Left err -> throwM err
-        becomeMaster :: (RequestId, BackchannelId, ByteString) -> m ()
-        becomeMaster (rid, bid, req) = do
+        becomeMaster :: (RequestInfo, ByteString) -> m ()
+        becomeMaster (ri, req) = do
             $logDebugS "JobQueue" "Becoming master"
             initialData <- do
                 minitialData <- readIORef initialDataRef
@@ -288,19 +283,17 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                             }
                     decoded <- decodeOrThrow "jobQueueWorker" jrBody
                     liftIO $ inner initialData redis decoded queue
-            case eres of
-                Right result -> do
-                    let encoded = toStrict (encode result)
-                    sendResponse redis worker rid bid encoded
-                Left err -> do
-                    $logErrorS "JobQueue" $
-                        tshow rid <> " failed with " <> tshow err <>
-                        ". Sending back to the client on " <> tshow bid <> "."
-                    sendErrorResponse redis bid ErrorResponse
-                        { erRequest = rid
-                        , erError = wrapException err
-                        }
-            deactivateWorker redis worker
+            result <-
+                case eres of
+                    Left err -> do
+                        $logErrorS "JobQueue" $
+                            tshow ri <> " failed with " <> tshow err
+                        return (Left (wrapException err))
+                    Right x -> return (Right x)
+            let expiry = workerResponseDataExpiry config
+                encoded = toStrict (encode result)
+            sendResponse redis expiry wid ri encoded
+            deactivateWorker redis wid
         ss = serverSettingsTCP (workerPort config) "*"
         requestType = fromTypeRep (typeRep (Nothing :: Maybe request))
         responseType = fromTypeRep (typeRep (Nothing :: Maybe response))
@@ -308,7 +301,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
             atomically $ check =<< readTVar heartbeatsReady
             loop CheckRequests
         heartbeats =
-            withRedis' config $ \r -> sendHeartbeats r worker heartbeatsReady
+            withRedis' config $ \r -> sendHeartbeats r wid heartbeatsReady
     start `raceLifted` heartbeats
 
 -- | This command is used by a master work server to request that a
@@ -358,23 +351,6 @@ popSlaveRequest r =
     runCommand (redisConnection r) (rpop (slaveRequestsKey r)) >>=
     mapM (decodeOrThrow "popSlaveRequest")
 
-sendErrorResponse
-    :: MonadCommand m
-    => RedisInfo -> BackchannelId -> ErrorResponse -> m ()
-sendErrorResponse r bid ex =
-    runCommand_ (redisConnection r) (publish (errorChannel r bid) encoded)
-  where
-    encoded = toStrict (encode ex)
-
-subscribeToErrors
-    :: MonadConnect m
-    => RedisInfo -> ClientInfo -> TVar Bool -> (ErrorResponse -> m ()) -> m void
-subscribeToErrors r (ClientInfo bid _) subscribed f = do
-    let sub = subscribe (errorChannel r bid :| [])
-    withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $
-        trackSubscriptionStatus subscribed $ \_ ->
-            decodeOrThrow "subscribeToErrors" >=> f
-
 -- | Key used to for storing requests for slaves.
 slaveRequestsKey :: RedisInfo -> LKey
 slaveRequestsKey r = LKey $ Key $ redisKeyPrefix r <> "slave-requests"
@@ -384,48 +360,54 @@ slaveRequestsKey r = LKey $ Key $ redisKeyPrefix r <> "slave-requests"
 requestChannel :: RedisInfo -> Channel
 requestChannel r = Channel $ redisKeyPrefix r <> "request-channel"
 
--- | 'Channel' which is used to notify of exceptions which ought to be
--- temporary.  Error responses aren't yielded in response bodies so
--- that they don't get cached.
-errorChannel :: RedisInfo -> BackchannelId -> Channel
-errorChannel r k =
-    Channel $ redisKeyPrefix r <> "error-channel:" <> unBackchannelId k
-
--- | Variables and settings used by 'jobQueueClient' /
--- 'jobQueueRequest'.
+-- | Variables used by 'jobQueueClient' / 'jobQueueRequest'.
 data ClientVars m response = ClientVars
-    { clientSubscribedResponses :: TVar Bool
+    { clientSubscribed :: TVar Bool
       -- ^ This is set to 'True' once the client is subscribed to its
       -- response backchannel, and so ready to send reqeusts.
-      -- 'jobQueueRequest' blocks until this is 'True'.
-    , clientSubscribedErrors :: TVar Bool
-      -- ^ This is set to 'True' once the client is subscribed to its
-      -- error backchannel, and so ready to send reqeusts.
       -- 'jobQueueRequest' blocks until this is 'True'.
     , clientDispatch :: SM.Map RequestId (Either DistributedJobQueueException response -> m ())
       -- ^ A map between 'RequestId's and their associated handlers.
       -- 'jobQueueClient' uses this to invoke the handlers inserted by
       -- 'jobQueueRequest'.
-    , clientHeartbeatCheckIvl :: Seconds
+    } deriving (Typeable)
+
+-- | Create a new 'ClientVars' value.
+newClientVars :: IO (ClientVars m response)
+newClientVars = ClientVars
+    <$> newTVarIO False
+    <*> SM.newIO
+
+-- | Configuration used for running the client functions of job-queue.
+data ClientConfig = ClientConfig
+    { clientHeartbeatCheckIvl :: Seconds
       -- ^ How often to send heartbeat requests to the workers, and
       -- check for responses.  This value should be the same for all
       -- clients.
-    , clientInfo :: ClientInfo
-      -- ^ Information about the client needed to invoke the client
-      -- functions in "Distributed.RedisQueue".
+    , clientRequestExpiry :: Seconds
+      -- ^ The expiry time of the request data stored in redis.
+    , clientBackchannelId :: BackchannelId
+      -- ^ Identifies the channel used to notify about a response.
     } deriving (Typeable)
 
--- | Create a new 'ClientVars' value.  This uses a default method of
--- computing a 'BackChannelId', which combines the host name with the
--- process ID.  The user must provide values for
--- 'clientHeartbeatCheckIvl' and 'clientRequestExpiry' as arguments.
-newClientVars :: Seconds -> Seconds -> IO (ClientVars m response)
-newClientVars heartbeatCheckIvl requestExpiry = ClientVars
-    <$> newTVarIO False
-    <*> newTVarIO False
-    <*> SM.newIO
-    <*> pure heartbeatCheckIvl
-    <*> (ClientInfo <$> getBackchannelId <*> pure requestExpiry)
+defaultClientConfig :: ClientConfig
+defaultClientConfig = ClientConfig
+    { clientHeartbeatCheckIvl = Seconds 30
+    , clientRequestExpiry = Seconds 3600
+    , clientBackchannelId = defaultBackchannel
+    }
+
+defaultBackchannel :: BackchannelId
+defaultBackchannel = "all-servers"
+
+withJobQueueClient
+    :: (MonadConnect m, Sendable response)
+    => ClientConfig -> RedisInfo -> (ClientVars m response -> m a) -> m a
+withJobQueueClient config r f = do
+    control $ \restore -> do
+        cvs <- newClientVars
+        withAsync (restore (jobQueueClient config cvs r)) $ \_ -> do
+            restore (f cvs)
 
 -- | Runs a listener for responses from workers, which dispatches to
 -- callbacks registered with 'jobQueueRequest'.  It also runs
@@ -436,41 +418,31 @@ newClientVars heartbeatCheckIvl requestExpiry = ClientVars
 -- (the return type is @void@).
 jobQueueClient
     :: (MonadConnect m, Sendable response)
-    => ClientVars m response
+    => ClientConfig
+    -> ClientVars m response
     -> RedisInfo
     -> m void
-jobQueueClient cvs r = do
+jobQueueClient config cvs r = do
     control $ \restore ->
-        withAsync (restore checker) $ \_ ->
-        withAsync (restore handleResponses) $ \_ ->
-        restore handleErrors
+        withAsync (restore checker) $ \_ -> restore handleResponses
   where
-    checker = checkHeartbeats r (clientHeartbeatCheckIvl cvs)
+    checker = checkHeartbeats r (clientHeartbeatCheckIvl config)
     handleResponses =
-        subscribeToResponses r (clientInfo cvs) (clientSubscribedResponses cvs)
-            $ \rid -> withHandler "response" rid $ \handler ->
-                readResponse r rid >>=
-                decodeOrThrow "jobQueueClient" >>=
-                handler . Right
-    handleErrors =
-        subscribeToErrors r (clientInfo cvs) (clientSubscribedErrors cvs)
-            $ \ErrorResponse {..} -> withHandler "error" erRequest $ \handler ->
-                handler (Left erError)
-    withHandler which rid f = do
-        -- Lookup the handler before fetching / deleting the response,
-        -- as the message may get delivered to multiple clients.
-        let lookupAndRemove handler = return (handler, Remove)
-        mhandler <- atomically $
-            SM.focus lookupAndRemove rid (clientDispatch cvs)
-        case mhandler of
-            -- TODO: Is a mere warning sufficient? Perhaps we need
-            -- guarantees about uniqueness of back channel, and number
-            -- of times a response is yielded, in order to have
-            -- guarantees about delivery.
-            Nothing -> $logWarnS "JobQueue" $
-                "Couldn't find handler to deal with " <> which <> " to " <>
-                tshow rid
-            Just handler -> f handler
+        subscribeToResponses r (clientBackchannelId config)
+                               (clientSubscribed cvs)
+            $ \rid -> do
+                -- Lookup the handler before fetching / deleting the response,
+                -- as the message may get delivered to multiple clients.
+                let lookupAndRemove handler = return (handler, Remove)
+                mhandler <- atomically $
+                    SM.focus lookupAndRemove rid (clientDispatch cvs)
+                forM_ mhandler $ \handler -> do
+                    mresponse <- readResponse r rid
+                    case mresponse of
+                        Nothing -> throwM (ResponseMissingException rid)
+                        Just response ->
+                            decodeOrThrow "jobQueueClient" response >>=
+                            handler
 
 -- | Once a 'jobQueueClient' has been run with the 'ClientVars' value,
 -- this function can be used to make requests and block on their
@@ -483,74 +455,67 @@ jobQueueClient cvs r = do
 -- function rethrows it.
 jobQueueRequest
     :: (MonadCommand m, MonadLogger m, MonadThrow m, Sendable request, Sendable response)
-    => ClientVars m response
+    => ClientConfig
+    -> ClientVars m response
     -> RedisInfo
     -> request
     -> m response
-jobQueueRequest cvs r request = do
-    resultVar <- newEmptyMVar
-    jobQueueRequest' cvs r request $ putMVar resultVar
-    eres <- takeMVar resultVar
-    either throwM return eres
+jobQueueRequest config cvs redis request = do
+    (rid, mresponse) <- sendRequest config redis request
+    case mresponse of
+        Just response -> return response
+        Nothing -> do
+            resultVar <- newEmptyMVar
+            registerResponseCallback cvs rid $ putMVar resultVar
+            eres <- takeMVar resultVar
+            either throwM return eres
 
--- | This is a non-blocking version of 'jobQueueRequest'.  When the
--- response comes back, the provided callback is invoked.  One thing
--- to note is that exceptions thrown by the callback do not get
--- rethrown.  Instead, they're printed, due to 'jobQueueClient' using
--- 'FP.Redis.withSubscriptionsWrapped'.
---
--- This command does block on the request being enqueued.  First, it
--- blocks on 'clientSubscribed', then it may also need to wait for the
--- Redis server to become available.
-jobQueueRequest'
+-- | Sends a request to the workers.  This yields a 'RequestId' for use with
+sendRequest
     :: forall m request response.
-       (MonadCommand m, MonadLogger m, MonadThrow m, Sendable request, Sendable response)
-    => ClientVars m response
+       ( MonadCommand m, MonadLogger m, MonadThrow m
+       , Sendable request, Sendable response )
+    => ClientConfig
     -> RedisInfo
     -> request
-    -> (Either DistributedJobQueueException response -> m ())
-    -> m ()
-jobQueueRequest' cvs r request handler = do
-    -- TODO: Does it make sense to block on subscription like this?
-    -- Perhaps instead servers should block even accepting requests
-    -- until it's subscribed.
-    waitForSubscribed cvs
+    -> m (RequestId, Maybe response)
+sendRequest config r request = do
     let jrRequestType = fromTypeRep (typeRep (Nothing :: Maybe request))
         jrResponseType = fromTypeRep (typeRep (Nothing :: Maybe response))
         jrBody = toStrict (encode request)
         encoded = toStrict (encode JobRequest {..})
-    (k, mresponse) <- pushRequest r (clientInfo cvs) encoded
+        expiry = clientRequestExpiry config
+        ri = requestInfo (clientBackchannelId config) encoded
+        k = riRequest ri
+    mresponse <- pushRequest r expiry ri encoded
     case mresponse of
         Nothing -> do
             notifyRequestAvailable r
-            atomically $ SM.focus addOrExtend k (clientDispatch cvs)
-        Just response ->
-            -- TODO: What should happen to exceptions that get thrown
-            -- by response handlers?  Maybe we shouldn't expose
-            -- jobQueueRequest', in order to avoid this issue?
-            -- (handlers are also run by 'jobQueueClient')
-            decodeOrThrow "jobQueueRequest'" response >>=
-            void . fork . runHandler
+            return (k, Nothing)
+        Just response -> do
+            eres <- decodeOrThrow "sendRequest" response
+            case eres of
+                Left (_ :: DistributedJobQueueException) -> do
+                    -- Cached exceptions are cleared.
+                    clearResponse r k
+                    return (k, Nothing)
+                Right x -> return (k, Just x)
+
+registerResponseCallback
+    :: forall m response.
+       (MonadCommand m, MonadLogger m, MonadThrow m , Sendable response)
+    => ClientVars m response
+    -> RequestId
+    -> (Either DistributedJobQueueException response -> m ())
+    -> m ()
+registerResponseCallback cvs k handler = do
+    atomically $ SM.focus addOrExtend k (clientDispatch cvs)
   where
     addOrExtend Nothing = return ((), Replace runHandler)
     addOrExtend (Just old) = return ((), Replace (\x -> old x >> runHandler x))
     runHandler response =
         catchAny (handler response) $ \ex ->
             $logErrorS "JobQueue" $ "jobQueueRequest' callbackHandler: " ++ tshow ex
-
-waitForSubscribed :: (MonadCommand m, MonadThrow m) => ClientVars m response -> m ()
-waitForSubscribed cvs = do
-    (atomically $ do
-        check =<< readTVar (clientSubscribedErrors cvs)
-        check =<< readTVar (clientSubscribedResponses cvs)
-      ) `catch` \BlockedIndefinitelyOnSTM ->
-          throwM BlockedIndefinitelyOnBackchannelSubscription
-
-data BlockedIndefinitelyOnBackchannelSubscription =
-    BlockedIndefinitelyOnBackchannelSubscription
-    deriving (Show, Typeable)
-
-instance Exception BlockedIndefinitelyOnBackchannelSubscription
 
 -- * Heartbeats
 
@@ -563,8 +528,8 @@ instance Exception BlockedIndefinitelyOnBackchannelSubscription
 -- The @TVar Bool@ is changed to 'True' once the subscription is made
 -- and the 'WorkerId' has been added to the list of active workers.
 sendHeartbeats
-    :: MonadConnect m => RedisInfo -> WorkerInfo -> TVar Bool -> m void
-sendHeartbeats r (WorkerInfo wid _) ready = do
+    :: MonadConnect m => RedisInfo -> WorkerId -> TVar Bool -> m void
+sendHeartbeats r wid ready = do
     let sub = subscribe (heartbeatChannel r :| [])
     withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $ \msg ->
         case msg of
@@ -646,8 +611,8 @@ handleWorkerFailure r wid = do
 -- throw this exception, because it is called after 'sendResponse',
 -- which removes the work from the active queue.
 deactivateWorker :: (MonadCommand m, MonadThrow m)
-                 => RedisInfo -> WorkerInfo -> m ()
-deactivateWorker r (WorkerInfo wid _) = do
+                 => RedisInfo -> WorkerId -> m ()
+deactivateWorker r wid = do
     activeCount <- run r $ llen (activeKey r wid)
     when (activeCount /= 0) $ throwM (WorkStillInProgress wid)
     run_ r $ srem (heartbeatActiveKey r) (unWorkerId wid :| [])
@@ -684,8 +649,14 @@ data DistributedJobQueueException
     -- ^ Thrown when the worker stops being a master but there's still
     -- work on its active queue.  This occuring indicates an error in
     -- the library.
-    | DistributedRedisQueueException DistributedRedisQueueException
-    | NetworkMessageException NetworkMessageException
+    | RequestMissingException RequestId
+    -- ^ Exception thrown when a worker can't find the request body.
+    -- This means that the request body expired in redis
+    -- (alternatively, it could indicate a bug in this library).
+    | ResponseMissingException RequestId
+    -- ^ Exception thrown when the client can't find the response
+    -- body. This means that the response body expired in redis
+    -- (alternatively, it could indicate a bug in this library).
     | TypeMismatch
         { expectedRequestType :: ConcreteTypeRep
         , actualRequestType :: ConcreteTypeRep
@@ -694,6 +665,8 @@ data DistributedJobQueueException
         }
     -- ^ Thrown when the client makes a request with the wrong request
     -- / response types.
+    | NetworkMessageException NetworkMessageException
+    -- ^ Exceptions thrown by "Data.Streaming.NetworkMessage"
     | OtherException Text Text
     -- ^ This is used to return exceptions to the client, when
     -- exceptions occur while running the job.
@@ -706,17 +679,14 @@ wrapException :: SomeException -> DistributedJobQueueException
 wrapException ex =
     case ex of
         (fromException -> Just err) -> err
-        (fromException -> Just err) -> DistributedRedisQueueException err
         (fromException -> Just err) -> NetworkMessageException err
+        (fromException -> Just (RequestMissing k)) -> RequestMissingException k
         _ -> OtherException (tshow (typeOf ex)) (tshow ex)
 
 -- * Utilities
 
 withRedis' :: MonadConnect m => WorkerConfig -> (RedisInfo -> m a) -> m a
 withRedis' config = withRedis (workerKeyPrefix config) (workerConnectInfo config)
-
-getBackchannelId :: IO BackchannelId
-getBackchannelId = BackchannelId . toStrict . UUID.toByteString <$> UUID.nextRandom
 
 getWorkerId :: IO WorkerId
 getWorkerId = WorkerId . toStrict . UUID.toByteString <$> UUID.nextRandom

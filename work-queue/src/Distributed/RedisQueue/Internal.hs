@@ -48,8 +48,11 @@ newtype RequestId = RequestId { unRequestId :: ByteString }
 -- * Datatypes used for serialization / deserialization
 
 -- | Encoding used when enqueuing to the 'requestsKey' list.
-data RequestInfo = RequestInfo RequestId BackchannelId
-    deriving (Generic, Typeable)
+data RequestInfo = RequestInfo
+    { riBackchannel :: BackchannelId
+    , riRequest :: RequestId
+    }
+    deriving (Eq, Show, Generic, Typeable)
 
 instance Binary RequestInfo
 
@@ -60,10 +63,12 @@ instance Binary RequestInfo
 requestsKey :: RedisInfo -> LKey
 requestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests"
 
--- | Given a 'RequestId', computes the key for the request or response
--- data.
-requestDataKey, responseDataKey :: RedisInfo -> RequestId -> VKey
+-- | Given a 'RequestId', computes the key for the request data.
+requestDataKey :: RedisInfo -> RequestId -> VKey
 requestDataKey  r k = VKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k
+
+-- | Given a 'RequestId', computes the key for the response data.
+responseDataKey :: RedisInfo -> RequestId -> VKey
 responseDataKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestId k
 
 -- | Given a 'BackchannelId', computes the name of a 'Channel'.  This

@@ -35,13 +35,15 @@
 -- user of this API can handle the circumstance that a worker has
 -- failed.  This is handled by "Distributed.JobQueue".
 module Distributed.RedisQueue
-    ( ClientInfo(..), WorkerInfo(..), RedisInfo(..)
+    ( RedisInfo(..), RequestInfo(..)
     , RequestId(..), BackchannelId(..), WorkerId(..)
-    , DistributedRedisQueueException(..)
+    , RequestMissing(..)
     , withRedis
     -- * Request API used by clients
+    , requestInfo
     , pushRequest
     , readResponse
+    , clearResponse
     , subscribeToResponses
     -- * Compute API used by workers
     , popRequest
@@ -56,25 +58,11 @@ import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Distributed.RedisQueue.Internal
 import           FP.Redis
 
--- | Info required to submit requests to the queue ('pushRequest'),
--- wait for responses ('subscribeToResponses'), and retrieve them
--- ('readResponse').
-data ClientInfo = ClientInfo
-    { clientBackchannelId :: BackchannelId
-    -- ^ Identifies the channel used to notify about a response.
-    , clientRequestExpiry :: Seconds
-    -- ^ The expiry time of the request data stored in redis.
-    } deriving (Typeable)
-
--- | Info required to wait for incoming requests ('popRequest'), and
--- yield corresponding responses ('sendResponse').
-data WorkerInfo = WorkerInfo
-    { workerId :: WorkerId
-    -- ^ A unique identity for the worker, this is used to identify
-    -- its list of active work items.
-    , workerResponseExpiry :: Seconds
-    -- ^ The expiry time of the response data stored in redis.
-    } deriving (Typeable)
+-- | Computes a 'RequestInfo' by hashing the request.
+requestInfo :: BackchannelId -> ByteString -> RequestInfo
+requestInfo bid request = RequestInfo bid k
+  where
+    k = RequestId (SHA1.hash request)
 
 -- | Pushes a request to the compute workers.  If the result has been
 -- computed previously, and the result is still cached, then it's
@@ -88,21 +76,25 @@ data WorkerInfo = WorkerInfo
 -- silently dropped.
 pushRequest
     :: MonadCommand m
-    => RedisInfo -> ClientInfo -> ByteString -> m (RequestId, Maybe ByteString)
-pushRequest r (ClientInfo bid expiry) request = do
+    => RedisInfo
+    -> Seconds
+    -> RequestInfo
+    -> ByteString
+    -> m (Maybe ByteString)
+pushRequest r expiry info request = do
+    let k = riRequest info
     -- Check if the response has already been computed.  If so, then
     -- yield it.
-    let k = RequestId (SHA1.hash request)
     result <- run r $ get (responseDataKey r k)
     case result of
-        Just _ -> return (k, result)
+        Just _ -> return result
         Nothing -> do
             -- Store the request data as a normal redis value.
             run_ r $ set (requestDataKey r k) request [EX expiry]
             -- Enqueue its ID on the requests list.
-            let encoded = toStrict (encode (RequestInfo k bid))
+            let encoded = toStrict (encode info)
             run_ r $ lpush (requestsKey r) (encoded :| [])
-            return (k, Nothing)
+            return Nothing
 
 -- | This function is used by the compute workers to take work off of
 -- the queue.  When work is taken off the queue, it also gets moved to
@@ -116,18 +108,19 @@ pushRequest r (ClientInfo bid expiry) request = do
 popRequest
     :: (MonadCommand m, MonadThrow m)
     => RedisInfo
-    -> WorkerInfo
-    -> m (Maybe (RequestId, BackchannelId, ByteString))
-popRequest r (WorkerInfo wid _) = do
+    -> WorkerId
+    -> m (Maybe (RequestInfo, ByteString))
+popRequest r wid = do
     mreq <- run r $ rpoplpush (requestsKey r) (activeKey r wid)
     case mreq of
         Nothing -> return Nothing
         Just bs -> do
-            RequestInfo k bid <- decodeOrThrow "popRequest" bs
+            info <- decodeOrThrow "popRequest" bs
+            let k = riRequest info
             mx <- run r $ get (requestDataKey r k)
             case mx of
                 Nothing -> throwM (RequestMissing k)
-                Just x -> return (Just (k, bid, x))
+                Just x -> return (Just (info, x))
 
 -- | Send a response for a particular request.  This is done by the
 -- compute workers once they're done with the computation, and have
@@ -135,15 +128,21 @@ popRequest r (WorkerInfo wid _) = do
 -- removes the request data, as it's no longer needed.
 sendResponse
     :: (MonadCommand m, MonadLogger m)
-    => RedisInfo -> WorkerInfo -> RequestId -> BackchannelId -> ByteString -> m ()
-sendResponse r (WorkerInfo wid expiry) k bid x = do
+    => RedisInfo
+    -> Seconds
+    -> WorkerId
+    -> RequestInfo
+    -> ByteString
+    -> m ()
+sendResponse r expiry wid ri x = do
+    let k = riRequest ri
     -- Store the response data, and notify the client that it's ready.
     run_ r $ set (responseDataKey r k) x [EX expiry]
-    run_ r $ publish (responseChannel r bid) (unRequestId k)
+    run_ r $ publish (responseChannel r (riBackchannel ri)) (unRequestId k)
     -- Remove the RequestId associated with this response, from the
     -- list of in-progress requests.
     let ak = activeKey r wid
-    removed <- run r $ lrem ak 1 (toStrict (encode (k, bid)))
+    removed <- run r $ lrem ak 1 (toStrict (encode ri))
     when (removed /= 1) $ $logWarnS "RedisQueue" $
         tshow k <>
         " isn't a member of active queue (" <>
@@ -157,19 +156,20 @@ sendResponse r (WorkerInfo wid expiry) k bid x = do
     -- above.
     run_ r $ del (unVKey (requestDataKey r k) :| [])
 
--- | Retrieves the response for the specified 'RequestId'.  This
--- function is usually called in the body of a 'subscribeToResponses'
--- handler, in order to fetch the response after notification of its
--- existence.  It throws a 'ResponseMissing' error if there is no
--- response for the specified 'RequestId'.
+-- | Clears the cached response for the specified 'RequestId'.  This
+-- is useful in cases where a response is expected to be temporary,
+-- such as when exceptions are thrown.
+clearResponse
+    :: (MonadCommand m, MonadThrow m)
+    => RedisInfo -> RequestId -> m ()
+clearResponse r k = run_ r $ del (unVKey (responseDataKey r k) :| [])
+
+-- | Retrieves the response for the specified 'RequestId', yielding a
+-- 'Just' value if it exists.
 readResponse
     :: (MonadCommand m, MonadThrow m)
-    => RedisInfo -> RequestId -> m ByteString
-readResponse r k = do
-    mx <- run r $ get (responseDataKey r k)
-    case mx of
-        Nothing -> throwM (ResponseMissing k)
-        Just x -> return x
+    => RedisInfo -> RequestId -> m (Maybe ByteString)
+readResponse r k = run r $ get (responseDataKey r k)
 
 -- | Subscribes to responses on the channel specified by this client's
 -- 'BackchannelId'.  It changes the @subscribed@ 'TVar' to 'True' when
@@ -178,8 +178,8 @@ readResponse r k = do
 -- the subscription to be established before enqueueing requests.
 subscribeToResponses
     :: MonadConnect m
-    => RedisInfo -> ClientInfo -> TVar Bool -> (RequestId -> m ()) -> m void
-subscribeToResponses r (ClientInfo bid _) subscribed f = do
+    => RedisInfo -> BackchannelId -> TVar Bool -> (RequestId -> m ()) -> m void
+subscribeToResponses r bid subscribed f = do
     let sub = subscribe (responseChannel r bid :| [])
     withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $
         trackSubscriptionStatus subscribed $ \_ k ->
@@ -187,10 +187,8 @@ subscribeToResponses r (ClientInfo bid _) subscribed f = do
 
 -- * Exceptions
 
-data DistributedRedisQueueException
-    = ResponseMissing RequestId
-    | RequestMissing RequestId
+data RequestMissing = RequestMissing RequestId
     deriving (Eq, Show, Typeable, Generic)
 
-instance Exception DistributedRedisQueueException
-instance Binary DistributedRedisQueueException
+instance Exception RequestMissing
+instance Binary RequestMissing

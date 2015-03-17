@@ -5,14 +5,14 @@
 module Distributed.JobQueueSpec where
 
 import ClassyPrelude hiding (keys)
-import Control.Concurrent.Async (withAsync, race)
+import Control.Concurrent.Async (race)
 import Control.Concurrent.Lifted (threadDelay, fork, killThread)
 import Control.Monad.Logger (runStdoutLoggingT)
-import Control.Monad.Trans.Control (control)
 import Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
 import Data.Binary (encode)
 import Data.List.NonEmpty (nonEmpty, NonEmpty(..))
 import Data.List.Split (chunksOf)
+import Data.Streaming.NetworkMessage (Sendable)
 import Distributed.JobQueue
 import Distributed.RedisQueue
 import Distributed.WorkQueueSpec (redisTestPrefix, forkWorker, cancelProcess)
@@ -20,7 +20,6 @@ import FP.Redis
 import System.Random (randomRIO)
 import System.Timeout.Lifted (timeout)
 import Test.Hspec (Spec, it, shouldBe)
-import Data.Streaming.NetworkMessage
 
 spec :: Spec
 spec = do
@@ -105,14 +104,16 @@ forkDispatcher' = do
 
 runDispatcher :: Sendable a => MVar (Either DistributedJobQueueException a) -> IO ()
 runDispatcher resultVar =
-    runStdoutLoggingT $ withRedis redisTestPrefix localhost $ \redis -> do
-        client <- liftIO (newClientVars (Seconds 2) (Seconds 3600))
-        control $ \restore ->
-            withAsync (restore $ jobQueueClient client redis) $ \_ -> restore $ do
-                -- Push a single set of work requests.
-                let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
-                result <- try $ jobQueueRequest client redis workItems
-                putMVar resultVar result
+    runStdoutLoggingT $ withRedis redisTestPrefix localhost $ \redis ->
+        withJobQueueClient config redis $ \cvs -> do
+            -- Push a single set of work requests.
+            let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
+            result <- try $ jobQueueRequest config cvs redis workItems
+            putMVar resultVar result
+  where
+    config = defaultClientConfig
+        { clientHeartbeatCheckIvl = Seconds 2
+        }
 
 checkResult :: MonadIO m => Int -> MVar (Either DistributedJobQueueException Int) -> Int -> m ()
 checkResult seconds resultVar expected = liftIO $ do

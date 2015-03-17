@@ -4,16 +4,15 @@
 module Main where
 
 import ClassyPrelude
-import Control.Concurrent.Lifted (fork)
 import Control.Monad.Logger (runStdoutLoggingT)
 import Data.Binary (decode)
 import Data.Bits (xor, zeroBits)
+import Data.List.NonEmpty (nonEmpty)
 import Data.List.Split (chunksOf)
 import Distributed.JobQueue
 import Distributed.RedisQueue (withRedis)
 import Distributed.WorkQueue (mapQueue)
 import FP.Redis
-import Data.List.NonEmpty (nonEmpty)
 
 main :: IO ()
 main = do
@@ -25,21 +24,19 @@ main = do
 dispatcher :: IO ()
 dispatcher = do
     clearData
-    runStdoutLoggingT $ withRedis prefix localhost $ \redis -> do
-        -- Client configuration, where heartbeats are checked every 20
-        -- seconds, and requests expire after an hour.
-        client <- liftIO (newClientVars (Seconds 20) (Seconds 3600))
+    let config = defaultClientConfig
+    runStdoutLoggingT $ withRedis prefix localhost $ \redis ->
         -- Run the client heartbeat checker and back channel
         -- subscription.
-        _ <- fork $ jobQueueClient client redis
-        -- Push a single set of work requests.
-        let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
-        response <- jobQueueRequest client redis workItems
-        let result = decode (fromStrict response) :: Int
-        liftIO $ do
-            putStrLn "================"
-            putStrLn $ "Received result: " ++ tshow result
-            putStrLn "================"
+        withJobQueueClient config redis $ \cvs -> do
+             -- Push a single set of work requests.
+             let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
+             response <- jobQueueRequest config cvs redis workItems
+             let result = decode (fromStrict response) :: Int
+             liftIO $ do
+                 putStrLn "================"
+                 putStrLn $ "Received result: " ++ tshow result
+                 putStrLn "================"
 
 masterOrSlave :: IO ()
 masterOrSlave =
