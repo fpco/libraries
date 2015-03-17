@@ -7,11 +7,11 @@
 --
 -- This module should be moved out of the work-queue package.
 module Control.Exception.Mask
-    ( OldMaskingState(..), OldUninterruptibleMaskingState(..)
+    ( RestoreAction(..)
     -- * Exception masking in IO
-    , mask, unmask, uninterruptibleMask, uninterruptibleUnmask
+    , mask, uninterruptibleMask, restore
     -- * Exception masking in STM
-    , maskSTM, unmaskSTM, uninterruptibleMaskSTM, uninterruptibleUnmaskSTM
+    , maskSTM, uninterruptibleMaskSTM, restoreSTM
     , getMaskingStateSTM
     )
     where
@@ -22,79 +22,55 @@ import GHC.Base (IO(IO), maskAsyncExceptions#, unmaskAsyncExceptions#,
                  maskUninterruptible#, getMaskingState#)
 import GHC.Conc (STM(STM))
 
-newtype OldMaskingState = OldMaskingState
-    { unOldMaskingState :: MaskingState }
+data RestoreAction
+    = NoAction
+    | Unblock
+    | Block
     deriving (Eq, Show, Typeable)
 
-mask :: (OldMaskingState -> IO a) -> IO a
+mask :: (RestoreAction -> IO a) -> IO a
 mask io = do
     b <- getMaskingState
-    let f = io (OldMaskingState b)
     case b of
-        Unmasked              -> block f
-        MaskedInterruptible   -> f
-        MaskedUninterruptible -> f
+        Unmasked              -> block (io Unblock)
+        MaskedInterruptible   -> io NoAction
+        MaskedUninterruptible -> io NoAction
 
-unmask :: OldMaskingState -> IO a -> IO a
-unmask b f =
-    case unOldMaskingState b of
-        Unmasked              -> unblock f
-        MaskedInterruptible   -> f
-        MaskedUninterruptible -> f
+uninterruptibleMask :: (RestoreAction -> IO a) -> IO a
+uninterruptibleMask io = do
+    b <- getMaskingState
+    case b of
+        Unmasked              -> blockUninterruptible (io Unblock)
+        MaskedInterruptible   -> blockUninterruptible (io Block)
+        MaskedUninterruptible -> io NoAction
+
+restore :: RestoreAction -> IO a -> IO a
+restore NoAction f = f
+restore Unblock f = unblock f
+restore Block f = block f
 
 -- | Since STM is transactional, I'm having a hard time thinking of a
 -- usecase for this.
-maskSTM :: (OldMaskingState -> STM a) -> STM a
+maskSTM :: (RestoreAction -> STM a) -> STM a
 maskSTM stm = do
     b <- getMaskingStateSTM
-    let f = stm (OldMaskingState b)
     case b of
-        Unmasked              -> blockSTM f
-        MaskedInterruptible   -> f
-        MaskedUninterruptible -> f
+        Unmasked              -> blockSTM (stm Unblock)
+        MaskedInterruptible   -> stm NoAction
+        MaskedUninterruptible -> stm NoAction
 
-unmaskSTM :: OldMaskingState -> STM a -> STM a
-unmaskSTM b f =
-    case unOldMaskingState b of
-        Unmasked              -> unblockSTM f
-        MaskedInterruptible   -> f
-        MaskedUninterruptible -> f
-
-newtype OldUninterruptibleMaskingState = OldUninterruptibleMaskingState
-    { unOldUninterruptibleMaskingState :: MaskingState }
-    deriving (Eq, Show, Typeable)
-
-uninterruptibleMask :: (OldUninterruptibleMaskingState -> IO a) -> IO a
-uninterruptibleMask io = do
-    b <- getMaskingState
-    let f = io (OldUninterruptibleMaskingState b)
-    case b of
-        Unmasked              -> blockUninterruptible f
-        MaskedInterruptible   -> blockUninterruptible f
-        MaskedUninterruptible -> f
-
-uninterruptibleUnmask :: OldUninterruptibleMaskingState -> IO a -> IO a
-uninterruptibleUnmask b f =
-    case unOldUninterruptibleMaskingState b of
-        Unmasked              -> unblock f
-        MaskedInterruptible   -> block f
-        MaskedUninterruptible -> f
-
-uninterruptibleMaskSTM :: (OldUninterruptibleMaskingState -> STM a) -> STM a
+uninterruptibleMaskSTM :: (RestoreAction -> STM a) -> STM a
 uninterruptibleMaskSTM stm = do
     b <- getMaskingStateSTM
-    let f = stm (OldUninterruptibleMaskingState b)
     case b of
-        Unmasked              -> blockUninterruptibleSTM f
-        MaskedInterruptible   -> blockUninterruptibleSTM f
-        MaskedUninterruptible -> f
+        Unmasked              -> blockUninterruptibleSTM (stm Unblock)
+        MaskedInterruptible   -> blockUninterruptibleSTM (stm Block)
+        MaskedUninterruptible -> stm NoAction
 
-uninterruptibleUnmaskSTM :: OldUninterruptibleMaskingState -> STM a -> STM a
-uninterruptibleUnmaskSTM b f =
-    case unOldUninterruptibleMaskingState b of
-        Unmasked              -> unblockSTM f
-        MaskedInterruptible   -> blockSTM f
-        MaskedUninterruptible -> f
+restoreSTM :: RestoreAction -> STM a -> STM a
+restoreSTM NoAction f = f
+restoreSTM Unblock f = unblockSTM f
+restoreSTM Block f = blockSTM f
 
 getMaskingStateSTM :: STM MaskingState
 getMaskingStateSTM = STM $ \s ->
