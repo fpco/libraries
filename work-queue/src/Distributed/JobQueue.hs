@@ -1,4 +1,4 @@
--- | This module uses "Distributed.RedisQueue" atop
+-- | The job-queue uses "Distributed.RedisQueue" atop
 -- "Distributed.WorkQueue" to implement robust distribution of work
 -- among many slaves.
 --

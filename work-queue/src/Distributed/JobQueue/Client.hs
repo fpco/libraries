@@ -72,6 +72,13 @@ data ClientConfig = ClientConfig
       -- ^ Identifies the channel used to notify about a response.
     } deriving (Typeable)
 
+-- | A default client configuration:
+--
+-- * Heartbeats are checked every 30 seconds
+--
+-- * Request bodies expire in redis after 1 hour
+--
+-- * Notifications responses use 'defaultBackchannel'
 defaultClientConfig :: ClientConfig
 defaultClientConfig = ClientConfig
     { clientHeartbeatCheckIvl = Seconds 30
@@ -79,9 +86,13 @@ defaultClientConfig = ClientConfig
     , clientBackchannelId = defaultBackchannel
     }
 
+-- | A default backchannel.  If all clients use this, then they'll all
+-- be notified about responses.
 defaultBackchannel :: BackchannelId
 defaultBackchannel = "all-servers"
 
+-- | This is the preferred way to run 'jobQueueClient'.  It ensures
+-- that the thread gets cleaned up when the inner action completes.
 withJobQueueClient
     :: (MonadConnect m, Sendable response)
     => ClientConfig -> RedisInfo -> (ClientVars m response -> m a) -> m a
@@ -154,7 +165,14 @@ jobQueueRequest config cvs redis request = do
             eres <- takeMVar resultVar
             either throwM return eres
 
--- | Sends a request to the workers.  This yields a 'RequestId' for use with
+-- | Sends a request to the workers.  This yields a 'RequestId' for
+-- use with 'registerResponseCallback'.  If it yields a 'Just' value
+-- for the response, then this indicates that there's already a cached
+-- result for this request.
+--
+-- One thing to note is that if there's a cached
+-- 'DistributedJobQueueException' result, it gets cleared.  The
+-- assumption is that this exception was a temporary issue.
 sendRequest
     :: forall m request response.
        ( MonadCommand m, MonadLogger m, MonadThrow m
@@ -180,11 +198,15 @@ sendRequest config r request = do
             eres <- decodeOrThrow "sendRequest" response
             case eres of
                 Left (_ :: DistributedJobQueueException) -> do
-                    -- Cached exceptions are cleared.
                     clearResponse r k
                     return (k, Nothing)
                 Right x -> return (k, Just x)
 
+-- | This registers a callback to handle the response to the specified
+-- 'RequestId'.  Note that synchronous exceptions thrown by the
+-- callback get swallowed and logged as errors.  This is because the
+-- callbacks are run by the 'jobQueueClient' thread, and it shouldn't
+-- halt due to an exception in the response callback.
 registerResponseCallback
     :: forall m response.
        (MonadCommand m, MonadLogger m, MonadThrow m , Sendable response)
