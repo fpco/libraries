@@ -14,7 +14,7 @@ module Distributed.RedisQueue.Internal where
 
 import ClassyPrelude
 import Data.Binary (Binary, decodeOrFail)
-import Data.Typeable (typeRep)
+import Data.Typeable (Proxy(..), typeRep)
 import FP.Redis
 
 -- * Types used in the API
@@ -121,7 +121,7 @@ decodeOrThrow src lbs =
                     ]
   where
     throwErr = liftIO . throwIO . DecodeError src typ
-    typ = show (typeRep (Nothing :: Maybe a))
+    typ = show (typeRep (Proxy :: Proxy a))
 
 -- | Since the users of 'decodeOrThrow' attempt to ensure that types
 -- and executable hashes match up, the occurance of this exception

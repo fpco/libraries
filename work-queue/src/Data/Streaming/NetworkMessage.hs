@@ -46,7 +46,7 @@ import           Data.Function               (fix)
 import           Data.Streaming.Network      (AppData, appRead, appWrite)
 import           Data.Vector.Binary          () -- commonly needed orphans
 import           System.Executable.Hash      (executableHash)
-import           Data.Typeable               (typeRep)
+import           Data.Typeable               (Proxy(..), typeRep)
 
 -- | A network message application.
 --
@@ -111,8 +111,8 @@ instance B.Binary Handshake
 mkHandshake :: forall iSend youSend m a. (Typeable iSend, Typeable youSend)
             => NMApp iSend youSend m a -> Int -> Maybe ByteString -> Handshake
 mkHandshake _ hb eh = Handshake
-    { hsISend = fromTypeRep (typeRep (Nothing :: Maybe iSend))
-    , hsYouSend = fromTypeRep (typeRep (Nothing :: Maybe youSend))
+    { hsISend = fromTypeRep (typeRep (Proxy :: Proxy iSend))
+    , hsYouSend = fromTypeRep (typeRep (Proxy :: Proxy youSend))
     , hsHeartbeat = hb
     , hsExeHash = eh
     }

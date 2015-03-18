@@ -40,7 +40,7 @@ import           FP.Redis
 import           Focus (Decision(Remove, Replace))
 import qualified STMContainers.Map as SM
 import           Data.ConcreteTypeRep (fromTypeRep)
-import           Data.Typeable (typeRep)
+import           Data.Typeable (typeRep, Proxy(..))
 
 -- | Variables used by 'jobQueueClient' / 'jobQueueRequest'.
 data ClientVars m response = ClientVars
@@ -182,8 +182,8 @@ sendRequest
     -> request
     -> m (RequestId, Maybe response)
 sendRequest config r request = do
-    let jrRequestType = fromTypeRep (typeRep (Nothing :: Maybe request))
-        jrResponseType = fromTypeRep (typeRep (Nothing :: Maybe response))
+    let jrRequestType = fromTypeRep (typeRep (Proxy :: Proxy request))
+        jrResponseType = fromTypeRep (typeRep (Proxy :: Proxy response))
         jrBody = toStrict (encode request)
         encoded = toStrict (encode JobRequest {..})
         expiry = clientRequestExpiry config

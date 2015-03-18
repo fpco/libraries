@@ -30,7 +30,7 @@ import           Data.ConcreteTypeRep (fromTypeRep)
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Data.Streaming.Network (clientSettingsTCP, runTCPServer, serverSettingsTCP)
 import           Data.Streaming.NetworkMessage (Sendable, defaultNMSettings)
-import           Data.Typeable (typeRep,)
+import           Data.Typeable (Proxy(..), typeRep)
 import           Data.UUID as UUID
 import           Data.UUID.V4 as UUID
 import           Data.WorkQueue
@@ -255,8 +255,8 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
             sendResponse redis expiry wid ri encoded
             deactivateWorker redis wid
         ss = serverSettingsTCP (workerPort config) "*"
-        requestType = fromTypeRep (typeRep (Nothing :: Maybe request))
-        responseType = fromTypeRep (typeRep (Nothing :: Maybe response))
+        requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
+        responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
         start = do
             atomically $ check =<< readTVar heartbeatsReady
             loop CheckRequests
