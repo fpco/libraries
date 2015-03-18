@@ -22,6 +22,7 @@ module Distributed.JobQueue.Client
     , newClientVars
     , jobQueueClient
     , jobQueueRequest
+    , checkForResponse
     , DistributedJobQueueException(..)
     )
     where
@@ -96,10 +97,10 @@ defaultBackchannel = "all-servers"
 withJobQueueClient
     :: (MonadConnect m, Sendable response)
     => ClientConfig -> RedisInfo -> (ClientVars m response -> m a) -> m a
-withJobQueueClient config r f = do
+withJobQueueClient config redis f = do
     control $ \restore -> do
         cvs <- newClientVars
-        withAsync (restore (jobQueueClient config cvs r)) $ \_ ->
+        withAsync (restore (jobQueueClient config cvs redis)) $ \_ ->
             restore (f cvs)
 
 -- | Runs a listener for responses from workers, which dispatches to
@@ -115,15 +116,15 @@ jobQueueClient
     -> ClientVars m response
     -> RedisInfo
     -> m void
-jobQueueClient config cvs r = do
+jobQueueClient config cvs redis = do
     control $ \restore ->
         withAsync (restore checker) $ \_ -> restore $
-            subscribeToResponses r
+            subscribeToResponses redis
                                  (clientBackchannelId config)
                                  (clientSubscribed cvs)
                                  handleResponse
   where
-    checker = checkHeartbeats r (clientHeartbeatCheckIvl config)
+    checker = checkHeartbeats redis (clientHeartbeatCheckIvl config)
     handleResponse rid = do
         -- Lookup the handler before fetching / deleting the response,
         -- as the message may get delivered to multiple clients.
@@ -131,7 +132,7 @@ jobQueueClient config cvs r = do
         mhandler <- atomically $
             SM.focus lookupAndRemove rid (clientDispatch cvs)
         forM_ mhandler $ \handler -> do
-            mresponse <- readResponse r rid
+            mresponse <- readResponse redis rid
             case mresponse of
                 Nothing -> throwM (ResponseMissingException rid)
                 Just response ->
@@ -148,7 +149,8 @@ jobQueueClient config cvs r = do
 -- If the worker yields a 'DistributedJobQueueException', then this
 -- function rethrows it.
 jobQueueRequest
-    :: ( MonadCommand m, MonadLogger m, MonadThrow m
+    :: forall m request response.
+       ( MonadCommand m, MonadLogger m, MonadThrow m
        , Sendable request, Sendable response )
     => ClientConfig
     -> ClientVars m response
@@ -156,12 +158,20 @@ jobQueueRequest
     -> request
     -> m response
 jobQueueRequest config cvs redis request = do
-    (rid, mresponse) <- sendRequest config redis request
+    let (ri, encoded) = prepareRequest config request (Proxy :: Proxy response)
+        k = riRequest ri
+    mresponse <- checkForResponse redis k
     case mresponse of
-        Just response -> return response
+        Just eres ->
+            either throwM return eres
         Nothing -> do
+            -- We register the callback before sending the request so
+            -- that we can avoid race conditions where the response
+            -- comes back before registering the callback (even if
+            -- this highly unlikely)
             resultVar <- newEmptyMVar
-            registerResponseCallback cvs rid $ putMVar resultVar
+            registerResponseCallbackInternal cvs k $ putMVar resultVar
+            sendRequestIgnoringCache config redis ri encoded
             eres <- takeMVar resultVar
             either throwM return eres
 
@@ -181,45 +191,104 @@ sendRequest
     -> RedisInfo
     -> request
     -> m (RequestId, Maybe response)
-sendRequest config r request = do
-    let jrRequestType = fromTypeRep (typeRep (Proxy :: Proxy request))
-        jrResponseType = fromTypeRep (typeRep (Proxy :: Proxy response))
-        jrBody = toStrict (encode request)
-        encoded = toStrict (encode JobRequest {..})
-        expiry = clientRequestExpiry config
-        ri = requestInfo (clientBackchannelId config) encoded
+sendRequest config redis request = do
+    let (ri, encoded) = prepareRequest config request (Proxy :: Proxy response)
         k = riRequest ri
-    mresponse <- pushRequest r expiry ri encoded
+    mresponse <- checkForResponse redis k
     case mresponse of
         Nothing -> do
-            notifyRequestAvailable r
+            sendRequestIgnoringCache config redis ri encoded
             return (k, Nothing)
-        Just response -> do
-            eres <- decodeOrThrow "sendRequest" response
-            case eres of
-                Left (_ :: DistributedJobQueueException) -> do
-                    clearResponse r k
-                    return (k, Nothing)
-                Right x -> return (k, Just x)
+        Just (Left _) -> do
+            clearResponse redis k
+            return (k, Nothing)
+        Just (Right x) ->
+            return (k, Just x)
+
+-- Computes the 'RequestInfo' and encoded bytes for a request.
+prepareRequest
+    :: forall request response. (Sendable response, Sendable request)
+    => ClientConfig
+    -> request
+    -> Proxy response
+    -> (RequestInfo, ByteString)
+prepareRequest config request _ = (ri, encoded)
+  where
+    jrRequestType = fromTypeRep (typeRep (Proxy :: Proxy request))
+    jrResponseType = fromTypeRep (typeRep (Proxy :: Proxy response))
+    jrBody = toStrict (encode request)
+    encoded = toStrict (encode JobRequest {..})
+    ri = requestInfo (clientBackchannelId config) encoded
+
+-- Internal function to send a request without checking redis for an
+-- existing response.
+sendRequestIgnoringCache
+    :: MonadCommand m
+    => ClientConfig -> RedisInfo -> RequestInfo -> ByteString -> m ()
+sendRequestIgnoringCache config redis ri encoded = do
+    let expiry = clientRequestExpiry config
+    pushRequest redis expiry ri encoded
+    notifyRequestAvailable redis
 
 -- | This registers a callback to handle the response to the specified
 -- 'RequestId'.  Note that synchronous exceptions thrown by the
 -- callback get swallowed and logged as errors.  This is because the
--- callbacks are run by the 'jobQueueClient' thread, and it shouldn't
--- halt due to an exception in the response callback.
+-- callbacks are usually run by the 'jobQueueClient' thread, and it
+-- shouldn't halt due to an exception in the response callback.
+--
+-- This also checks if there's already a response available.  If it
+-- is, then the callback is
 registerResponseCallback
+    :: forall m response.
+       (MonadCommand m, MonadLogger m, MonadThrow m , Sendable response)
+    => ClientVars m response
+    -> RedisInfo
+    -> RequestId
+    -> (Either DistributedJobQueueException response -> m ())
+    -> m ()
+registerResponseCallback cvs redis k handler = do
+    gotCalledRef <- newIORef False
+    registerResponseCallbackInternal cvs k $ \response -> do
+        writeIORef gotCalledRef True
+        handler response
+    -- If the response already came back, and the callback hasn't been
+    -- called yet, then invoke it.
+    mresponse <- checkForResponse redis k
+    forM_ mresponse $ \response -> do
+        alreadyGotCalled <- readIORef gotCalledRef
+        unless alreadyGotCalled $ do
+            atomically $ SM.delete k (clientDispatch cvs)
+            logCallbackExceptions $ handler response
+
+-- Like 'registerResponseCallback, but without checking if the result
+-- already exists.
+registerResponseCallbackInternal
     :: forall m response.
        (MonadCommand m, MonadLogger m, MonadThrow m , Sendable response)
     => ClientVars m response
     -> RequestId
     -> (Either DistributedJobQueueException response -> m ())
     -> m ()
-registerResponseCallback cvs k handler = do
+registerResponseCallbackInternal cvs k handler = do
     atomically $ SM.focus addOrExtend k (clientDispatch cvs)
   where
     addOrExtend Nothing = return ((), Replace runHandler)
     addOrExtend (Just old) = return ((), Replace (\x -> old x >> runHandler x))
-    runHandler response =
-        catchAny (handler response) $ \ex ->
-            $logErrorS "JobQueue" $
-                "jobQueueRequest' callbackHandler: " ++ tshow ex
+    runHandler = logCallbackExceptions . handler
+
+-- Internal function used to catch and log exceptions which occur in
+-- the callback handlers.
+logCallbackExceptions :: (MonadCommand m, MonadLogger m) => m () -> m ()
+logCallbackExceptions f =
+     catchAny f $ \ex ->
+         $logErrorS "JobQueue" ("logCallbackExceptions: " ++ tshow ex)
+
+-- | Check for a response, give a 'RequestId'.
+checkForResponse
+    :: (MonadCommand m, MonadThrow m, Sendable response)
+    => RedisInfo
+    -> RequestId
+    -> m (Maybe (Either DistributedJobQueueException response))
+checkForResponse redis k = do
+     mresponse <- readResponse redis k
+     forM mresponse $ decodeOrThrow "checkForResponse"

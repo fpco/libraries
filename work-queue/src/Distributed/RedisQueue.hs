@@ -80,21 +80,14 @@ pushRequest
     -> Seconds
     -> RequestInfo
     -> ByteString
-    -> m (Maybe ByteString)
+    -> m ()
 pushRequest r expiry info request = do
     let k = riRequest info
-    -- Check if the response has already been computed.  If so, then
-    -- yield it.
-    result <- run r $ get (responseDataKey r k)
-    case result of
-        Just _ -> return result
-        Nothing -> do
-            -- Store the request data as a normal redis value.
-            run_ r $ set (requestDataKey r k) request [EX expiry]
-            -- Enqueue its ID on the requests list.
-            let encoded = toStrict (encode info)
-            run_ r $ lpush (requestsKey r) (encoded :| [])
-            return Nothing
+    -- Store the request data as a normal redis value.
+    run_ r $ set (requestDataKey r k) request [EX expiry]
+    -- Enqueue its ID on the requests list.
+    let encoded = toStrict (encode info)
+    run_ r $ lpush (requestsKey r) (encoded :| [])
 
 -- | This function is used by the compute workers to take work off of
 -- the queue.  When work is taken off the queue, it also gets moved to
