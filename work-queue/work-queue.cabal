@@ -21,11 +21,15 @@ library
   exposed-modules:     Data.WorkQueue
                        Data.Streaming.NetworkMessage
                        Distributed.JobQueue
+                       Distributed.JobQueue.Client
+                       Distributed.JobQueue.Worker
                        Distributed.RedisQueue
                        Distributed.RedisQueue.Internal
                        Distributed.WorkQueue
                        Control.Concurrent.ThreadPool
                        Control.Exception.Mask
+  other-modules:       Distributed.JobQueue.Shared
+                       Distributed.JobQueue.Heartbeat
   build-depends:       base
                      , async
                      , binary
