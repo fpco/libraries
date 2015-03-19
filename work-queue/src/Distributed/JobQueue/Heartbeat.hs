@@ -117,10 +117,10 @@ handleWorkerFailure r wid = do
 -- throw this exception, because it is called after 'sendResponse',
 -- which removes the work from the active queue.
 deactivateWorker
-    :: (MonadCommand m, MonadThrow m) => RedisInfo -> WorkerId -> m ()
+    :: MonadCommand m => RedisInfo -> WorkerId -> m ()
 deactivateWorker r wid = do
     activeCount <- run r $ llen (activeKey r wid)
-    when (activeCount /= 0) $ throwM (WorkStillInProgress wid)
+    when (activeCount /= 0) $ liftIO $ throwIO (WorkStillInProgress wid)
     run_ r $ srem (heartbeatActiveKey r) (unWorkerId wid :| [])
 
 -- * Functions to compute Redis keys

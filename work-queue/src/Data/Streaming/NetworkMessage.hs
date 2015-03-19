@@ -173,7 +173,8 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                 { _nmAppData = ad
                 , _nmWrite = send . Payload
                 , _nmRead = do
-                    whenM (not <$> readIORef active) $ throwM NMConnectionClosed
+                    whenM (not <$> readIORef active) $
+                        liftIO $ throwIO NMConnectionClosed
                     join (readChan incoming)
                 }
             send :: Message iSend -> IO ()

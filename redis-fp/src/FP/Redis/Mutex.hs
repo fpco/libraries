@@ -91,7 +91,7 @@ periodicActionEx conn (PeriodicPrefix pre) (Seconds period) inner = forever $ do
 -- 'acquireMutex' for more information about the arguments.  This takes care
 -- of refreshing the mutex for you in an async thread, without the action
 -- needing to call `refreshMutex`.
-withMutex :: (MonadCommand m, MonadThrow m)
+withMutex :: MonadCommand m
           => forall a. Connection
              -- ^ Redis connection
           -> MutexKey
@@ -204,7 +204,7 @@ releaseMutex conn key (MutexToken token) =
 --
 -- If you do not own the mutex (the mutex's token is different than the one you
 -- passed in), this will throw 'IncorrectRedisMutexException'.
-refreshMutex :: (MonadCommand m, MonadThrow m)
+refreshMutex :: MonadCommand m
              => Connection
                 -- ^ Redis connection
              -> Seconds
@@ -225,5 +225,5 @@ refreshMutex conn mutexTtl key (MutexToken token) = do
                                 [unMutexKey key]
                                 [encodeArg mutexTtl, token])
     if re == (0::Int64)
-        then throwM IncorrectRedisMutexException
+        then liftIO $ throwIO IncorrectRedisMutexException
         else return ()

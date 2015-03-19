@@ -99,7 +99,7 @@ pushRequest r expiry info request = do
 --
 -- If the request data is missing, then 'RequestMissing' is thrown.
 popRequest
-    :: (MonadCommand m, MonadThrow m)
+    :: MonadCommand m
     => RedisInfo
     -> WorkerId
     -> m (Maybe (RequestInfo, ByteString))
@@ -112,7 +112,7 @@ popRequest r wid = do
             let k = riRequest info
             mx <- run r $ get (requestDataKey r k)
             case mx of
-                Nothing -> throwM (RequestMissing k)
+                Nothing -> liftIO $ throwIO (RequestMissing k)
                 Just x -> return (Just (info, x))
 
 -- | Send a response for a particular request.  This is done by the
@@ -153,14 +153,14 @@ sendResponse r expiry wid ri x = do
 -- is useful in cases where a response is expected to be temporary,
 -- such as when exceptions are thrown.
 clearResponse
-    :: (MonadCommand m, MonadThrow m)
+    :: MonadCommand m
     => RedisInfo -> RequestId -> m ()
 clearResponse r k = run_ r $ del (unVKey (responseDataKey r k) :| [])
 
 -- | Retrieves the response for the specified 'RequestId', yielding a
 -- 'Just' value if it exists.
 readResponse
-    :: (MonadCommand m, MonadThrow m)
+    :: MonadCommand m
     => RedisInfo -> RequestId -> m (Maybe ByteString)
 readResponse r k = run r $ get (responseDataKey r k)
 

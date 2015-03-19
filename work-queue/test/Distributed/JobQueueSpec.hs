@@ -119,7 +119,7 @@ checkResult :: MonadIO m => Int -> MVar (Either DistributedJobQueueException Int
 checkResult seconds resultVar expected = liftIO $ do
     result <- timeout (seconds * 1000 * 1000) $ takeMVar resultVar
     case result of
-        Just (Left ex) -> throwM ex
+        Just (Left ex) -> liftIO $ throwIO ex
         Just (Right x) -> x `shouldBe` expected
         Nothing -> fail "Timed out waiting for value"
 

@@ -217,7 +217,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                         "Failed to connect to master, with " <>
                         tshow sr <>
                         ".  This probably isn't an issue - the master likely already finished or died."
-                Left err -> throwM err
+                Left err -> liftIO $ throwIO err
         becomeMaster :: (RequestInfo, ByteString) -> m ()
         becomeMaster (ri, req) = do
             $logDebugS "JobQueue" "Becoming master"
@@ -235,7 +235,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                     JobRequest {..} <- decodeOrThrow "jobQueueWorker" req
                     when (jrRequestType /= requestType ||
                           jrResponseType /= responseType) $
-                        throwM TypeMismatch
+                        liftIO $ throwIO TypeMismatch
                             { expectedResponseType = responseType
                             , actualResponseType = jrResponseType
                             , expectedRequestType = requestType

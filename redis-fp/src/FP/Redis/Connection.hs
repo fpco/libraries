@@ -227,13 +227,13 @@ connect cinfo = do
     maxPendingResponses = connectMaxPendingResponses cinfo
 
 -- | Disconnect from Redis server.
-disconnect :: (MonadCommand m, MonadThrow m) => Connection -> m ()
+disconnect :: MonadCommand m => Connection -> m ()
 disconnect conn@Connection{connectionThread} = do
     eres <- try $ runCommand_ conn quit
     liftIO (Async.cancel connectionThread)
     case eres of
         Left DisconnectedException -> return ()
-        Left err -> throwM err
+        Left err -> liftIO $ throwIO err
         Right () -> return ()
 
 -- | Default Redis server connection info.

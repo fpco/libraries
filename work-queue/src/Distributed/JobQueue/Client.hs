@@ -134,7 +134,7 @@ jobQueueClient config cvs redis = do
         forM_ mhandler $ \handler -> do
             mresponse <- readResponse redis rid
             case mresponse of
-                Nothing -> throwM (ResponseMissingException rid)
+                Nothing -> liftIO $ throwIO (ResponseMissingException rid)
                 Just response ->
                     decodeOrThrow "jobQueueClient" response >>=
                     handler
@@ -150,8 +150,7 @@ jobQueueClient config cvs redis = do
 -- function rethrows it.
 jobQueueRequest
     :: forall m request response.
-       ( MonadCommand m, MonadLogger m, MonadThrow m
-       , Sendable request, Sendable response )
+       (MonadCommand m, MonadLogger m, Sendable request, Sendable response)
     => ClientConfig
     -> ClientVars m response
     -> RedisInfo
@@ -163,7 +162,7 @@ jobQueueRequest config cvs redis request = do
     mresponse <- checkForResponse redis k
     case mresponse of
         Just eres ->
-            either throwM return eres
+            either (liftIO . throwIO) return eres
         Nothing -> do
             -- We register the callback before sending the request so
             -- that we can avoid race conditions where the response
@@ -173,7 +172,7 @@ jobQueueRequest config cvs redis request = do
             registerResponseCallbackInternal cvs k $ putMVar resultVar
             sendRequestIgnoringCache config redis ri encoded
             eres <- takeMVar resultVar
-            either throwM return eres
+            either (liftIO . throwIO) return eres
 
 -- | Sends a request to the workers.  This yields a 'RequestId' for
 -- use with 'registerResponseCallback'.  If it yields a 'Just' value
@@ -185,8 +184,7 @@ jobQueueRequest config cvs redis request = do
 -- assumption is that this exception was a temporary issue.
 sendRequest
     :: forall m request response.
-       ( MonadCommand m, MonadLogger m, MonadThrow m
-       , Sendable request, Sendable response )
+       (MonadCommand m, MonadLogger m, Sendable request, Sendable response)
     => ClientConfig
     -> RedisInfo
     -> request
@@ -240,7 +238,7 @@ sendRequestIgnoringCache config redis ri encoded = do
 -- is, then the callback is
 registerResponseCallback
     :: forall m response.
-       (MonadCommand m, MonadLogger m, MonadThrow m , Sendable response)
+       (MonadCommand m, MonadLogger m, Sendable response)
     => ClientVars m response
     -> RedisInfo
     -> RequestId
@@ -264,7 +262,7 @@ registerResponseCallback cvs redis k handler = do
 -- already exists.
 registerResponseCallbackInternal
     :: forall m response.
-       (MonadCommand m, MonadLogger m, MonadThrow m , Sendable response)
+       (MonadCommand m, MonadLogger m, Sendable response)
     => ClientVars m response
     -> RequestId
     -> (Either DistributedJobQueueException response -> m ())
@@ -285,7 +283,7 @@ logCallbackExceptions f =
 
 -- | Check for a response, give a 'RequestId'.
 checkForResponse
-    :: (MonadCommand m, MonadThrow m, Sendable response)
+    :: (MonadCommand m, Sendable response)
     => RedisInfo
     -> RequestId
     -> m (Maybe (Either DistributedJobQueueException response))
