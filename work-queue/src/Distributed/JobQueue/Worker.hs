@@ -312,14 +312,14 @@ requestSlave
 requestSlave config r = do
     let request = SlaveRequest (workerHostName config) (workerPort config)
         encoded = toStrict (encode request)
-    runCommand_ (redisConnection r) $ lpush (slaveRequestsKey r) (encoded :| [])
+    run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
     notifyRequestAvailable r
 
 -- | This command is used by a worker to fetch a 'SlaveRequest', if
 -- one is available.
 popSlaveRequest :: MonadCommand m => RedisInfo -> m (Maybe SlaveRequest)
 popSlaveRequest r =
-    runCommand (redisConnection r) (rpop (slaveRequestsKey r)) >>=
+    run r (rpop (slaveRequestsKey r)) >>=
     mapM (decodeOrThrow "popSlaveRequest")
 
 -- | Key used to for storing requests for slaves.

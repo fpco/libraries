@@ -26,6 +26,7 @@ import Data.Streaming.NetworkMessage (NetworkMessageException)
 import Data.Text.Binary ()
 import Data.Typeable (typeOf)
 import Distributed.RedisQueue
+import Distributed.RedisQueue.Internal (run_)
 import FP.Redis
 
 data JobRequest = JobRequest
@@ -36,8 +37,7 @@ data JobRequest = JobRequest
 instance Binary JobRequest
 
 notifyRequestAvailable :: MonadCommand m => RedisInfo -> m ()
-notifyRequestAvailable r =
-    runCommand_ (redisConnection r) $ publish (requestChannel r) ""
+notifyRequestAvailable r = run_ r $ publish (requestChannel r) ""
 
 -- | 'Channel' which is used to notify idle workers that there is a new
 -- client request or slave request available.

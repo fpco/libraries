@@ -15,6 +15,7 @@ import Data.List.Split (chunksOf)
 import Data.Streaming.NetworkMessage (Sendable)
 import Distributed.JobQueue
 import Distributed.RedisQueue
+import Distributed.RedisQueue.Internal (run_)
 import Distributed.WorkQueueSpec (redisTestPrefix, forkWorker, cancelProcess)
 import FP.Redis
 import System.Random (randomRIO)
@@ -140,13 +141,13 @@ clearRedisKeys =
 clearSlaveRequests :: MonadIO m => m ()
 clearSlaveRequests =
     liftIO $ runStdoutLoggingT $ withRedis redisTestPrefix localhost $ \r -> do
-        runCommand_ (redisConnection r) $ del (unLKey (slaveRequestsKey r) :| [])
+        run_ r $ del (unLKey (slaveRequestsKey r) :| [])
 
 enqueueSlaveRequest :: MonadIO m => SlaveRequest -> m ()
 enqueueSlaveRequest sr =
     liftIO $ runStdoutLoggingT $ withRedis redisTestPrefix localhost $ \r -> do
         let encoded = toStrict (encode sr)
-        runCommand_ (redisConnection r) $ lpush (slaveRequestsKey r) (encoded :| [])
+        run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
 
 localhost :: ConnectInfo
 localhost = connectInfo "localhost"
