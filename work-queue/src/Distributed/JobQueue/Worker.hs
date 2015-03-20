@@ -104,22 +104,20 @@ data SubscribeOrCheck
 -- serialized, and so that agreement on types can be checked at
 -- runtime.
 jobQueueWorker
-    :: forall m initialData request response payload result.
+    :: forall m request response payload result.
        ( MonadConnect m
-       , Sendable initialData
        , Sendable request
        , Sendable response
        , Sendable payload
        , Sendable result
        )
     => WorkerConfig
-    -> IO initialData
     -- ^ This is run once per worker, if it ever becomes a master
     -- server.  The data is then sent to the slaves.
-    -> (initialData -> payload -> IO result)
+    -> (payload -> IO result)
     -- ^ This is the computation function run by slaves. It computes
     -- @result@ from @payload@.
-    -> (initialData -> RedisInfo -> MasterConnectInfo -> request -> WorkQueue payload result -> IO response)
+    -> (RedisInfo -> MasterConnectInfo -> request -> WorkQueue payload result -> IO response)
     -- ^ This function runs on the master after it's received a
     -- request. It's expected that the master will use this request to
     -- enqueue work items on the provided 'WorkQueue'.  The results of
@@ -130,7 +128,7 @@ jobQueueWorker
     -- 'mapQueue', or related functions to enqueue work which is
     -- dispatched to the slaves.
     -> m ()
-jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
+jobQueueWorker config calc inner = withRedis' config $ \redis -> do
     -- Here's how this works:
     --
     -- 1) The worker starts out as neither a slave or master.
@@ -151,7 +149,6 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
     -- performance, and so it doesn't matter that we have so many
     -- connections to redis + it needs to notify many workers.
     wid <- liftIO getWorkerId
-    initialDataRef <- newIORef Nothing
     nmSettings <- liftIO defaultNMSettings
     -- heartbeatsReady is used to track whether we're subscribed to
     -- redis heartbeats or not.  We must wait for this subscription
@@ -209,7 +206,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
         becomeSlave mci = do
             $logDebugS "JobQueue" ("Becoming slave of " ++ tshow mci)
             let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
-            eres <- try $ runSlave settings nmSettings calc
+            eres <- try $ runSlave settings nmSettings (\() -> calc)
             case eres of
                 Right () -> return ()
                 -- This indicates that the slave couldn't connect.
@@ -222,21 +219,13 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
         becomeMaster :: (RequestInfo, ByteString) -> m ()
         becomeMaster (ri, req) = do
             $logDebugS "JobQueue" "Becoming master"
-            initialData <- do
-                minitialData <- readIORef initialDataRef
-                case minitialData of
-                    Just initialData -> return initialData
-                    Nothing -> do
-                        initialData <- liftIO init
-                        writeIORef initialDataRef (Just initialData)
-                        return initialData
             boundPort <- newEmptyMVar
             let ss = setAfterBind
                     (putMVar boundPort . fromIntegral <=< socketPort)
                     (serverSettingsTCP (workerPort config) "*")
             settings <- liftIO defaultNMSettings
-            eres <- tryAny $ withMaster (runTCPServer ss) settings initialData $ \queue ->
-                withLocalSlaves queue (workerMasterLocalSlaves config) (calc initialData) $ do
+            eres <- tryAny $ withMaster (runTCPServer ss) settings () $ \queue ->
+                withLocalSlaves queue (workerMasterLocalSlaves config) calc $ do
                     JobRequest {..} <- decodeOrThrow "jobQueueWorker" req
                     when (jrRequestType /= requestType ||
                           jrResponseType /= responseType) $
@@ -249,7 +238,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                     decoded <- decodeOrThrow "jobQueueWorker" jrBody
                     port <- takeMVar boundPort
                     let mci = MasterConnectInfo (workerHostName config) port
-                    liftIO $ inner initialData redis mci decoded queue
+                    liftIO $ inner redis mci decoded queue
             result <-
                 case eres of
                     Left err -> do

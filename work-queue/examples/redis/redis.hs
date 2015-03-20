@@ -40,15 +40,14 @@ dispatcher = do
 
 masterOrSlave :: IO ()
 masterOrSlave =
-    runStdoutLoggingT $ jobQueueWorker config initialData calc inner
+    runStdoutLoggingT $ jobQueueWorker config calc inner
   where
     config = defaultWorkerConfig prefix localhost "localhost"
-    initialData = return ()
-    calc () input = return $ foldl' xor zeroBits (input :: [Int])
-    inner () redis mci request queue = do
+    calc input = return $ foldl' xor zeroBits (input :: [Int])
+    inner redis mci request queue = do
         requestSlave redis mci
         subresults <- mapQueue queue request
-        response <- calc () (otoList (subresults :: Vector Int))
+        response <- calc (otoList (subresults :: Vector Int))
         liftIO $ do
             putStrLn "================"
             putStrLn $ "Sending result: " ++ tshow (response :: Int)
