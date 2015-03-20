@@ -15,15 +15,15 @@ module Distributed.JobQueue.Heartbeat
     , deactivateWorker
     ) where
 
-import           ClassyPrelude
-import           Control.Monad.Logger (MonadLogger, logErrorS)
-import           Data.Binary (encode)
-import           Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
-import           Distributed.JobQueue.Shared
-import           Distributed.RedisQueue
-import           Distributed.RedisQueue.Internal
-import           FP.Redis
-import           FP.Redis.Mutex
+import ClassyPrelude
+import Control.Monad.Logger (MonadLogger, logErrorS)
+import Data.Binary (encode)
+import Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
+import Distributed.JobQueue.Shared
+import Distributed.RedisQueue
+import Distributed.RedisQueue.Internal
+import FP.Redis
+import FP.Redis.Mutex
 
 -- | This listens for a notification telling the worker to send a
 -- heartbeat.  In this case, that means the worker needs to remove its

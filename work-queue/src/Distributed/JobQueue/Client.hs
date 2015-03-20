@@ -32,7 +32,9 @@ import           Control.Concurrent.Async (withAsync)
 import           Control.Monad.Logger (MonadLogger, logErrorS)
 import           Control.Monad.Trans.Control (control)
 import           Data.Binary (encode)
+import           Data.ConcreteTypeRep (fromTypeRep)
 import           Data.Streaming.NetworkMessage (Sendable)
+import           Data.Typeable (typeRep, Proxy(..))
 import           Distributed.JobQueue.Heartbeat (checkHeartbeats)
 import           Distributed.JobQueue.Shared
 import           Distributed.RedisQueue
@@ -40,8 +42,6 @@ import           Distributed.RedisQueue.Internal
 import           FP.Redis
 import           Focus (Decision(Remove, Replace))
 import qualified STMContainers.Map as SM
-import           Data.ConcreteTypeRep (fromTypeRep)
-import           Data.Typeable (typeRep, Proxy(..))
 
 -- | Variables used by 'jobQueueClient' / 'jobQueueRequest'.
 data ClientVars m response = ClientVars

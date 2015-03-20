@@ -20,27 +20,27 @@ module Distributed.JobQueue.Worker
     , slaveRequestsKey
     ) where
 
-import           ClassyPrelude
-import           Control.Concurrent.Async (Async, async, link, race)
-import           Control.Concurrent.STM (check)
-import           Control.Monad.Logger (logErrorS, logDebugS)
-import           Control.Monad.Trans.Control (liftBaseWith, MonadBaseControl, StM)
-import           Data.Binary (Binary, encode)
-import           Data.ConcreteTypeRep (fromTypeRep)
-import           Data.List.NonEmpty (NonEmpty((:|)))
-import           Data.Streaming.Network (clientSettingsTCP, runTCPServer, serverSettingsTCP)
-import           Data.Streaming.NetworkMessage (Sendable, defaultNMSettings)
-import           Data.Typeable (Proxy(..), typeRep)
-import           Data.UUID as UUID
-import           Data.UUID.V4 as UUID
-import           Data.WorkQueue
-import           Distributed.JobQueue.Heartbeat (sendHeartbeats, deactivateWorker)
-import           Distributed.JobQueue.Shared
-import           Distributed.RedisQueue
-import           Distributed.RedisQueue.Internal
-import           Distributed.WorkQueue
-import           FP.Redis
-import           GHC.IO.Exception (IOException(IOError), ioe_type, IOErrorType(NoSuchThing))
+import ClassyPrelude
+import Control.Concurrent.Async (Async, async, link, race)
+import Control.Concurrent.STM (check)
+import Control.Monad.Logger (logErrorS, logDebugS)
+import Control.Monad.Trans.Control (liftBaseWith, MonadBaseControl, StM)
+import Data.Binary (Binary, encode)
+import Data.ConcreteTypeRep (fromTypeRep)
+import Data.List.NonEmpty (NonEmpty((:|)))
+import Data.Streaming.Network (clientSettingsTCP, runTCPServer, serverSettingsTCP)
+import Data.Streaming.NetworkMessage (Sendable, defaultNMSettings)
+import Data.Typeable (Proxy(..), typeRep)
+import Data.UUID as UUID
+import Data.UUID.V4 as UUID
+import Data.WorkQueue
+import Distributed.JobQueue.Heartbeat (sendHeartbeats, deactivateWorker)
+import Distributed.JobQueue.Shared
+import Distributed.RedisQueue
+import Distributed.RedisQueue.Internal
+import Distributed.WorkQueue
+import FP.Redis
+import GHC.IO.Exception (IOException(IOError), ioe_type, IOErrorType(NoSuchThing))
 
 -- | Configuration of a 'jobQueueWorker'.
 data WorkerConfig = WorkerConfig
