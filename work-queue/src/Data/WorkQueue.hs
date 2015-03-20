@@ -38,9 +38,8 @@ import Control.Concurrent.STM      (STM, STM, TMVar, TVar, atomically, check,
                                     modifyTVar', newEmptyTMVar, newTVar,
                                     readTMVar, readTVar, retry, tryPutTMVar,
                                     writeTVar)
-import Control.Exception           (SomeException, catch, finally, throwIO)
+import Control.Exception           (SomeException, catch, finally, throwIO, mask)
 import Control.Exception.Lifted    (bracket)
-import Control.Exception.Mask      (mask, restore, restoreSTM)
 import Control.Monad               (forever, join, void, when)
 import Control.Monad.Base          (liftBase)
 import Control.Monad.IO.Class
@@ -127,13 +126,12 @@ provideWorker :: WorkQueue payload result -> (payload -> IO result) -> IO ()
 provideWorker (WorkQueue work active final) onPayload =
     loop
   where
-    loop = join $ mask $ \ra -> do
-        mwork <- atomically $ restoreSTM ra $
-            (Just <$> getWork) <|> (Nothing <$ getFinal)
+    loop = join $ mask $ \restore -> do
+        mwork <- atomically $ (Just <$> getWork) <|> (Nothing <$ getFinal)
         case mwork of
             Nothing -> return $ return ()
             Just tuple@(payload, onResult) -> (`finally` decOpen) $ do
-                restore ra (onPayload payload >>= onResult) `catch` \e -> do
+                restore (onPayload payload >>= onResult) `catch` \e -> do
                     atomically $ modifyTVar' work (tuple:)
                     throwIO (e :: SomeException)
                 return loop
