@@ -42,11 +42,11 @@ masterOrSlave :: IO ()
 masterOrSlave =
     runStdoutLoggingT $ jobQueueWorker config initialData calc inner
   where
-    config = defaultWorkerConfig prefix localhost "localhost" 4000
+    config = defaultWorkerConfig prefix localhost "localhost"
     initialData = return ()
     calc () input = return $ foldl' xor zeroBits (input :: [Int])
-    inner () redis request queue = do
-        requestSlave config redis
+    inner () redis mci request queue = do
+        requestSlave redis mci
         subresults <- mapQueue queue request
         response <- calc () (otoList (subresults :: Vector Int))
         liftIO $ do

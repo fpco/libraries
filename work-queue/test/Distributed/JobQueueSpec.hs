@@ -58,7 +58,7 @@ spec = do
         checkResult 15 resultVar 0
     jqit "Non-existent slave request is ignored" $ do
         -- Enqueue an erroneous slave request
-        enqueueSlaveRequest (SlaveRequest "localhost" 1337)
+        enqueueSlaveRequest (MasterConnectInfo "localhost" 1337)
         -- One worker will become a master, the other will get the
         -- erroneous slave request.
         _ <- forkWorker "redis" 0
@@ -143,10 +143,10 @@ clearSlaveRequests =
     liftIO $ runStdoutLoggingT $ withRedis redisTestPrefix localhost $ \r -> do
         run_ r $ del (unLKey (slaveRequestsKey r) :| [])
 
-enqueueSlaveRequest :: MonadIO m => SlaveRequest -> m ()
-enqueueSlaveRequest sr =
+enqueueSlaveRequest :: MonadIO m => MasterConnectInfo -> m ()
+enqueueSlaveRequest mci =
     liftIO $ runStdoutLoggingT $ withRedis redisTestPrefix localhost $ \r -> do
-        let encoded = toStrict (encode sr)
+        let encoded = toStrict (encode mci)
         run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
 
 localhost :: ConnectInfo

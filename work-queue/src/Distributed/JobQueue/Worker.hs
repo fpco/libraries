@@ -12,11 +12,11 @@
 -- "Distributed.JobQueue" for more info.
 module Distributed.JobQueue.Worker
     ( WorkerConfig(..)
+    , MasterConnectInfo(..)
     , defaultWorkerConfig
     , jobQueueWorker
     , requestSlave
     -- * For internal usage by tests
-    , SlaveRequest(..)
     , slaveRequestsKey
     ) where
 
@@ -28,7 +28,7 @@ import Control.Monad.Trans.Control (liftBaseWith, MonadBaseControl, StM)
 import Data.Binary (Binary, encode)
 import Data.ConcreteTypeRep (fromTypeRep)
 import Data.List.NonEmpty (NonEmpty((:|)))
-import Data.Streaming.Network (clientSettingsTCP, runTCPServer, serverSettingsTCP)
+import Data.Streaming.Network (clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
 import Data.Streaming.NetworkMessage (Sendable, defaultNMSettings)
 import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
@@ -41,6 +41,7 @@ import Distributed.RedisQueue.Internal
 import Distributed.WorkQueue
 import FP.Redis
 import GHC.IO.Exception (IOException(IOError), ioe_type, IOErrorType(NoSuchThing))
+import Network.Socket (socketPort)
 
 -- | Configuration of a 'jobQueueWorker'.
 data WorkerConfig = WorkerConfig
@@ -72,13 +73,13 @@ data WorkerConfig = WorkerConfig
 -- For example, if a bunch of work items come in and they all
 -- immediately become masters, then progress won't be made without
 -- local slaves.
-defaultWorkerConfig :: ByteString -> ConnectInfo -> ByteString -> Int -> WorkerConfig
-defaultWorkerConfig prefix ci hostname port = WorkerConfig
+defaultWorkerConfig :: ByteString -> ConnectInfo -> ByteString -> WorkerConfig
+defaultWorkerConfig prefix ci hostname = WorkerConfig
     { workerResponseDataExpiry = Seconds 3600
     , workerKeyPrefix = prefix
     , workerConnectInfo = ci
     , workerHostName = hostname
-    , workerPort = port
+    , workerPort = 0
     , workerMasterLocalSlaves = 1
     }
 
@@ -118,7 +119,7 @@ jobQueueWorker
     -> (initialData -> payload -> IO result)
     -- ^ This is the computation function run by slaves. It computes
     -- @result@ from @payload@.
-    -> (initialData -> RedisInfo -> request -> WorkQueue payload result -> IO response)
+    -> (initialData -> RedisInfo -> MasterConnectInfo -> request -> WorkQueue payload result -> IO response)
     -- ^ This function runs on the master after it's received a
     -- request. It's expected that the master will use this request to
     -- enqueue work items on the provided 'WorkQueue'.  The results of
@@ -134,7 +135,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
     --
     -- 1) The worker starts out as neither a slave or master.
     --
-    -- 2) If there is a pending 'SlaveRequest', then it connects to
+    -- 2) If there is a pending 'MasterConnectInfo', then it connects to
     -- the specified master and starts working.
     --
     -- 3) If there is a 'JobRequest', then it becomes a master and
@@ -204,10 +205,10 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
         unsubscribeToRequests CheckRequests = return ()
         unsubscribeToRequests (SubscribeToRequests _ connVar) =
             disconnect =<< readIORef connVar
-        becomeSlave :: SlaveRequest -> m ()
-        becomeSlave sr = do
-            $logDebugS "JobQueue" "Becoming slave"
-            let settings = clientSettingsTCP (srPort sr) (srHost sr)
+        becomeSlave :: MasterConnectInfo -> m ()
+        becomeSlave mci = do
+            $logDebugS "JobQueue" ("Becoming slave of " ++ tshow mci)
+            let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
             eres <- try $ runSlave settings nmSettings calc
             case eres of
                 Right () -> return ()
@@ -215,7 +216,7 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                 Left (IOError { ioe_type = NoSuchThing }) ->
                     $logDebugS "JobQueue" $
                         "Failed to connect to master, with " <>
-                        tshow sr <>
+                        tshow mci <>
                         ".  This probably isn't an issue - the master likely already finished or died."
                 Left err -> liftIO $ throwIO err
         becomeMaster :: (RequestInfo, ByteString) -> m ()
@@ -229,6 +230,10 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                         initialData <- liftIO init
                         writeIORef initialDataRef (Just initialData)
                         return initialData
+            boundPort <- newEmptyMVar
+            let ss = setAfterBind
+                    (putMVar boundPort . fromIntegral <=< socketPort)
+                    (serverSettingsTCP (workerPort config) "*")
             settings <- liftIO defaultNMSettings
             eres <- tryAny $ withMaster (runTCPServer ss) settings initialData $ \queue ->
                 withLocalSlaves queue (workerMasterLocalSlaves config) (calc initialData) $ do
@@ -242,7 +247,9 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                             , actualRequestType = jrRequestType
                             }
                     decoded <- decodeOrThrow "jobQueueWorker" jrBody
-                    liftIO $ inner initialData redis decoded queue
+                    port <- takeMVar boundPort
+                    let mci = MasterConnectInfo (workerHostName config) port
+                    liftIO $ inner initialData redis mci decoded queue
             result <-
                 case eres of
                     Left err -> do
@@ -254,7 +261,6 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
                 encoded = toStrict (encode result)
             sendResponse redis expiry wid ri encoded
             deactivateWorker redis wid
-        ss = serverSettingsTCP (workerPort config) "*"
         requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
         start = do
@@ -269,13 +275,13 @@ jobQueueWorker config init calc inner = withRedis' config $ \redis -> do
 -- | Hostname and port of the master the slave should connect to.  The
 -- 'Binary' instance for this is used to serialize this info to the
 -- list stored at 'slaveRequestsKey'.
-data SlaveRequest = SlaveRequest
-    { srHost :: ByteString
-    , srPort :: Int
+data MasterConnectInfo = MasterConnectInfo
+    { mciHost :: ByteString
+    , mciPort :: Int
     }
     deriving (Generic, Show, Typeable)
 
-instance Binary SlaveRequest
+instance Binary MasterConnectInfo
 
 -- | This command is used by the master to request that a slave
 -- connect to it.
@@ -306,18 +312,17 @@ instance Binary SlaveRequest
 -- design, and may be resolved in the future.
 requestSlave
     :: MonadCommand m
-    => WorkerConfig
-    -> RedisInfo
+    => RedisInfo
+    -> MasterConnectInfo
     -> m ()
-requestSlave config r = do
-    let request = SlaveRequest (workerHostName config) (workerPort config)
-        encoded = toStrict (encode request)
+requestSlave r request = do
+    let encoded = toStrict (encode request)
     run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
     notifyRequestAvailable r
 
--- | This command is used by a worker to fetch a 'SlaveRequest', if
+-- | This command is used by a worker to fetch a 'MasterConnectInfo', if
 -- one is available.
-popSlaveRequest :: MonadCommand m => RedisInfo -> m (Maybe SlaveRequest)
+popSlaveRequest :: MonadCommand m => RedisInfo -> m (Maybe MasterConnectInfo)
 popSlaveRequest r =
     run r (rpop (slaveRequestsKey r)) >>=
     mapM (decodeOrThrow "popSlaveRequest")

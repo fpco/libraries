@@ -215,9 +215,9 @@ runMasterOrSlave RedisConfig {..} | isLong = runStdoutLoggingT $ do
         calc () _ = do
             threadDelay (5 * 1000 * 1000)
             return 0
-        inner :: () -> RedisInfo -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
-        inner () redis _ queue = do
-            requestSlave config redis
+        inner :: () -> RedisInfo -> MasterConnectInfo -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
+        inner () redis mci _ queue = do
+            requestSlave redis mci
             void $ mapQueue queue [[]]
             return 0
         config = workerConfig
@@ -229,9 +229,9 @@ runMasterOrSlave RedisConfig {..} = runStdoutLoggingT $ do
     let initialData = return ()
         calc :: () -> [Int] -> IO Int
         calc () input =  return $ foldl' xor zeroBits input
-        inner :: () -> RedisInfo -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
-        inner () redis request queue = do
-            requestSlave config redis
+        inner :: () -> RedisInfo -> MasterConnectInfo -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
+        inner () redis mci request queue = do
+            requestSlave redis mci
             subresults <- mapQueue queue request
             result <- liftIO $ calc () (otoList (subresults :: Vector Int))
             return result
@@ -241,7 +241,7 @@ runMasterOrSlave RedisConfig {..} = runStdoutLoggingT $ do
     jobQueueWorker config initialData calc inner
 
 workerConfig :: WorkerConfig
-workerConfig = defaultWorkerConfig redisTestPrefix (connectInfo "localhost") "localhost" 4000
+workerConfig = defaultWorkerConfig redisTestPrefix (connectInfo "localhost") "localhost"
 
 runArgs'
     :: ( Sendable initialData
