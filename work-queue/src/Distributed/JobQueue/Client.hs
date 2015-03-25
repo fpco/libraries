@@ -235,7 +235,7 @@ sendRequestIgnoringCache config redis ri encoded = do
 -- shouldn't halt due to an exception in the response callback.
 --
 -- This also checks if there's already a response available.  If it
--- is, then the callback is
+-- is, then the callback is invoked.
 registerResponseCallback
     :: forall m response.
        (MonadCommand m, MonadLogger m, Sendable response)
@@ -245,6 +245,8 @@ registerResponseCallback
     -> (Either DistributedJobQueueException response -> m ())
     -> m ()
 registerResponseCallback cvs redis k handler = do
+    -- We register a callback before checking for responses, because
+    -- checking for responses takes time and could potentially block.
     gotCalledRef <- newIORef False
     registerResponseCallbackInternal cvs k $ \response -> do
         writeIORef gotCalledRef True
