@@ -143,6 +143,8 @@ test-suite test
                      , semigroups
                      , monad-control
                      , resourcet
+                     , containers
+                     , transformers-base
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
   if flag(coverage)

@@ -31,19 +31,19 @@ data RedisInfo = RedisInfo
 -- 'BackchannelId', so that it is only informed of responses
 -- associated with the requests it makes.
 newtype BackchannelId = BackchannelId { unBackchannelId :: ByteString }
-    deriving (Eq, Show, Binary, IsString, Typeable)
+    deriving (Eq, Ord, Show, Binary, IsString, Typeable)
 
 -- | Every worker has a 'WorkerId' to uniquely identify it.  It's
 -- needed for the fault tolerance portion - in the event that a worker
 -- goes down we need to be able to re-enqueue its work.
 newtype WorkerId = WorkerId { unWorkerId :: ByteString }
-    deriving (Eq, Show, Binary, IsString, Typeable)
+    deriving (Eq, Ord, Show, Binary, IsString, Typeable)
 
 -- | This is the key used for enqueued requests, and, later, the
 -- response associated with it.  It's the hash of the request, which
 -- allows responses to be cached.
 newtype RequestId = RequestId { unRequestId :: ByteString }
-    deriving (Eq, Show, Binary, Hashable, Typeable)
+    deriving (Eq, Ord, Show, Binary, Hashable, Typeable)
 
 -- * Datatypes used for serialization / deserialization
 
@@ -52,7 +52,7 @@ data RequestInfo = RequestInfo
     { riBackchannel :: BackchannelId
     , riRequest :: RequestId
     }
-    deriving (Eq, Show, Generic, Typeable)
+    deriving (Eq, Ord, Show, Generic, Typeable)
 
 instance Binary RequestInfo
 

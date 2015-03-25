@@ -9,7 +9,7 @@ import           ClassyPrelude hiding (intersect, tryReadMVar)
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async (race, async, wait, cancel, Async)
 import           Control.Concurrent.MVar (tryReadMVar)
-import           Control.Monad.Logger (runStdoutLoggingT)
+import           Control.Monad.Logger (runStdoutLoggingT, LogLevel(..), filterLogger)
 import           Control.Monad.Trans.Resource (ResourceT, register)
 import           Data.Bits (xor, zeroBits)
 import           Data.List (intersect, delete)
@@ -42,7 +42,7 @@ data Config
         , sharedConfig :: SharedConfig
         }
     | RedisConfig
-        { isLong :: Bool
+        { isThreadDelay :: Bool
         }
 
 data SharedConfig = SharedConfig
@@ -208,22 +208,23 @@ runMasterOrSlave XorConfig {..} = do
             subresults <- mapQueue queue (chunksOf xorChunkSize xs)
             calc () subresults
     runArgs' sharedConfig initialData calc inner
-runMasterOrSlave RedisConfig {..} | isLong = runStdoutLoggingT $ do
+runMasterOrSlave RedisConfig {..} | isThreadDelay = runStdoutLoggingT $ do
     [lslaves] <- liftIO getArgs
     let calc :: [Int] -> IO Int
-        calc _ = do
-            threadDelay (5 * 1000 * 1000)
+        calc (x : _) = do
+            threadDelay (x * 1000)
             return 0
+        calc _ = return 0
         inner :: RedisInfo -> MasterConnectInfo -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
-        inner redis mci _ queue = do
+        inner redis mci request queue = do
             requestSlave redis mci
-            void $ mapQueue queue [[]]
+            void $ mapQueue queue request
             return 0
         config = workerConfig
             { workerMasterLocalSlaves = read (unpack lslaves)
             }
     jobQueueWorker config calc inner
-runMasterOrSlave RedisConfig {..} = runStdoutLoggingT $ do
+runMasterOrSlave RedisConfig {..} = runStdoutLoggingT $ filterLogger (\_ l -> l >= LevelDebug) $ do
     [lslaves] <- liftIO getArgs
     let calc :: [Int] -> IO Int
         calc input =  return $ foldl' xor zeroBits input
