@@ -23,7 +23,7 @@ module Distributed.JobQueue.Worker
 import ClassyPrelude
 import Control.Concurrent.Async (Async, async, link, race)
 import Control.Concurrent.STM (check)
-import Control.Monad.Logger (logErrorS, logDebugS)
+import Control.Monad.Logger (logErrorS, logInfoS)
 import Control.Monad.Trans.Control (liftBaseWith, MonadBaseControl, StM)
 import Data.Binary (Binary, encode)
 import Data.ConcreteTypeRep (fromTypeRep)
@@ -204,21 +204,21 @@ jobQueueWorker config calc inner = withRedis' config $ \redis -> do
             disconnect =<< readIORef connVar
         becomeSlave :: MasterConnectInfo -> m ()
         becomeSlave mci = do
-            $logDebugS "JobQueue" ("Becoming slave of " ++ tshow mci)
+            $logInfoS "JobQueue" (tshow wid ++ " becoming slave of " ++ tshow mci)
             let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
             eres <- try $ runSlave settings nmSettings (\() -> calc)
             case eres of
                 Right () -> return ()
                 -- This indicates that the slave couldn't connect.
                 Left (IOError { ioe_type = NoSuchThing }) ->
-                    $logDebugS "JobQueue" $
+                    $logInfoS "JobQueue" $
                         "Failed to connect to master, with " <>
                         tshow mci <>
                         ".  This probably isn't an issue - the master likely already finished or died."
                 Left err -> liftIO $ throwIO err
         becomeMaster :: (RequestInfo, ByteString) -> m ()
         becomeMaster (ri, req) = do
-            $logDebugS "JobQueue" "Becoming master"
+            $logInfoS "JobQueue" (tshow wid ++ " becoming master")
             boundPort <- newEmptyMVar
             let ss = setAfterBind
                     (putMVar boundPort . fromIntegral <=< socketPort)
