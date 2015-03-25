@@ -97,10 +97,13 @@ checkHeartbeats r ivl =
 handleWorkerFailure
     :: (MonadCommand m, MonadLogger m) => RedisInfo -> WorkerId -> m Bool
 handleWorkerFailure r wid = do
-    $logErrorS "JobQueue" $ tshow wid <>
-        " failed to respond to heartbeat.  Re-enquing its items."
     let k = activeKey r wid
     requests <- run r $ lrange k 0 (-1)
+    if null requests
+        then $logErrorS "JobQueue" $ tshow wid <>
+            " failed its heartbeat, but didn't have items to re-enqueue."
+        else $logErrorS "JobQueue" $ tshow wid <>
+            " failed its heartbeat.  Re-enqueuing its items."
     mapM_ (run_ r . rpush (requestsKey r)) (nonEmpty requests)
     -- Delete the active list after re-enquing is successful.
     -- This way, we can't lose data.
