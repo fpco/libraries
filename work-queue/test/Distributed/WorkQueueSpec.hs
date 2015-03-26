@@ -9,7 +9,7 @@ import           ClassyPrelude hiding (intersect, tryReadMVar)
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async (race, async, wait, cancel, Async)
 import           Control.Concurrent.MVar (tryReadMVar)
-import           Control.Monad.Logger (runStdoutLoggingT, LogLevel(..), filterLogger)
+import           Control.Monad.Logger (LogLevel(..))
 import           Control.Monad.Trans.Resource (ResourceT, register)
 import           Data.Bits (xor, zeroBits)
 import           Data.List (intersect, delete)
@@ -20,6 +20,7 @@ import           Distributed.JobQueue
 import           Distributed.RedisQueue
 import           Distributed.WorkQueue
 import           FP.Redis (connectInfo)
+import           FP.ThreadFileLogger
 import           Filesystem (isFile, removeFile)
 import qualified Network.Socket as NS
 import           Prelude (appendFile, read)
@@ -208,7 +209,7 @@ runMasterOrSlave XorConfig {..} = do
             subresults <- mapQueue queue (chunksOf xorChunkSize xs)
             calc () subresults
     runArgs' sharedConfig initialData calc inner
-runMasterOrSlave RedisConfig {..} | isThreadDelay = runStdoutLoggingT $ filterLogger (\_ l -> l >= LevelInfo) $ do
+runMasterOrSlave RedisConfig {..} | isThreadDelay = runThreadFileLoggingT $ do
     [lslaves] <- liftIO getArgs
     let calc :: [Int] -> IO Int
         calc (x : _) = do
@@ -224,7 +225,7 @@ runMasterOrSlave RedisConfig {..} | isThreadDelay = runStdoutLoggingT $ filterLo
             { workerMasterLocalSlaves = read (unpack lslaves)
             }
     jobQueueWorker config calc inner
-runMasterOrSlave RedisConfig {..} = runStdoutLoggingT $ filterLogger (\_ l -> l >= LevelInfo) $ do
+runMasterOrSlave RedisConfig {..} = runThreadFileLoggingT $ do
     [lslaves] <- liftIO getArgs
     let calc :: [Int] -> IO Int
         calc input =  return $ foldl' xor zeroBits input

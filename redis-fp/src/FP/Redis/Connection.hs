@@ -1,6 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude, OverloadedStrings, ScopedTypeVariables, TypeFamilies,
              DeriveDataTypeable, FlexibleContexts, FlexibleInstances, RankNTypes, GADTs,
-             ConstraintKinds, NamedFieldPuns #-}
+             ConstraintKinds, NamedFieldPuns, TupleSections #-}
 
 -- | Redis connection handling.
 
@@ -40,6 +40,7 @@ import FP.Redis.Command
 import FP.Redis.Internal
 import FP.Redis.Types.Internal
 import Control.Concurrent.STM.TSQueue
+import FP.ThreadFileLogger
 
 -- | Connects to Redis server and runs the inner action.  When the inner action returns,
 -- the connection is terminated.
@@ -57,9 +58,10 @@ connect :: forall m. (MonadConnect m)
                => ConnectInfo -- ^ Connection information
                -> m Connection
 connect cinfo = do
+    initialTag <- getLogTag
     connectionMVar <- newEmptyMVar
     thread <- control
-      (\runInIO -> do async <- Async.async (void (runInIO (clientThread connectionMVar)))
+      (\runInIO -> do async <- Async.async (void (runInIO (clientThread initialTag connectionMVar)))
                       runInIO (return async))
     eConnection <- takeMVarE ConnectionFailedException connectionMVar
     case eConnection of
@@ -67,8 +69,8 @@ connect cinfo = do
         Right connection -> return (connection thread)
   where
 
-    clientThread :: ConnectionMVar -> m ()
-    clientThread connectionMVar =
+    clientThread :: LogTag -> ConnectionMVar -> m ()
+    clientThread initialTag connectionMVar  =
         catch clientThread' outerHandler
       where
         clientThread' = do
@@ -77,7 +79,7 @@ connect cinfo = do
                 runClient runInIO =
                     CN.runTCPClient
                         (CN.clientSettings (connectPort cinfo) (connectHost cinfo))
-                        (runInIO . app reqQueue pendingRespQueue connectionMVar)
+                        (runInIO . app initialTag reqQueue pendingRespQueue connectionMVar)
             case connectRetryPolicy cinfo of
                 Just retryPolicy ->
                     forever (recovering retryPolicy
@@ -95,8 +97,8 @@ connect cinfo = do
             _ <- tryPutMVar connectionMVar (Left (toException exception))
             throwM exception
 
-    app :: RequestQueue -> PendingResponseQueue -> ConnectionMVar -> CN.AppData -> m ()
-    app reqQueue pendingRespQueue connectionMVar appData = do
+    app :: LogTag -> RequestQueue -> PendingResponseQueue -> ConnectionMVar -> CN.AppData -> m ()
+    app initialTag reqQueue pendingRespQueue connectionMVar appData = do
         initialRequestPairs <- mapM commandToRequestPair (connectInitialCommands cinfo)
         let requeue :: [Request] -> STM ()
             requeue = mapM_ (unGetTSQueue reqQueue)
@@ -112,8 +114,8 @@ connect cinfo = do
         runThreads :: [((DList Request),IO ())] -> (RunInBase m IO) -> IO (StM m ())
         runThreads initialRequestPairs runInIO =
             Async.withAsync (Async.race_
-                                (runInIO reqThread)
-                                (runInIO respThread))
+                                (runInIO (setLogTag initialTag >> reqThread))
+                                (runInIO (setLogTag initialTag >> respThread)))
                             (runInIO . waitInitialResponses (map snd initialRequestPairs))
         reqThread :: m ()
         reqThread = reqSource reqQueue pendingRespQueue

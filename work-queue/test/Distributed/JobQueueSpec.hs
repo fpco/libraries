@@ -23,6 +23,7 @@ import Distributed.RedisQueue
 import Distributed.RedisQueue.Internal (run_)
 import Distributed.WorkQueueSpec (redisTestPrefix, forkWorker, cancelProcess)
 import FP.Redis
+import FP.ThreadFileLogger
 import System.Random (randomRIO)
 import System.Timeout.Lifted (timeout)
 import Test.Hspec (Spec, it, shouldBe)
@@ -143,7 +144,7 @@ runDispatcher
     :: (Sendable request, Sendable response)
     => request -> MVar (Either DistributedJobQueueException response) -> IO ()
 runDispatcher request resultVar =
-    runStdoutLoggingT $ filtering $ withRedis redisTestPrefix localhost $ \redis ->
+    runThreadFileLoggingT $ logNest "dispatcher" $ withRedis redisTestPrefix localhost $ \redis ->
         withJobQueueClient clientConfig redis $ \cvs -> do
             -- Push a single set of work requests.
             result <- try $ jobQueueRequest clientConfig cvs redis request
@@ -153,7 +154,7 @@ sendJobRequest
     :: forall request response. (Sendable request, Sendable response)
     => RequestSets response -> request -> IO RequestId
 sendJobRequest sets request =
-    runStdoutLoggingT $ filtering $ withRedis redisTestPrefix localhost $ \redis -> do
+    runThreadFileLoggingT $ logNest "sendJobRequest" $ withRedis redisTestPrefix localhost $ \redis -> do
         mresult <- timeout (1000 * 1000) $ sendRequest clientConfig redis request
         case mresult of
             Nothing -> do
@@ -177,7 +178,7 @@ forkResponseWaiter sets = allocateAsync responseWaiter
     -- Takes some items from the unwatchedRequests set and waits on it.
     responseWaiter :: IO ()
     responseWaiter = do
-        runStdoutLoggingT $ filtering $ withRedis redisTestPrefix localhost $ \redis -> do
+        runThreadFileLoggingT $ logNest "response-waiter" $ withRedis redisTestPrefix localhost $ \redis -> do
             withJobQueueClient clientConfig redis $ \cvs ->
                 foldl' raceLifted
                        (forever $ threadDelay maxBound)
@@ -193,16 +194,13 @@ forkResponseWaiter sets = allocateAsync responseWaiter
                 Left ex -> liftIO $ throwIO ex
                 Right (_ :: response) -> atomicInsert rid (receivedResponses sets)
 
-filtering :: LoggingT m a -> LoggingT m a
-filtering = filterLogger (\_ l -> l >= LevelInfo)
-
 clientConfig :: ClientConfig
 clientConfig = defaultClientConfig
     { clientHeartbeatCheckIvl = Seconds 2
     }
 
 randomSlaveSpawner :: String -> IO ()
-randomSlaveSpawner which = runResourceT $ runStdoutLoggingT $ filtering $ forM_ [0..] $ \n -> do
+randomSlaveSpawner which = runResourceT $ runThreadFileLoggingT $ withLogTag (LogTag "randomSlaveSpawner") $ forM_ [0..] $ \n -> do
     startTime <- liftIO getCurrentTime
     $logInfoS "randomSlaveSpawner" $ "Forking worker at " ++ tshow startTime
     pid <- lift $ forkWorker which 0
@@ -211,7 +209,7 @@ randomSlaveSpawner which = runResourceT $ runStdoutLoggingT $ filtering $ forM_ 
     cancelProcess pid
 
 randomWaiterSpawner :: Sendable response => RequestSets response -> IO ()
-randomWaiterSpawner sets = runResourceT $ runStdoutLoggingT $ forM_ [0..] $ \n -> do
+randomWaiterSpawner sets = runResourceT $ runThreadFileLoggingT $ withLogTag (LogTag "randomWaiterSpawner") $ forM_ [0..] $ \n -> do
     startTime <- liftIO getCurrentTime
     $logInfoS "randomWaiterSpawner" $ "Forking waiter at " ++ tshow startTime
     tid <- lift $ forkResponseWaiter sets
@@ -220,7 +218,7 @@ randomWaiterSpawner sets = runResourceT $ runStdoutLoggingT $ forM_ [0..] $ \n -
     liftIO $ cancel tid
 
 randomJobRequester :: Sendable response => RequestSets response -> Int -> IO ()
-randomJobRequester sets cnt = runResourceT $ runStdoutLoggingT $ forM_ [0..] $ \(n :: Int) -> do
+randomJobRequester sets cnt = runResourceT $ runThreadFileLoggingT $ withLogTag (LogTag "randomJobRequester") $ forM_ [0..] $ \(n :: Int) -> do
     -- "redis-long" interprets this as a number of ms to delay.
     ms <- liftIO $ randomRIO (0, 200)
     let request :: Vector [Int]
@@ -277,18 +275,18 @@ getException seconds resultVar = liftIO $ do
 
 clearRedisKeys :: MonadIO m => m ()
 clearRedisKeys =
-    liftIO $ runStdoutLoggingT $ filtering $ withConnection localhost $ \redis -> do
+    liftIO $ runThreadFileLoggingT $ logNest "clearRedisKeys" $ withConnection localhost $ \redis -> do
         matches <- runCommand redis $ keys (redisTestPrefix <> "*")
         mapM_ (runCommand_ redis . del) (nonEmpty matches)
 
 clearSlaveRequests :: MonadIO m => m ()
 clearSlaveRequests =
-    liftIO $ runStdoutLoggingT $ filtering $ withRedis redisTestPrefix localhost $ \r -> do
+    liftIO $ runThreadFileLoggingT $ logNest "clearSlaveRequests" $ withRedis redisTestPrefix localhost $ \r -> do
         run_ r $ del (unLKey (slaveRequestsKey r) :| [])
 
 enqueueSlaveRequest :: MonadIO m => MasterConnectInfo -> m ()
 enqueueSlaveRequest mci =
-    liftIO $ runStdoutLoggingT $ filtering $ withRedis redisTestPrefix localhost $ \r -> do
+    liftIO $ runThreadFileLoggingT $ logNest "enqueueSlaveRequest" $ withRedis redisTestPrefix localhost $ \r -> do
         let encoded = toStrict (encode mci)
         run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
 

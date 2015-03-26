@@ -40,6 +40,7 @@ import           Distributed.JobQueue.Shared
 import           Distributed.RedisQueue
 import           Distributed.RedisQueue.Internal
 import           FP.Redis
+import           FP.ThreadFileLogger
 import           Focus (Decision(Remove, Replace))
 import qualified STMContainers.Map as SM
 
@@ -119,6 +120,7 @@ jobQueueClient
 jobQueueClient config cvs redis = do
     control $ \restore ->
         withAsync (restore checker) $ \_ -> restore $
+            withLogTag (LogTag "jobQueueClient") $
             subscribeToResponses redis
                                  (clientBackchannelId config)
                                  (clientSubscribed cvs)

@@ -40,6 +40,7 @@ import Distributed.RedisQueue
 import Distributed.RedisQueue.Internal
 import Distributed.WorkQueue
 import FP.Redis
+import FP.ThreadFileLogger
 import GHC.IO.Exception (IOException(IOError), ioe_type, IOErrorType(NoSuchThing))
 import Network.Socket (socketPort)
 
@@ -131,7 +132,11 @@ jobQueueWorker
     -- 'mapQueue', or related functions to enqueue work which is
     -- dispatched to the slaves.
     -> m ()
-jobQueueWorker config calc inner = withRedis' config $ \redis -> do
+jobQueueWorker config calc inner = do
+  wid <- liftIO getWorkerId
+  let name = "worker-" ++
+          filter (`notElem` ['\\', '/', '.', '\"']) (tshow (unWorkerId wid))
+  withLogTag (LogTag name) $ withRedis' config $ \redis -> do
     -- Here's how this works:
     --
     -- 1) The worker starts out as neither a slave or master.
@@ -151,7 +156,6 @@ jobQueueWorker config calc inner = withRedis' config $ \redis -> do
     -- isn't saturated in work, we don't really care about
     -- performance, and so it doesn't matter that we have so many
     -- connections to redis + it needs to notify many workers.
-    wid <- liftIO getWorkerId
     nmSettings <- liftIO defaultNMSettings
     -- heartbeatsReady is used to track whether we're subscribed to
     -- redis heartbeats or not.  We must wait for this subscription
@@ -194,11 +198,14 @@ jobQueueWorker config calc inner = withRedis' config $ \redis -> do
             -- IORef will have been set.
             connVar <- newIORef (error "impossible: connVar not initialized.")
             let subs = subscribe (requestChannel redis :| []) :| []
-            thread <- asyncLifted $
-                withSubscriptionsExConn (redisConnectInfo redis) subs $ \conn -> do
-                    writeIORef connVar conn
-                    return $ trackSubscriptionStatus ready $ \_ _ ->
-                        void $ tryPutMVar notified ()
+            tag <- getLogTag
+            thread <- asyncLifted $ do
+                setLogTag tag
+                logNest "subscribeToRequests" $
+                    withSubscriptionsExConn (redisConnectInfo redis) subs $ \conn -> do
+                        writeIORef connVar conn
+                        return $ trackSubscriptionStatus ready $ \_ _ ->
+                            void $ tryPutMVar notified ()
             liftIO $ link thread
             atomically $ check =<< readTVar ready
             return $ SubscribeToRequests notified connVar
@@ -255,10 +262,10 @@ jobQueueWorker config calc inner = withRedis' config $ \redis -> do
             -- deactivateWorker redis wid
         requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
-        start = do
+        start = withLogTag (LogTag name) $ do
             atomically $ check =<< readTVar heartbeatsReady
             loop CheckRequests
-        heartbeats =
+        heartbeats = withLogTag (LogTag (name <> "-heartbeat")) $
             withRedis' config $ \r -> sendHeartbeats r wid heartbeatsReady
     start `raceLifted` heartbeats
 

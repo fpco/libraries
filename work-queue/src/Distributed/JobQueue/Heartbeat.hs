@@ -24,6 +24,7 @@ import Distributed.RedisQueue
 import Distributed.RedisQueue.Internal
 import FP.Redis
 import FP.Redis.Mutex
+import FP.ThreadFileLogger
 
 -- | This listens for a notification telling the worker to send a
 -- heartbeat.  In this case, that means the worker needs to remove its
@@ -54,7 +55,7 @@ sendHeartbeats r wid ready = do
 checkHeartbeats
     :: MonadConnect m => RedisInfo -> Seconds -> m void
 checkHeartbeats r ivl =
-    periodicActionWrapped (redisConnection r) (heartbeatTimeKey r) ivl $ do
+    periodicActionWrapped (redisConnection r) (heartbeatTimeKey r) ivl $ logNest "checkHeartbeats" $ do
         -- Check if the last iteration of this heartbeat check ran
         -- successfully.  If it did, then we can use the contents of
         -- the inactive list.  The flag also gets set to False here,
