@@ -10,8 +10,8 @@
 module Distributed.JobQueueSpec where
 
 import ClassyPrelude hiding (keys)
-import Control.Concurrent.Async (Async, race, async, link, cancel)
-import Control.Concurrent.Lifted (threadDelay, fork, killThread)
+import Control.Concurrent.Async (Async, race, async, cancel)
+import Control.Concurrent.Lifted (threadDelay)
 import Control.Monad.Logger
 import Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
 import Data.Binary (encode)
@@ -29,7 +29,7 @@ import Test.Hspec (Spec, it, shouldBe)
 import Data.Bits (shiftL)
 import qualified Data.Set as S
 import Control.Monad.Base (MonadBase)
-import Control.Monad.Trans.Control (MonadBaseControl)
+import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 
 spec :: Spec
 spec = do
@@ -90,15 +90,12 @@ spec = do
             randomSlaveSpawner "redis-long" `race`
             randomWaiterSpawner sets `race`
             randomWaiterSpawner sets `race`
-            randomWaiterSpawner sets `race`
-            randomWaiterSpawner sets `race`
-            randomWaiterSpawner sets `race`
             -- Run job requesters for 2 seconds, then check that all
             -- the responses eventually came back.
             (do void $ timeout (1000 * 1000 * 2) $
-                    -- randomJobRequester sets 254 `race`
+                    randomJobRequester sets 254 `race`
                     randomJobRequester sets 255
-                checkRequestsAnswered sets 30)
+                checkRequestsAnswered sets 60)
     jqit "Sends an exception to the client on type mismatch" $ do
         resultVar <- forkDispatcher' defaultRequest
         _ <- forkWorker "redis" 0
@@ -139,7 +136,7 @@ forkDispatcher'
     => request -> ResourceT IO (MVar (Either DistributedJobQueueException response))
 forkDispatcher' request = do
     resultVar <- newEmptyMVar
-    void $ allocate (fork $ runDispatcher request resultVar) killThread
+    void $ allocateAsync $ runDispatcher request resultVar
     return resultVar
 
 runDispatcher
@@ -151,12 +148,6 @@ runDispatcher request resultVar =
             -- Push a single set of work requests.
             result <- try $ jobQueueRequest clientConfig cvs redis request
             putMVar resultVar result
-
-forkJobRequest
-    :: (Sendable request, Sendable response)
-    => RequestSets response -> request -> ResourceT IO ()
-forkJobRequest sets request =
-    void $ allocate (async $ void $ sendJobRequest sets request) cancel
 
 sendJobRequest
     :: forall request response. (Sendable request, Sendable response)
@@ -181,34 +172,26 @@ forkResponseWaiter
     :: forall response. Sendable response
     => RequestSets response
     -> ResourceT IO (Async ())
-forkResponseWaiter sets = do
-    (_, thread) <- allocate (async responseWaiter) cancel
---    liftIO (link thread)
-    return thread
+forkResponseWaiter sets = allocateAsync responseWaiter
   where
     -- Takes some items from the unwatchedRequests set and waits on it.
     responseWaiter :: IO ()
     responseWaiter = do
         runStdoutLoggingT $ withRedis redisTestPrefix localhost $ \redis -> do
-            withJobQueueClient clientConfig redis $ \cvs -> forever $ do
-                withItem (unwatchedRequests sets) $ \rid -> do
-                    resultVar <- newEmptyMVar
-                    registerResponseCallback cvs redis rid $
-                        void . tryPutMVar resultVar
-                    result <- takeMVar resultVar
-                    case result of
-                        Left ex -> liftIO $ throwIO ex
-                        Right (_ :: response) -> atomicInsert rid (receivedResponses sets)
-                    threadDelay (10 * 1000)
-
-logWrap :: (MonadLogger m, MonadBaseControl IO m, MonadIO m) => Text -> m a -> m a
-logWrap name f = do
-    logInfoN $ "BEGIN " ++ name
-    x <- f `catch` \(ex :: SomeException) -> do
-        logInfoN $ "EXCEPTION: " ++ tshow ex
-        liftIO $ throwIO ex
-    logInfoN $ "END " ++ name
-    return x
+            withJobQueueClient clientConfig redis $ \cvs ->
+                foldl' raceLifted
+                       (forever $ threadDelay maxBound)
+                       (replicate 5 (waitForResponse cvs redis) :: [LoggingT IO ()])
+    waitForResponse :: ClientVars (LoggingT IO) response -> RedisInfo -> LoggingT IO ()
+    waitForResponse cvs redis = forever $ do
+        withItem (unwatchedRequests sets) $ \rid -> do
+            resultVar <- newEmptyMVar
+            registerResponseCallback cvs redis rid $
+                void . tryPutMVar resultVar
+            result <- takeMVar resultVar
+            case result of
+                Left ex -> liftIO $ throwIO ex
+                Right (_ :: response) -> atomicInsert rid (receivedResponses sets)
 
 filtering :: LoggingT m a -> LoggingT m a
 filtering = id -- filterLogger (\_ l -> l >= LevelInfo)
@@ -232,7 +215,7 @@ randomWaiterSpawner sets = runResourceT $ runStdoutLoggingT $ forM_ [0..] $ \n -
     startTime <- liftIO getCurrentTime
     $logInfoS "randomWaiterSpawner" $ "Forking waiter at " ++ tshow startTime
     tid <- lift $ forkResponseWaiter sets
-    randomDelay (500 * n) (500 + 500 * n)
+    randomDelay (500 * n) (2500 + 500 * n)
     $logInfoS "randomWaiterSpawner" $ "Cancelling waiter started at " ++ tshow startTime
     liftIO $ cancel tid
 
@@ -242,7 +225,7 @@ randomJobRequester sets cnt = runResourceT $ runStdoutLoggingT $ forM_ [0..] $ \
     ms <- liftIO $ randomRIO (0, 200)
     let request :: Vector [Int]
         request = fromList $ map (ms:) $ chunksOf 100 [n..n+cnt]
-    lift $ forkJobRequest sets request
+    lift $ void $ allocateAsync (sendJobRequest sets request)
     randomDelay 100 200
 
 checkRequestsAnswered :: (MonadIO m, MonadBaseControl IO m) => RequestSets response -> Int -> m ()
@@ -342,3 +325,11 @@ withItem ref f = do
         case mx of
             Nothing -> return ()
             Just x -> restore (f x) `onException` atomicInsert x ref
+
+allocateAsync :: IO a -> ResourceT IO (Async a)
+allocateAsync f = fmap snd $ allocate (async f) cancel
+
+raceLifted :: MonadBaseControl IO m => m a -> m b -> m ()
+raceLifted f g =
+    liftBaseWith $ \restore ->
+        void $ restore f `race` restore g
