@@ -33,6 +33,7 @@ import Data.Streaming.NetworkMessage (Sendable, defaultNMSettings)
 import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
+import Data.Word (Word16)
 import Data.WorkQueue
 import Distributed.JobQueue.Heartbeat (sendHeartbeats, deactivateWorker)
 import Distributed.JobQueue.Shared
@@ -41,7 +42,7 @@ import Distributed.RedisQueue.Internal
 import Distributed.WorkQueue
 import FP.Redis
 import GHC.IO.Exception (IOException(IOError), ioe_type, IOErrorType(NoSuchThing))
-import Network.Socket (socketPort)
+import Network.Socket (PortNumber(PortNum), socketPort)
 
 -- | Configuration of a 'jobQueueWorker'.
 data WorkerConfig = WorkerConfig
@@ -60,6 +61,8 @@ data WorkerConfig = WorkerConfig
       -- this worker when it's acting as a master.
     , workerPort :: Int
       -- ^ Which port to use when the worker is acting as a master.
+      -- If the port is set to 0, then a free port is automatically
+      -- chosen by the (unix) system.
     , workerMasterLocalSlaves :: Int
       -- ^ How many local slaves a master server should run.
     } deriving (Typeable)
@@ -72,7 +75,8 @@ data WorkerConfig = WorkerConfig
 -- because there are cases in which masters may be starved of slaves.
 -- For example, if a bunch of work items come in and they all
 -- immediately become masters, then progress won't be made without
--- local slaves.
+-- local slaves.  Also, 'workerPort' is set to 0 by default, which
+-- means the port is allocated dynamically (on most unix systems).
 defaultWorkerConfig :: ByteString -> ConnectInfo -> ByteString -> WorkerConfig
 defaultWorkerConfig prefix ci hostname = WorkerConfig
     { workerResponseDataExpiry = Seconds 3600
@@ -205,7 +209,7 @@ jobQueueWorker config calc inner = withRedis' config $ \redis -> do
         becomeSlave :: MasterConnectInfo -> m ()
         becomeSlave mci = do
             $logInfoS "JobQueue" (tshow wid ++ " becoming slave of " ++ tshow mci)
-            let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
+            let settings = clientSettingsTCP (fromIntegral (mciPort mci)) (mciHost mci)
             eres <- try $ runSlave settings nmSettings (\() -> calc)
             case eres of
                 Right () -> return ()
@@ -221,7 +225,9 @@ jobQueueWorker config calc inner = withRedis' config $ \redis -> do
             $logInfoS "JobQueue" (tshow wid ++ " becoming master")
             boundPort <- newEmptyMVar
             let ss = setAfterBind
-                    (putMVar boundPort . fromIntegral <=< socketPort)
+                    (\socket -> do
+                        PortNum port <- socketPort socket
+                        putMVar boundPort port)
                     (serverSettingsTCP (workerPort config) "*")
             settings <- liftIO defaultNMSettings
             eres <- tryAny $ withMaster (runTCPServer ss) settings () $ \queue ->
@@ -266,7 +272,7 @@ jobQueueWorker config calc inner = withRedis' config $ \redis -> do
 -- list stored at 'slaveRequestsKey'.
 data MasterConnectInfo = MasterConnectInfo
     { mciHost :: ByteString
-    , mciPort :: Int
+    , mciPort :: Word16
     }
     deriving (Generic, Show, Typeable)
 
@@ -304,8 +310,8 @@ requestSlave
     => RedisInfo
     -> MasterConnectInfo
     -> m ()
-requestSlave r request = do
-    let encoded = toStrict (encode request)
+requestSlave r mci = do
+    let encoded = toStrict (encode mci)
     run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
     notifyRequestAvailable r
 
