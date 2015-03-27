@@ -1,6 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude, OverloadedStrings, ScopedTypeVariables, TypeFamilies,
              DeriveDataTypeable, FlexibleContexts, FlexibleInstances, RankNTypes, GADTs,
-             ConstraintKinds, NamedFieldPuns, GeneralizedNewtypeDeriving #-}
+             ConstraintKinds, NamedFieldPuns, GeneralizedNewtypeDeriving,
+             DeriveGeneric #-}
 
 -- | Redis internal types.
 
@@ -14,6 +15,7 @@ import Control.Monad.Logger
 import Control.Retry
 import Control.Concurrent.STM.TSQueue
 import qualified Data.ByteString.Char8 as BS8
+import Data.Data (Data)
 
 -- | Monads for connecting.
 type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
@@ -23,56 +25,57 @@ type MonadCommand m = (MonadIO m, MonadBaseControl IO m)
 
 -- Newtype wrapper for redis top level key names.
 newtype Key = Key { unKey :: ByteString }
-    deriving (Eq, Show, Ord, Result, Argument, IsString)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument, IsString)
 
 -- Key which is known to refer to a "FP.Redis.Command.String"
 newtype VKey = VKey { unVKey :: Key }
-    deriving (Eq, Show, Ord, Result, Argument, IsString)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument, IsString)
 
 -- Key which is known to refer to a "FP.Redis.Command.List"
 newtype LKey = LKey { unLKey :: Key }
-    deriving (Eq, Show, Ord, Result, Argument, IsString)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument, IsString)
 
 -- Key which is known to refer to a "FP.Redis.Command.Hash"
 newtype HKey = HKey { unHKey :: Key }
-    deriving (Eq, Show, Ord, Result, Argument, IsString)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument, IsString)
 
 -- Key which is known to refer to a "FP.Redis.Command.Set"
 newtype SKey = SKey { unSKey :: Key }
-    deriving (Eq, Show, Ord, Result, Argument, IsString)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument, IsString)
 
 -- Key which is known to refer to a "FP.Redis.Command.SortedSet"
 newtype ZKey = ZKey { unZKey :: Key }
-    deriving (Eq, Show, Ord, Result, Argument, IsString)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument, IsString)
 
 -- Newtype wrapper for redis channel names.
 newtype Channel = Channel { unChannel :: ByteString }
-    deriving (Eq, Show, Ord, Result, Argument, IsString)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument, IsString)
 
 -- Newtype wrapper for redis hash fields.
 newtype HashField = HashField { unHashField :: ByteString }
-    deriving (Eq, Show, Ord, Result, Argument, IsString)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument, IsString)
 
 -- Newtype wrapper time delta (usually a timeout), stored in seconds.
 newtype Seconds = Seconds { unSeconds :: Int64 }
-    deriving (Eq, Show, Ord, Result, Argument)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument)
 
 -- Newtype wrapper time delta (usually a timeout), stored in
 -- milliseconds.
 newtype Milliseconds = Milliseconds { unMilliseconds :: Int64 }
-    deriving (Eq, Show, Ord, Result, Argument)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument)
 
 -- | A pub/sub subscription message.  See <http://redis.io/topics/pubsub>.
 data Message = Subscribe Channel Int64
              | Unsubscribe Channel Int64
              | Message Channel ByteString
-    deriving (Show)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic)
 
 -- | Options for 'set'.
 data SetOption = EX Seconds -- ^ Set the specified expire time, in seconds
                | PX Milliseconds -- ^ Set the specified expire time, in milliseconds
                | NX -- ^ Only set the key if it does not already exist
                | XX -- ^ Only set the key if it already exists
+    deriving (Eq, Show, Ord, Data, Typeable, Generic)
 
 -- | Used to notify main thread that connection is ready.
 type ConnectionMVar = MVar (Either SomeException (Async () -> Connection))
@@ -80,7 +83,7 @@ type ConnectionMVar = MVar (Either SomeException (Async () -> Connection))
 -- | Connection mode.
 data Mode = Normal -- ^ Normal connection that receives commands and returns responses.
           | Subscribed -- ^ Connection that is subscribed to pub/sub channels.
-    deriving (Show)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Enum, Bounded)
 
 -- | Queue of requests.
 type RequestQueue = TSQueue Request
@@ -90,6 +93,7 @@ type PendingResponseQueue = TSQueue Request
 
 -- | Connection to the Redis server used for pub/sub subscriptions.
 data SubscriptionConnection = SubscriptionConnection Connection (BroadcastChan In [Response])
+    deriving (Typeable, Generic)
 
 -- | Requests used by pub/sub subscription connections.
 newtype SubscriptionRequest = SubscriptionRequest {unSubscriptionRequest :: Request}
@@ -118,6 +122,7 @@ data ConnectInfo = ConnectInfo
     , connectRequestsPerBatch     :: !Int
       -- | Maximum number of pending responses in the pipeline before blocking new requests.
     , connectMaxPendingResponses  :: !Int }
+    deriving (Typeable, Generic)
 
 -- | Connection to the Redis server used for regular commands.
 data Connection = Connection
@@ -129,12 +134,13 @@ data Connection = Connection
         -- ^ Queue of requests awaiting a response
     , connectionThread :: !(Async ())
         -- ^ Thread that manages the connection
-    }
+    } deriving (Typeable, Generic)
 
 -- | Regular command request.
 data CommandRequest a = (Result a) => CommandRequest (ResponseCallback -> Request)
                       | CommandPure a
                       | forall x. CommandAp (CommandRequest (x -> a)) (CommandRequest x)
+    deriving Typeable
 
 instance Functor CommandRequest where
     fmap f (CommandPure x) = CommandPure (f x)
@@ -150,6 +156,7 @@ data Request = Command !Builder ResponseCallback
                   -- ^ A normal command request that expects a response
              | Subscription !Builder
                   -- ^ A subscription request
+    deriving (Typeable, Generic)
 
 -- | Callback to receive responses.  This will be called with asynchronous exceptions masked.
 type ResponseCallback = (IO () -> IO ()) -- ^ Restore async exceptions
@@ -264,7 +271,7 @@ data Response = SimpleString ByteString
               | Integer Int64
               | BulkString (Maybe ByteString)
               | Array (Maybe [Response])
-    deriving (Eq, Show)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic)
 
 -- | Exceptions thrown by Redis connection.
 data RedisException = ConnectionFailedException SomeException -- ^ Unable to connect to server
@@ -272,6 +279,6 @@ data RedisException = ConnectionFailedException SomeException -- ^ Unable to con
                     | ProtocolException -- ^ Invalid data received for protocol
                     | CommandException ByteString -- ^ The server reported an error for your command
                     | DecodeResponseException -- ^ Response couldn't decoded to desired type
-    deriving (Show, Typeable)
+    deriving (Show, Typeable, Generic)
 
 instance Exception RedisException
