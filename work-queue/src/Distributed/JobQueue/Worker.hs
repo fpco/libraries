@@ -249,7 +249,7 @@ jobQueueWorker config calc inner = withRedis' config $ \redis -> do
             let expiry = workerResponseDataExpiry config
                 encoded = toStrict (encode result)
             sendResponse redis expiry wid ri encoded
-            deactivateWorker redis wid
+            -- deactivateWorker redis wid
         requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
         start = do
