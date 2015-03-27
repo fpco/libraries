@@ -208,7 +208,7 @@ runMasterOrSlave XorConfig {..} = do
             subresults <- mapQueue queue (chunksOf xorChunkSize xs)
             calc () subresults
     runArgs' sharedConfig initialData calc inner
-runMasterOrSlave RedisConfig {..} | isThreadDelay = runStdoutLoggingT $ do
+runMasterOrSlave RedisConfig {..} | isThreadDelay = runStdoutLoggingT $ filterLogger (\_ l -> l >= LevelInfo) $ do
     [lslaves] <- liftIO getArgs
     let calc :: [Int] -> IO Int
         calc (x : _) = do
@@ -224,7 +224,7 @@ runMasterOrSlave RedisConfig {..} | isThreadDelay = runStdoutLoggingT $ do
             { workerMasterLocalSlaves = read (unpack lslaves)
             }
     jobQueueWorker config calc inner
-runMasterOrSlave RedisConfig {..} = runStdoutLoggingT $ filterLogger (\_ l -> l >= LevelDebug) $ do
+runMasterOrSlave RedisConfig {..} = runStdoutLoggingT $ filterLogger (\_ l -> l >= LevelInfo) $ do
     [lslaves] <- liftIO getArgs
     let calc :: [Int] -> IO Int
         calc input =  return $ foldl' xor zeroBits input

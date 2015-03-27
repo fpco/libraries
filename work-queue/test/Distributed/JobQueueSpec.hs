@@ -177,7 +177,7 @@ forkResponseWaiter sets = allocateAsync responseWaiter
     -- Takes some items from the unwatchedRequests set and waits on it.
     responseWaiter :: IO ()
     responseWaiter = do
-        runStdoutLoggingT $ withRedis redisTestPrefix localhost $ \redis -> do
+        runStdoutLoggingT $ filtering $ withRedis redisTestPrefix localhost $ \redis -> do
             withJobQueueClient clientConfig redis $ \cvs ->
                 foldl' raceLifted
                        (forever $ threadDelay maxBound)
@@ -194,7 +194,7 @@ forkResponseWaiter sets = allocateAsync responseWaiter
                 Right (_ :: response) -> atomicInsert rid (receivedResponses sets)
 
 filtering :: LoggingT m a -> LoggingT m a
-filtering = id -- filterLogger (\_ l -> l >= LevelInfo)
+filtering = filterLogger (\_ l -> l >= LevelInfo)
 
 clientConfig :: ClientConfig
 clientConfig = defaultClientConfig
@@ -202,7 +202,7 @@ clientConfig = defaultClientConfig
     }
 
 randomSlaveSpawner :: String -> IO ()
-randomSlaveSpawner which = runResourceT $ runStdoutLoggingT $ forM_ [0..] $ \n -> do
+randomSlaveSpawner which = runResourceT $ runStdoutLoggingT $ filtering $ forM_ [0..] $ \n -> do
     startTime <- liftIO getCurrentTime
     $logInfoS "randomSlaveSpawner" $ "Forking worker at " ++ tshow startTime
     pid <- lift $ forkWorker which 0
@@ -277,7 +277,7 @@ getException seconds resultVar = liftIO $ do
 
 clearRedisKeys :: MonadIO m => m ()
 clearRedisKeys =
-    liftIO $ runStdoutLoggingT $ withConnection localhost $ \redis -> do
+    liftIO $ runStdoutLoggingT $ filtering $ withConnection localhost $ \redis -> do
         matches <- runCommand redis $ keys (redisTestPrefix <> "*")
         mapM_ (runCommand_ redis . del) (nonEmpty matches)
 
