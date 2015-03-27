@@ -16,7 +16,7 @@ module Distributed.JobQueue.Heartbeat
     ) where
 
 import ClassyPrelude
-import Control.Monad.Logger (MonadLogger, logErrorS)
+import Control.Monad.Logger (MonadLogger, logWarnS)
 import Data.Binary (encode)
 import Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
 import Distributed.JobQueue.Shared
@@ -74,6 +74,8 @@ checkHeartbeats r ivl =
                 when reenquedSome $ notifyRequestAvailable r
                 return inactive
             else do
+                $logWarnS "JobQueue" $
+                    "Last heartbeat failed (or this is the first)"
                 -- The reasoning here is that if the last heartbeat
                 -- check failed, it might have enqueued requests.  We
                 -- check if there are any, and if so, send a
@@ -100,9 +102,9 @@ handleWorkerFailure r wid = do
     let k = activeKey r wid
     requests <- run r $ lrange k 0 (-1)
     if null requests
-        then $logErrorS "JobQueue" $ tshow wid <>
+        then $logWarnS "JobQueue" $ tshow wid <>
             " failed its heartbeat, but didn't have items to re-enqueue."
-        else $logErrorS "JobQueue" $ tshow wid <>
+        else $logWarnS "JobQueue" $ tshow wid <>
             " failed its heartbeat.  Re-enqueuing its items."
     mapM_ (run_ r . rpush (requestsKey r)) (nonEmpty requests)
     -- Delete the active list after re-enquing is successful.
