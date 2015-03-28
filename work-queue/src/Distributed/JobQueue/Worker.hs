@@ -198,10 +198,11 @@ jobQueueWorker config calc inner = do
             -- IORef will have been set.
             connVar <- newIORef (error "impossible: connVar not initialized.")
             let subs = subscribe (requestChannel redis :| []) :| []
-            tag <- getLogTag
+            -- FIXME: why does this logging stuff cause issues?
+            -- tag <- getLogTag
             thread <- asyncLifted $ do
-                setLogTag tag
-                logNest "subscribeToRequests" $
+                -- setLogTag tag
+                -- logNest "subscribeToRequests" $
                     withSubscriptionsExConn (redisConnectInfo redis) subs $ \conn -> do
                         writeIORef connVar conn
                         return $ trackSubscriptionStatus ready $ \_ _ ->
