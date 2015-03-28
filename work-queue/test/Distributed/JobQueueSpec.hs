@@ -37,8 +37,9 @@ spec = do
     jqit "Runs enqueued computations" $ do
         _ <- forkWorker "redis" 0
         _ <- forkWorker "redis" 0
-        resultVar <- forkDispatcher
-        checkResult 5 resultVar 0
+        forM_ [0..3] $ \n -> do
+            resultVar <- forkDispatcher' (mkRequest n)
+            checkResult 5 resultVar 0
     jqit "Doesn't lose data when master fails" $ do
         -- This worker will take the request and become a master.
         master <- forkWorker "redis" 0

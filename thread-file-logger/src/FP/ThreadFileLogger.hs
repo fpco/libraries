@@ -106,13 +106,14 @@ logNest (LogTag tag) f = do
     -- TODO: this is a bit inefficient - redundant lookups.
     mold <- lookupRefMap globalLogTags =<< myThreadId
     let new = LogTag $ maybe tag (\(LogTag old) -> old <> "-" <> tag) mold
-    old <- maybe defaultLogTag return mold
-    internalInfo True old $ "Switching log to " <> unLogTag new
+    -- FIXME: this logging is squirrely
+    -- old <- maybe defaultLogTag return mold
+    -- internalInfo True old $ "Switching log to " <> unLogTag new
     result <- withLogTag new $ f `catch` \(ex :: SomeException) -> do
         internalInfo False new ("logNest caught exception: " <> tshow ex)
             `onException` liftBase (throwIO ex)
         liftBase (throwIO ex)
-    internalInfo True old $ "Returned from " <> unLogTag new
+    -- internalInfo True old $ "Returned from " <> unLogTag new
     return result
 
 getLogTag :: MonadBase IO m => m LogTag
