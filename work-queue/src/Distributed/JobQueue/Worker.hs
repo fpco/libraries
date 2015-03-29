@@ -21,10 +21,10 @@ module Distributed.JobQueue.Worker
     ) where
 
 import ClassyPrelude
-import Control.Concurrent.Async (Async, async, link, race)
+import Control.Concurrent.Async (Async, async, link, withAsync, cancel)
 import Control.Concurrent.STM (check)
 import Control.Monad.Logger (logErrorS, logInfoS)
-import Control.Monad.Trans.Control (liftBaseWith, MonadBaseControl, StM)
+import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import Data.Binary (Binary, encode)
 import Data.ConcreteTypeRep (fromTypeRep)
 import Data.List.NonEmpty (NonEmpty((:|)))
@@ -34,7 +34,7 @@ import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
 import Data.WorkQueue
-import Distributed.JobQueue.Heartbeat (sendHeartbeats, deactivateWorker)
+import Distributed.JobQueue.Heartbeat (sendHeartbeats)
 import Distributed.JobQueue.Shared
 import Distributed.RedisQueue
 import Distributed.RedisQueue.Internal
@@ -65,18 +65,38 @@ data WorkerConfig = WorkerConfig
       -- chosen by the (unix) system.
     , workerMasterLocalSlaves :: Int
       -- ^ How many local slaves a master server should run.
+    , workerHeartbeatSendIvl :: Seconds
+      -- ^ The time interval between heartbeata are sent to the
+      -- server.  This must be substantially lower than the rate at
+      -- which they are checked.
     } deriving (Typeable)
 
 -- | Given a redis key prefix and redis connection information, builds
 -- a default 'WorkerConfig'.
 --
--- This config has response data expire every hour, and configures
--- masters to have one local slave.  The default of one local slave is
--- because there are cases in which masters may be starved of slaves.
--- For example, if a bunch of work items come in and they all
--- immediately become masters, then progress won't be made without
--- local slaves.  Also, 'workerPort' is set to 0 by default, which
--- means the port is allocated dynamically (on most unix systems).
+-- The defaults are:
+--
+--     * Heartbeats are sent every 15 seconds.  This should be
+--     reasonable, given the client default of checking every 30
+--     seconds.  However, if the client uses a different heartbeat
+--     time, this should be changed.
+--
+--     Aside: This isn't ideal.  Ideally, requests from the client
+--     would let the worker know how often to send heartbeats.  We
+--     can't do that, though, because the heartbeats need to be sent
+--     before the worker even has any work.  This is because
+--     'rpoplpush' is used to take work and move it to the worker's
+--     work list.
+--
+--     * Response data expire every hour.
+--
+--     * One local slave. This is because there are cases in which
+--     masters may be starved of slaves. For example, if a bunch of
+--     work items come in and they all immediately become masters,
+--     then progress won't be made without local slaves.
+--
+--     * 'workerPort' is set to 0 by default, which means the port is
+--     allocated dynamically (on most unix systems).
 defaultWorkerConfig :: ByteString -> ConnectInfo -> ByteString -> WorkerConfig
 defaultWorkerConfig prefix ci hostname = WorkerConfig
     { workerResponseDataExpiry = Seconds 3600
@@ -85,6 +105,7 @@ defaultWorkerConfig prefix ci hostname = WorkerConfig
     , workerHostName = hostname
     , workerPort = 0
     , workerMasterLocalSlaves = 1
+    , workerHeartbeatSendIvl = Seconds 15
     }
 
 -- | Internal datatype used by 'jobQueueWorker'.
@@ -157,21 +178,20 @@ jobQueueWorker config calc inner = do
     -- performance, and so it doesn't matter that we have so many
     -- connections to redis + it needs to notify many workers.
     nmSettings <- liftIO defaultNMSettings
-    -- heartbeatsReady is used to track whether we're subscribed to
-    -- redis heartbeats or not.  We must wait for this subscription
-    -- before dequeuing a 'JobRequest', because otherwise the
-    -- heartbeat checking won't function, and the request could be
-    -- lost.
-    heartbeatsReady <- liftIO $ newTVarIO False
-    let loop :: SubscribeOrCheck -> m ()
-        loop soc = do
+    let loop :: SubscribeOrCheck -> Async () -> m ()
+        loop soc heartbeatThread = do
             -- If there's slave work to be done, then do it.
             mslave <- popSlaveRequest redis
             case mslave of
                 Just slave -> do
                     unsubscribeToRequests soc
+                    -- Now that we're a slave, doing a heartbeat check
+                    -- is no longer necessary, so kill that thread.
+                    liftIO $ cancel heartbeatThread
                     becomeSlave slave
-                    loop CheckRequests
+                    -- Restart the heartbeats thread before
+                    -- re-entering the loop.
+                    withHeartbeats $ loop CheckRequests
                 Nothing -> do
                     -- If there isn't any slave work, then check if
                     -- there's a request, and become a master if there
@@ -182,12 +202,12 @@ jobQueueWorker config calc inner = do
                         (Just req, _) -> do
                             unsubscribeToRequests soc
                             becomeMaster req
-                            loop CheckRequests
-                        (Nothing, CheckRequests) -> do
-                            loop =<< subscribeToRequests
+                            loop CheckRequests heartbeatThread
+                        (Nothing, CheckRequests) ->
+                            flip loop heartbeatThread =<< subscribeToRequests
                         (Nothing, SubscribeToRequests notified _) -> do
                             takeMVar notified
-                            loop soc
+                            loop soc heartbeatThread
         -- When there isn't any work, run the loop again, this time
         -- with a subscription to the channel.
         subscribeToRequests = do
@@ -247,7 +267,7 @@ jobQueueWorker config calc inner = do
                             , actualRequestType = jrRequestType
                             }
                     decoded <- decodeOrThrow "jobQueueWorker" jrBody
-                    port <- takeMVar boundPort
+                    port <- readMVar boundPort
                     let mci = MasterConnectInfo (workerHostName config) port
                     liftIO $ inner redis mci decoded queue
             result <-
@@ -260,15 +280,16 @@ jobQueueWorker config calc inner = do
             let expiry = workerResponseDataExpiry config
                 encoded = toStrict (encode result)
             sendResponse redis expiry wid ri encoded
-            -- deactivateWorker redis wid
         requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
-        start = withLogTag (LogTag name) $ do
-            atomically $ check =<< readTVar heartbeatsReady
-            loop CheckRequests
-        heartbeats = withLogTag (LogTag (name <> "-heartbeat")) $
-            withRedis' config $ \r -> sendHeartbeats r wid heartbeatsReady
-    start `raceLifted` heartbeats
+        -- Heartbeats get their own redis connection, as this way it's
+        -- less likely that they'll fail due to the main redis
+        -- connection transferring lots of data.
+        withHeartbeats = withAsyncLifted $
+           withLogTag (LogTag (name <> "-heartbeat")) $
+                withRedis' config $ \r ->
+                    sendHeartbeats r (workerHeartbeatSendIvl config) wid
+    withLogTag (LogTag name) $ withHeartbeats $ loop CheckRequests
 
 -- * Slave Requests
 
@@ -339,13 +360,8 @@ withRedis' config = withRedis (workerKeyPrefix config) (workerConnectInfo config
 getWorkerId :: IO WorkerId
 getWorkerId = WorkerId . toStrict . UUID.toByteString <$> UUID.nextRandom
 
--- Note: Ideally this would yield (Either a b)
---
--- We don't need that for the usage here, though.
-raceLifted :: MonadBaseControl IO m => m a -> m b -> m ()
-raceLifted f g =
-    liftBaseWith $ \restore ->
-        void $ restore f `race` restore g
+asyncLifted :: MonadBaseControl IO m => m () -> m (Async ())
+asyncLifted f = liftBaseWith $ \restore -> async (void (restore f))
 
-asyncLifted :: MonadBaseControl IO m => m a -> m (Async (StM m a))
-asyncLifted f = liftBaseWith $ \restore -> async (restore f)
+withAsyncLifted :: MonadBaseControl IO m => m () -> (Async () -> m ()) -> m ()
+withAsyncLifted f g = liftBaseWith $ \restore -> withAsync (void (restore f)) (void . restore . g)

@@ -19,7 +19,7 @@ import           Data.Streaming.NetworkMessage (Sendable)
 import           Distributed.JobQueue
 import           Distributed.RedisQueue
 import           Distributed.WorkQueue
-import           FP.Redis (connectInfo)
+import           FP.Redis (Seconds(..), connectInfo)
 import           FP.ThreadFileLogger
 import           Filesystem (isFile, removeFile)
 import qualified Network.Socket as NS
@@ -240,7 +240,9 @@ runMasterOrSlave RedisConfig {..} = runThreadFileLoggingT $ do
     jobQueueWorker config calc inner
 
 workerConfig :: WorkerConfig
-workerConfig = defaultWorkerConfig redisTestPrefix (connectInfo "localhost") "localhost"
+workerConfig = (defaultWorkerConfig redisTestPrefix (connectInfo "localhost") "localhost")
+    { workerHeartbeatSendIvl = Seconds 1
+    }
 
 runArgs'
     :: ( Sendable initialData
