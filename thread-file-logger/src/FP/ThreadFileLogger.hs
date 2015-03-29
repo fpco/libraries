@@ -19,9 +19,8 @@ module FP.ThreadFileLogger
     , filterThreadLogger
     ) where
 
-import ClassyPrelude hiding (catch)
+import ClassyPrelude
 import Control.Concurrent.Lifted (ThreadId, myThreadId)
-import Control.Exception.Lifted (catch)
 import Control.Monad.Base (MonadBase(liftBase))
 import Control.Monad.Logger (LogSource, LogLevel(LevelInfo), LoggingT, runLoggingT, defaultLogStr, runStdoutLoggingT)
 import Control.Monad.Trans.Control (MonadBaseControl)
@@ -109,7 +108,7 @@ logNest (LogTag tag) f = do
     -- FIXME: this logging is squirrely
     -- old <- maybe defaultLogTag return mold
     -- internalInfo True old $ "Switching log to " <> unLogTag new
-    result <- withLogTag new $ f `catch` \(ex :: SomeException) -> do
+    result <- (setLogTag new >> f) `catchAny` \(ex :: SomeException) -> do
         internalInfo False new ("logNest caught exception: " <> tshow ex)
             `onException` liftBase (throwIO ex)
         liftBase (throwIO ex)
