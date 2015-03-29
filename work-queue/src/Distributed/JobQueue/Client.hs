@@ -214,11 +214,12 @@ prepareRequest
     -> (RequestInfo, ByteString)
 prepareRequest config request _ = (ri, encoded)
   where
-    jrRequestType = fromTypeRep (typeRep (Proxy :: Proxy request))
-    jrResponseType = fromTypeRep (typeRep (Proxy :: Proxy response))
-    jrBody = toStrict (encode request)
-    encoded = toStrict (encode JobRequest {..})
     ri = requestInfo (clientBackchannelId config) encoded
+    encoded = toStrict $ encode JobRequest
+        { jrRequestType = fromTypeRep (typeRep (Proxy :: Proxy request))
+        , jrResponseType = fromTypeRep (typeRep (Proxy :: Proxy response))
+        , jrBody = toStrict (encode request)
+        }
 
 -- Internal function to send a request without checking redis for an
 -- existing response.

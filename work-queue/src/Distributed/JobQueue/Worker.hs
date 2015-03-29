@@ -87,7 +87,7 @@ defaultWorkerConfig prefix ci hostname = WorkerConfig
     , workerMasterLocalSlaves = 1
     }
 
--- | Internal datatype used by 'jobQueueWorker'
+-- | Internal datatype used by 'jobQueueWorker'.
 data SubscribeOrCheck
     -- | When 'loop' doesn't find any work, it's called again using
     -- this constructor as its argument.  When this happens, it will
