@@ -77,10 +77,14 @@ responseChannel :: RedisInfo -> BackchannelId -> Channel
 responseChannel r k =
     Channel $ redisKeyPrefix r <> "responses:" <> unBackchannelId k
 
--- | Given a 'WorkerId', computes the name of a list which holds the
+-- | Given a 'WorkerId', computes the name of a redis key which usually contains a list.  This list holds the
 -- items the worker is currently working on.
-activeKey :: RedisInfo -> WorkerId -> LKey
-activeKey r k = LKey $ Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
+
+--
+-- See the documentation for 'Distributed.RedisQueue.HeartbeatFailure'
+-- for more information on why
+activeKey :: RedisInfo -> WorkerId -> Key
+activeKey r k = Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
 
 -- * Redis utilities
 

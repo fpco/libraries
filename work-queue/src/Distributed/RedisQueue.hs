@@ -37,7 +37,6 @@
 module Distributed.RedisQueue
     ( RedisInfo(..), RequestInfo(..)
     , RequestId(..), BackchannelId(..), WorkerId(..)
-    , RequestMissing(..)
     , withRedis
     -- * Request API used by clients
     , requestInfo
@@ -46,6 +45,7 @@ module Distributed.RedisQueue
     , clearResponse
     , subscribeToResponses
     -- * Compute API used by workers
+    , PopRequestResult(..)
     , popRequest
     , sendResponse
     ) where
@@ -53,7 +53,7 @@ module Distributed.RedisQueue
 import           ClassyPrelude
 import           Control.Monad.Logger (MonadLogger, logWarnS)
 import qualified Crypto.Hash.SHA1 as SHA1
-import           Data.Binary (Binary, encode)
+import           Data.Binary (encode)
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Distributed.RedisQueue.Internal
 import           FP.Redis
@@ -89,31 +89,54 @@ pushRequest r expiry info request = do
     let encoded = toStrict (encode info)
     run_ r $ lpush (requestsKey r) (encoded :| [])
 
+-- | Result value of 'popRequest'.
+data PopRequestResult
+    -- | Returned when 'popRequest' successfully retrieved some data.
+    = RequestAvailable RequestInfo ByteString
+    -- | Returned when there isn't a request to fetch.
+    | NoRequestAvailable
+    -- | Returned when 'popRequest' got a request but couldn't find
+    -- the request data. This probably means that it expired in redis.
+    | RequestMissing RequestInfo
+    -- | Returned when the the worker failed its heartbeat.  This
+    -- occurs when the worker's 'activeKey' contains the string value
+    -- @"HeartbeatFailure"@ rather than a list of requests.  This is
+    -- done to prevent a worker which isn't considered to be alive
+    -- from popping data.
+    | HeartbeatFailure
+
 -- | This function is used by the compute workers to take work off of
--- the queue.  When work is taken off the queue, it also gets moved to
--- an active queue specific to the worker, atomically.  This is done
--- so that in the event of server failure, the work items can be
+-- the queue.  When work is taken off the queue, it gets atomically
+-- moved to 'activeKey', a list of the worker's active items.  This is
+-- done so that in the event of server failure, the work items can be
 -- re-enqueued.
---
--- If there isn't any work available, 'Nothing' is returned.
---
--- If the request data is missing, then 'RequestMissing' is thrown.
 popRequest
     :: MonadCommand m
     => RedisInfo
     -> WorkerId
-    -> m (Maybe (RequestInfo, ByteString))
+    -> m PopRequestResult
 popRequest r wid = do
-    mreq <- run r $ rpoplpush (requestsKey r) (activeKey r wid)
+    mreq <- try $ run r $ rpoplpush (requestsKey r) (LKey (activeKey r wid))
     case mreq of
-        Nothing -> return Nothing
-        Just bs -> do
+        Left ex@(CommandException (isPrefixOf "WRONGTYPE" -> True)) -> do
+            -- While it's rather unlikely that this happens without it
+            -- being a HeartbeatFailure, check anyway, so that we
+            -- don't mask some unrelated issue.
+            val <- run r $ get (VKey (activeKey r wid))
+            if val == Just "HeartbeatFailure"
+                then return HeartbeatFailure
+                else liftIO $ throwIO ex
+        Left ex ->
+            liftIO $ throwIO ex
+        Right Nothing ->
+            return NoRequestAvailable
+        Right (Just bs) -> do
             info <- decodeOrThrow "popRequest" bs
             let k = riRequest info
             mx <- run r $ get (requestDataKey r k)
             case mx of
-                Nothing -> liftIO $ throwIO (RequestMissing k)
-                Just x -> return (Just (info, x))
+                Nothing -> return (RequestMissing info)
+                Just x -> return (RequestAvailable info x)
 
 -- | Send a response for a particular request.  This is done by the
 -- compute workers once they're done with the computation, and have
@@ -134,15 +157,17 @@ sendResponse r expiry wid ri x = do
     run_ r $ publish (responseChannel r (riBackchannel ri)) (unRequestId k)
     -- Remove the RequestId associated with this response, from the
     -- list of in-progress requests.
-    let ak = activeKey r wid
-    removed <- run r $ lrem ak 1 (toStrict (encode ri))
-    when (removed /= 1) $ $logWarnS "RedisQueue" $
-        tshow k <>
-        " isn't a member of active queue (" <>
-        tshow ak <>
-        "), likely indicating that a heartbeat failure happened, causing\
-        \ it to be erroneously re-enqueued.  This doesn't affect\
-        \ correctness, but could mean that redundant work is performed."
+    let ak = LKey (activeKey r wid)
+    removed <- try $ run r $ lrem ak 1 (toStrict (encode ri))
+    case removed :: Either RedisException Int64 of
+        Right 1 -> return ()
+        _ -> $logWarnS "RedisQueue" $
+            tshow k <>
+            " isn't a member of active queue (" <>
+            tshow ak <>
+            "), likely indicating that a heartbeat failure happened, causing\
+            \ it to be erroneously re-enqueued.  This doesn't affect\
+            \ correctness, but could mean that redundant work is performed."
     -- Remove the request data, as it's no longer needed.  We don't
     -- check if the removal succeeds, as this may not be the first
     -- time a response is sent for the request.  See the error message
@@ -177,11 +202,3 @@ subscribeToResponses r bid subscribed f = do
     withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $
         trackSubscriptionStatus subscribed $ \_ k ->
             f (RequestId k)
-
--- * Exceptions
-
-data RequestMissing = RequestMissing RequestId
-    deriving (Eq, Show, Typeable, Generic)
-
-instance Exception RequestMissing
-instance Binary RequestMissing

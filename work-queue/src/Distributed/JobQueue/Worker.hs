@@ -34,7 +34,7 @@ import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
 import Data.WorkQueue
-import Distributed.JobQueue.Heartbeat (sendHeartbeats)
+import Distributed.JobQueue.Heartbeat
 import Distributed.JobQueue.Shared
 import Distributed.RedisQueue
 import Distributed.RedisQueue.Internal
@@ -155,8 +155,9 @@ jobQueueWorker
     -> m ()
 jobQueueWorker config calc inner = do
   wid <- liftIO getWorkerId
-  let name = "worker-" ++
-          filter (`notElem` ['\\', '/', '.', '\"']) (tshow (unWorkerId wid))
+  let name = "worker-" ++ omap replaceChar (tshow (unWorkerId wid))
+      replaceChar c | c `elem` ['\\', '/', '.', '\"'] = '_'
+      replaceChar c = c
   withLogTag (LogTag name) $ withRedis' config $ \redis -> do
     -- Here's how this works:
     --
@@ -193,21 +194,43 @@ jobQueueWorker config calc inner = do
                     -- re-entering the loop.
                     withHeartbeats $ loop CheckRequests
                 Nothing -> do
-                    -- If there isn't any slave work, then check if
-                    -- there's a request, and become a master if there
-                    -- is one.  If our server dies, then the heartbeat
-                    -- code will re-enqueue the request.
-                    mreq <- popRequest redis wid
-                    case (mreq, soc) of
-                        (Just req, _) -> do
+                    -- There isn't any slave work, so instead check if
+                    -- there's a job request, and become a master if
+                    -- there is one.  If our server dies, then the
+                    -- heartbeat code will re-enqueue the request.
+                    prr <- popRequest redis wid
+                    case prr of
+                        RequestAvailable ri req -> do
                             unsubscribeToRequests soc
-                            becomeMaster req
+                            becomeMaster (ri, req)
                             loop CheckRequests heartbeatThread
-                        (Nothing, CheckRequests) ->
-                            flip loop heartbeatThread =<< subscribeToRequests
-                        (Nothing, SubscribeToRequests notified _) -> do
-                            takeMVar notified
+                        NoRequestAvailable -> case soc of
+                            -- If we weren't subscribed to
+                            -- 'requestChannel', then the next
+                            -- iteration should be subscribed.
+                            CheckRequests -> do
+                                soc' <- subscribeToRequests
+                                loop soc' heartbeatThread
+                            -- If we are subscribed to 'requestChannel',
+                            -- then block waiting for a notification.
+                            SubscribeToRequests notified _ -> do
+                                takeMVar notified
+                                loop soc heartbeatThread
+                        -- Let the client know about missing requests.
+                        RequestMissing ri -> do
+                            send ri (Left (RequestMissingException (riRequest ri)))
                             loop soc heartbeatThread
+                        -- Recover in circumstances where this worker
+                        -- still functions, but failed to send its
+                        -- heartbeat in time.
+                        HeartbeatFailure -> do
+                            $logInfoS "JobQueue" "Recovering from heartbeat failure"
+                            recoverFromHeartbeatFailure redis wid
+                            -- Restart the heartbeat thread, which
+                            -- re-adds the worker to the list of
+                            -- active workers.
+                            liftIO $ cancel heartbeatThread
+                            withHeartbeats $ loop soc
         -- When there isn't any work, run the loop again, this time
         -- with a subscription to the channel.
         subscribeToRequests = do
@@ -277,9 +300,14 @@ jobQueueWorker config calc inner = do
                             tshow ri <> " failed with " <> tshow err
                         return (Left (wrapException err))
                     Right x -> return (Right x)
-            let expiry = workerResponseDataExpiry config
-                encoded = toStrict (encode result)
-            sendResponse redis expiry wid ri encoded
+            send ri result
+        send :: RequestInfo
+             -> Either DistributedJobQueueException response
+             -> m ()
+        send ri result = sendResponse redis expiry wid ri encoded
+          where
+            expiry = workerResponseDataExpiry config
+            encoded = toStrict (encode result)
         requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
         -- Heartbeats get their own redis connection, as this way it's

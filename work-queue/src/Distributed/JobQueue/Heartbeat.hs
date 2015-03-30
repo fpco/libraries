@@ -12,11 +12,12 @@
 module Distributed.JobQueue.Heartbeat
     ( sendHeartbeats
     , checkHeartbeats
+    , recoverFromHeartbeatFailure
     ) where
 
 import ClassyPrelude
 import Control.Concurrent.Lifted (threadDelay)
-import Control.Monad.Logger (MonadLogger, logWarnS)
+import Control.Monad.Logger (MonadLogger, logWarnS, logErrorS)
 import Data.Binary (encode)
 import Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
 import Distributed.JobQueue.Shared
@@ -25,6 +26,7 @@ import Distributed.RedisQueue.Internal
 import FP.Redis
 import FP.Redis.Mutex
 import FP.ThreadFileLogger
+import qualified Data.ByteString.Char8 as BS8
 
 -- | This periodically removes the worker's key from the set of
 -- inactive workers.  This set is periodically re-initialized and
@@ -39,8 +41,8 @@ import FP.ThreadFileLogger
 -- heartbeats.  If there's active work, then it throws
 -- 'WorkStillInProgress', but still halts the heartbeats.  When this
 -- happens, the heartbeat checker will re-enqueue the items.  The
--- occurence of this error likely indicates misuse of sendHeartbeats,
--- where it gets cancelled before work is done.
+-- occurence of this error indicates misuse of sendHeartbeats, where
+-- it gets cancelled before work is done.
 sendHeartbeats
     :: MonadConnect m => RedisInfo -> Seconds -> WorkerId -> m void
 sendHeartbeats r (Seconds ivl) wid = sender `finally` deactivate
@@ -51,8 +53,11 @@ sendHeartbeats r (Seconds ivl) wid = sender `finally` deactivate
             liftIO $ threadDelay ((fromIntegral ivl `max` 1) * 1000 * 1000)
             run_ r $ srem (heartbeatInactiveKey r) (unWorkerId wid :| [])
     deactivate = do
-        activeCount <- run r $ llen (activeKey r wid)
-        when (activeCount /= 0) $ liftIO $ throwIO (WorkStillInProgress wid)
+        activeCount <- try $ run r $ llen (LKey (activeKey r wid))
+        case activeCount :: Either RedisException Int64 of
+            Right 0 -> return ()
+            Right _ -> throwIO (WorkStillInProgress wid)
+            _ -> return ()
         run_ r $ srem (heartbeatActiveKey r) (unWorkerId wid :| [])
 
 -- | Periodically check worker heartbeats.  This uses
@@ -104,20 +109,48 @@ checkHeartbeats r ivl =
 handleWorkerFailure
     :: (MonadCommand m, MonadLogger m) => RedisInfo -> WorkerId -> m Bool
 handleWorkerFailure r wid = do
-    let k = activeKey r wid
-    requests <- run r $ lrange k 0 (-1)
-    if null requests
-        then $logWarnS "JobQueue" $ tshow wid <>
+    moved <- run r $ (eval script ks [] :: CommandRequest Int64)
+    case moved of
+        0 -> $logWarnS "JobQueue" $ tshow wid <>
             " failed its heartbeat, but didn't have items to re-enqueue."
-        else $logWarnS "JobQueue" $ tshow wid <>
+        1 -> $logWarnS "JobQueue" $ tshow wid <>
             " failed its heartbeat.  Re-enqueuing its items."
-    mapM_ (run_ r . rpush (requestsKey r)) (nonEmpty requests)
-    -- Delete the active list after re-enquing is successful.
-    -- This way, we can't lose data.
-    run_ r $ del (unLKey (activeKey r wid) :| [])
-    return $ isJust (nonEmpty requests)
+        _ -> $logErrorS "JobQueue" $ unwords
+            [ tshow wid
+            , "failed its heartbeat.  Re-enqueing its items."
+            , "It had more than one item on its work-queue.  This is"
+            , "unexpected, and may indicate a bug."
+            ]
+    return (moved > 0)
+  where
+    ks = [activeKey r wid, unLKey (requestsKey r)]
+    -- NOTE: In order to handle moving many requests, this script
+    -- should probaly work around the limits of lua 'unpack'. This is
+    -- fine for now, because we should only have at most one item in
+    -- the active work queue.
+    --
+    -- See this older implementation, which I believe handles this,
+    -- but is more complicated as a result:
+    --
+    -- https://github.com/fpco/libraries/blob/9b078aff00aab0a0ee30d33a3ffd9e3f5c869531/work-queue/src/Distributed/RedisQueue.hs#L349
+    script = BS8.unlines
+        [ "local xs = redis.call('lrange', KEYS[1], 0, -1)"
+        , "local len = table.getn(xs)"
+        , "if len > 0 then"
+        , "    redis.call('rpush', KEYS[2], unpack(xs))"
+        , "    redis.call('del', KEYS[1])"
+        , "    redis.call('set', KEYS[1], 'HeartbeatFailure')"
+        , "end"
+        , "return len"
+        ]
 
-
+-- | This is called by a worker when it still functions, despite its
+-- work items being re-enqueued after heartbeat failure.  It should
+-- only be called when we can ensure that we won't enqueue any items
+-- on the list stored at 'activeKey' until the heartbeats are being
+-- sent.
+recoverFromHeartbeatFailure :: MonadCommand m => RedisInfo -> WorkerId -> m ()
+recoverFromHeartbeatFailure r wid = run_ r $ del (activeKey r wid :| [])
 
 -- * Functions to compute Redis keys
 

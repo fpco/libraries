@@ -83,5 +83,4 @@ wrapException ex =
     case ex of
         (fromException -> Just err) -> err
         (fromException -> Just err) -> NetworkMessageException err
-        (fromException -> Just (RequestMissing k)) -> RequestMissingException k
         _ -> OtherException (tshow (typeOf ex)) (tshow ex)
