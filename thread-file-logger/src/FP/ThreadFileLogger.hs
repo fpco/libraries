@@ -76,20 +76,20 @@ runThreadFileLoggingT l = l `runLoggingT` output
         mlogFunc <- getLogFunc
         (fromMaybe defaultLogFunc mlogFunc) loc src lvl msg
 
-internalInfo :: MonadBase IO m => Bool -> LogTag -> Text -> m ()
-internalInfo omitIfInitial tag = liftBase . logFunc . toLogStr
+internalInfo :: MonadBase IO m => LogTag -> Text -> m ()
+internalInfo tag = liftBase . logFunc . toLogStr
   where
-    logFunc = defaultLogFunc' omitIfInitial tag defaultLoc "ThreadFileLogger" LevelInfo
+    logFunc = defaultLogFunc' tag defaultLoc "ThreadFileLogger" LevelInfo
 
 defaultLogFunc :: LogFunc
 defaultLogFunc loc src lvl msg = do
     logTag <- getLogTag
-    defaultLogFunc' False logTag loc src lvl msg
+    defaultLogFunc' logTag loc src lvl msg
 
-defaultLogFunc' :: Bool -> LogTag -> LogFunc
-defaultLogFunc' omitIfInitial tag loc src lvl msg = do
+defaultLogFunc' :: LogTag -> LogFunc
+defaultLogFunc' tag loc src lvl msg = do
     pid <- getProcessID
-    mh <- getLogHandle omitIfInitial (fpFromText ("logs/" ++ tshow pid ++ "-" ++ unLogTag tag))
+    mh <- getLogHandle (fpFromText ("logs/" ++ tshow pid ++ "-" ++ unLogTag tag))
     forM_ mh $ \h -> do
         now <- getCurrentTime
         hPut h $ fromLogStr $
@@ -105,14 +105,13 @@ logNest (LogTag tag) f = do
     -- TODO: this is a bit inefficient - redundant lookups.
     mold <- lookupRefMap globalLogTags =<< myThreadId
     let new = LogTag $ maybe tag (\(LogTag old) -> old <> "-" <> tag) mold
-    -- FIXME: this logging is squirrely
-    -- old <- maybe defaultLogTag return mold
-    -- internalInfo True old $ "Switching log to " <> unLogTag new
+    old <- maybe defaultLogTag return mold
+    internalInfo old $ "Switching log to " <> unLogTag new
     result <- (setLogTag new >> f) `catchAny` \(ex :: SomeException) -> do
-        internalInfo False new ("logNest caught exception: " <> tshow ex)
+        internalInfo new ("logNest " ++ tshow new ++ " caught exception: " <> tshow ex)
             `onException` liftBase (throwIO ex)
         liftBase (throwIO ex)
-    -- internalInfo True old $ "Returned from " <> unLogTag new
+    internalInfo old $ "Returned from " <> unLogTag new
     return result
 
 getLogTag :: MonadBase IO m => m LogTag
@@ -184,28 +183,19 @@ globalFileMap :: IORef (Map FilePath Handle)
 globalFileMap = unsafePerformIO (newIORef mempty)
 {-# NOINLINE globalFileMap #-}
 
--- When the 'Bool' is 'True', this indicates that the file shouldn't
--- be newly opened.  When this is 'True' and no the file hasn't been
--- newly opened, then 'Nothing' is returned.
---
--- NOTE: If, in the future, we hClose handles, we shouldn't clear the
--- record of the fact that we already wrote to them.
-getLogHandle :: Bool -> FilePath -> IO (Maybe Handle)
-getLogHandle omitIfInitial fp = returnHandleOr $ do
+getLogHandle :: FilePath -> IO (Maybe Handle)
+getLogHandle fp = returnHandleOr $ do
     liftBase $ createDirectoryIfMissing True (fpToString (directory fp))
-    if omitIfInitial
-        then return Nothing
-        else do
-            eres <- tryAny $ openFile (fpToString fp) AppendMode
-            case eres of
-                -- Since the file open succeeded, the handle really
-                -- shouldn't be in the map.
-                Right h -> do
-                    insertRefMap globalFileMap fp h
-                    return (Just h)
-                -- File may have been opened by a different thread,
-                -- concurrently.
-                Left err -> returnHandleOr $ liftBase $ throwIO err
+    eres <- tryAny $ openFile (fpToString fp) AppendMode
+    case eres of
+        -- Since the file open succeeded, the handle really
+        -- shouldn't be in the map.
+        Right h -> do
+            insertRefMap globalFileMap fp h
+            return (Just h)
+        -- File may have been opened by a different thread,
+        -- concurrently.
+        Left err -> returnHandleOr $ liftBase $ throwIO err
   where
     returnHandleOr :: IO (Maybe Handle) -> IO (Maybe Handle)
     returnHandleOr f =
