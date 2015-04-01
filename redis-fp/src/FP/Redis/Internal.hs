@@ -56,8 +56,11 @@ commandToRequestPair (CommandRequest command) = do
                 Error msg -> liftIO (throwM (CommandException msg))
                 _ -> case decodeResponse resp of
                     Just result -> return result
-                    Nothing -> throwM DecodeResponseException
-    return (DList.singleton (command (const (putMVar respMVar))), liftIO getResponse)
+                    Nothing -> throwM $ DecodeResponseException
+                        (Builder.toByteString $ requestBuilder request)
+                        resp
+        request = command (const (putMVar respMVar))
+    return (DList.singleton request, liftIO getResponse)
 commandToRequestPair (CommandPure val) =
     return (DList.empty, return val)
 commandToRequestPair (CommandAp a b) = do

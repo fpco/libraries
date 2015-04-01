@@ -177,11 +177,8 @@ connect cinfo = do
         yieldReqs reqs = do
             logDebugNS logSource
                        ("reqSource: yielding: " ++
-                        tshow (map (Builder.toByteString . builder) reqs))
-            yield (concatMap builder reqs ++ Builder.flush)
-        builder req = case req of
-            Command c _ -> c
-            Subscription c -> c
+                        tshow (map (Builder.toByteString . requestBuilder) reqs))
+            yield (concatMap requestBuilder reqs ++ Builder.flush)
 
     respSink :: PendingResponseQueue -> Sink (PositionRange, Response) m ()
     respSink pendingRespQueue = loop Normal

@@ -152,9 +152,11 @@ instance Applicative CommandRequest where
     (<*>) = CommandAp
 
 -- | A request to Redis
-data Request = Command !Builder ResponseCallback
+data Request = Command { requestBuilder :: !Builder
+                       , requestCallback :: ResponseCallback
+                       }
                   -- ^ A normal command request that expects a response
-             | Subscription !Builder
+             | Subscription { requestBuilder :: !Builder }
                   -- ^ A subscription request
     deriving (Typeable, Generic)
 
@@ -274,11 +276,18 @@ data Response = SimpleString ByteString
     deriving (Eq, Show, Ord, Data, Typeable, Generic)
 
 -- | Exceptions thrown by Redis connection.
-data RedisException = ConnectionFailedException SomeException -- ^ Unable to connect to server
-                    | DisconnectedException -- ^ Unexpected disconnection from server
-                    | ProtocolException -- ^ Invalid data received for protocol
-                    | CommandException ByteString -- ^ The server reported an error for your command
-                    | DecodeResponseException -- ^ Response couldn't decoded to desired type
+data RedisException = ConnectionFailedException SomeException
+                    -- ^ Unable to connect to server
+                    | DisconnectedException
+                    -- ^ Unexpected disconnection from server
+                    | ProtocolException
+                    -- ^ Invalid data received for protocol
+                    | CommandException ByteString
+                    -- ^ The server reported an error for your command
+                    | DecodeResponseException ByteString Response
+                    -- ^ Response couldn't decoded to desired type.
+                    -- The bytestring is the request which caused the
+                    -- decoding error.
     deriving (Show, Typeable, Generic)
 
 instance Exception RedisException
