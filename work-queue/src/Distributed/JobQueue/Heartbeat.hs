@@ -17,7 +17,7 @@ module Distributed.JobQueue.Heartbeat
 
 import ClassyPrelude
 import Control.Concurrent.Lifted (threadDelay)
-import Control.Monad.Logger (MonadLogger, logWarnS, logErrorS)
+import Control.Monad.Logger (MonadLogger, logInfoS, logWarnS, logErrorS)
 import Data.Binary (encode)
 import Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
 import Distributed.JobQueue.Shared
@@ -87,8 +87,9 @@ checkHeartbeats r ivl =
                 when reenquedSome $ notifyRequestAvailable r
                 return inactive
             else do
-                $logWarnS "JobQueue" $
-                    "Last heartbeat failed (or this is the first)"
+                if isJust functioning
+                    then $logWarnS "JobQueue" "Last heartbeat check failed"
+                    else $logInfoS "JobQueue" "First heartbeat check"
                 -- The reasoning here is that if the last heartbeat
                 -- check failed, it might have enqueued requests.  We
                 -- check if there are any, and if so, send a
