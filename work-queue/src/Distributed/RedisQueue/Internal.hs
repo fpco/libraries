@@ -94,8 +94,13 @@ activeKey r k = Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
 withRedis
     :: MonadConnect m
     => ByteString -> ConnectInfo -> (RedisInfo -> m a) -> m a
-withRedis redisKeyPrefix redisConnectInfo f =
+withRedis redisKeyPrefix ci f =
     withConnection redisConnectInfo $ \redisConnection -> f RedisInfo {..}
+  where
+    redisConnectInfo = ci
+        { connectRequestsPerBatch = 1
+        , connectMaxPendingResponses = 1
+        }
 
 -- | Convenience function to run a redis command.
 run :: MonadCommand m => RedisInfo -> CommandRequest a -> m a
