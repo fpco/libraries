@@ -36,6 +36,7 @@ library
                      , classy-prelude
                      , lifted-base
                      , monad-control
+                     , retry
                      , stm
                      , streaming-commons
                      , text

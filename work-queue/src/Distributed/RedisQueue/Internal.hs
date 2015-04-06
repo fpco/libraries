@@ -13,6 +13,7 @@
 module Distributed.RedisQueue.Internal where
 
 import ClassyPrelude
+import Control.Retry (limitRetries, constantDelay)
 import Data.Binary (Binary, decodeOrFail)
 import Data.Typeable (Proxy(..), typeRep)
 import FP.Redis
@@ -100,7 +101,10 @@ withRedis redisKeyPrefix ci f =
     redisConnectInfo = ci
         { connectRequestsPerBatch = 1
         , connectMaxPendingResponses = 1
+        , connectRetryPolicy = Just retryPolicy
         }
+    retryPolicy = fromMaybe defaultRetry (connectRetryPolicy ci)
+    defaultRetry = limitRetries 10 ++ constantDelay (1000 * 1000)
 
 -- | Convenience function to run a redis command.
 run :: MonadCommand m => RedisInfo -> CommandRequest a -> m a
