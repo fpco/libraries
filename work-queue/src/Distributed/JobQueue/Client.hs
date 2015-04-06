@@ -136,7 +136,7 @@ jobQueueClient config cvs redis = do
         forM_ mhandler $ \handler -> do
             mresponse <- readResponse redis rid
             case mresponse of
-                Nothing -> liftIO $ throwIO (ResponseMissingException rid)
+                Nothing -> handler (Left (ResponseMissingException rid))
                 Just response ->
                     decodeOrThrow "jobQueueClient" response >>=
                     handler
