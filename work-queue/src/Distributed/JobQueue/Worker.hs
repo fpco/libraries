@@ -262,14 +262,18 @@ jobQueueWorker config calc inner = do
             let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
             eres <- try $ runSlave settings nmSettings (\() -> calc)
             case eres of
-                Right () -> return ()
                 -- This indicates that the slave couldn't connect.
-                Left (IOError { ioe_type = NoSuchThing }) ->
+                Left err@(IOError {}) ->
                     $logInfoS "JobQueue" $
                         "Failed to connect to master, with " <>
                         tshow mci <>
-                        ".  This probably isn't an issue - the master likely already finished or died."
-                Left err -> liftIO $ throwIO err
+                        ".  This probably isn't an issue - the master likely " <>
+                        "already finished or died.  Here's the exception: " <>
+                        tshow err
+                Right (Right ()) -> return ()
+                Right (Left err) -> do
+                    $logErrorS "JobQueue" $ "Slave threw exception: " ++ tshow err
+                    liftIO $ throwIO err
         becomeMaster :: (RequestInfo, ByteString) -> m ()
         becomeMaster (ri, req) = do
             $logInfoS "JobQueue" (tshow wid ++ " becoming master")
