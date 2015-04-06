@@ -155,7 +155,7 @@ forkMasterSlave which = do
             slavePids <- readIORef slavesRef
             case (useForkIO, mmasterPid) of
                 (False, Just masterPid) -> do
-                    when (checkMasterRan config && masterPid `onotElem` seenPids) $
+                    when (checkMasterRan config && masterPid `notElem` seenPids) $
                         fail "Master never ran"
                     when (checkAllSlavesRan config) $
                         sort (delete masterPid seenPids) `shouldBe` sort slavePids
