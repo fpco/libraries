@@ -5,6 +5,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module FP.ThreadFileLogger
     -- The other definitions in this file could be useful, and would
@@ -13,18 +14,26 @@ module FP.ThreadFileLogger
     ( LogTag(..)
     , runThreadFileLoggingT
     , logNest
+    , logExceptions
     , getLogTag
     , setLogTag
     , withLogTag
     , filterThreadLogger
+    , logIO
+    , logIODebugS
+    , logIOInfoS
+    , logIOWarnS
+    , logIOErrorS
+    , logIOOtherS
     ) where
 
-import ClassyPrelude
+import ClassyPrelude hiding (catch)
 import Control.Concurrent.Lifted (ThreadId, myThreadId)
 import Control.Monad.Base (MonadBase(liftBase))
-import Control.Monad.Logger (LogSource, LogLevel(LevelInfo), LoggingT, runLoggingT, defaultLogStr, runStdoutLoggingT)
-import Control.Monad.Trans.Control (MonadBaseControl)
-import Language.Haskell.TH (Loc(..))
+import Control.Monad.Logger (LogSource, LogLevel(LevelInfo), LoggingT, runLoggingT, defaultLogStr, runStdoutLoggingT, logDebugS, logInfoS, logWarnS, logErrorS, logOtherS)
+import Control.Monad.Trans.Control (MonadBaseControl, control)
+import Control.Exception (catch)
+import Language.Haskell.TH (Loc(..), Q, Exp)
 import System.Directory (createDirectoryIfMissing)
 import System.IO (IOMode(AppendMode), openFile, hFlush)
 import System.IO.Unsafe (unsafePerformIO)
@@ -46,8 +55,11 @@ newtype LogTag = LogTag { unLogTag :: Text }
 runThreadFileLoggingT :: (MonadBaseControl IO m, MonadIO m) => LoggingT m a -> m a
 runThreadFileLoggingT = runStdoutLoggingT
 
-logNest :: (MonadBaseControl IO m, MonadIO m) => LogTag -> m a -> m a
+logNest :: MonadBaseControl IO m => LogTag -> m a -> m a
 logNest _ = id
+
+logExceptions :: MonadBaseControl IO m => Text -> m a -> m a
+logExceptions _ = id
 
 getLogTag :: MonadBase IO m => m LogTag
 getLogTag = return $ LogTag "ThreadFileLogger disabled"
@@ -62,6 +74,9 @@ filterThreadLogger
     :: MonadBaseControl IO m
     => (LogSource -> LogLevel -> Bool) -> m a -> m a
 filterThreadLogger _ = id
+
+logIO :: MonadBase IO m => LoggingT IO a -> m a
+logIO = liftBase . runStdoutLoggingT
 
 #else
 
@@ -100,25 +115,37 @@ defaultLogFunc' tag loc src lvl msg = do
 defaultLoc :: Loc
 defaultLoc = Loc "<unknown>" "<unknown>" "<unknown>" (0,0) (0,0)
 
-logNest :: (MonadBaseControl IO m, MonadIO m) => LogTag -> m a -> m a
+logNest :: MonadBaseControl IO m => LogTag -> m a -> m a
 logNest (LogTag tag) f = do
     -- TODO: this is a bit inefficient - redundant lookups.
     mold <- lookupRefMap globalLogTags =<< myThreadId
     let new = LogTag $ maybe tag (\(LogTag old) -> old <> "-" <> tag) mold
     old <- maybe defaultLogTag return mold
     internalInfo old $ "Switching log to " <> unLogTag new
-    result <- (setLogTag new >> f) `catchAny` \(ex :: SomeException) -> do
-        internalInfo new ("logNest " ++ tshow new ++ " caught exception: " <> tshow ex)
-            `onException` liftBase (throwIO ex)
-        liftBase (throwIO ex)
+    result <- logExceptions' "logNest" new f
     internalInfo old $ "Returned from " <> unLogTag new
     return result
+
+logExceptions :: MonadBaseControl IO m => Text -> m a -> m a
+logExceptions src f = do
+    tag <- getLogTag
+    logExceptions' ("logExceptions " ++ src) tag f
+
+logExceptions' :: MonadBaseControl IO m => Text -> LogTag -> m a -> m a
+logExceptions' prefix tag f = control $ \restore ->
+    (restore $ setLogTag tag >> f) `catch` \(ex :: SomeException) -> do
+         let msg = prefix ++ " " ++ unLogTag tag ++ " caught exception: " <> tshow ex
+         internalInfo tag msg `onException` throwIO ex
+         throwIO ex
 
 getLogTag :: MonadBase IO m => m LogTag
 getLogTag =
     myThreadId >>=
     lookupRefMap globalLogTags >>=
     maybe defaultLogTag return
+
+defaultLogTag :: MonadBase IO m => m LogTag
+defaultLogTag = LogTag . tshow <$> myThreadId
 
 setLogTag :: MonadBase IO m => LogTag -> m ()
 setLogTag tag = do
@@ -142,8 +169,8 @@ filterThreadLogger p = modifyLogFunc (applyFiltering . fromMaybe defaultLogFunc)
     applyFiltering f loc src lvl msg =
         when (p src lvl) $ f loc src lvl msg
 
-defaultLogTag :: MonadBase IO m => m LogTag
-defaultLogTag = LogTag . tshow <$> myThreadId
+logIO :: MonadBase IO m => LoggingT IO a -> m a
+logIO f = liftBase . runLoggingT f . fromMaybe defaultLogFunc =<< getLogFunc
 
 -- Global map of ThreadId to logging functions.  These functions will
 -- be invoked when 'runThreadFileLoggingT' is used.
@@ -228,3 +255,20 @@ modifyRefMap ref f k =
          in (mp', mx)
 
 #endif
+
+-- Utilities for debugging without explicit MonadLogger
+
+logIODebugS :: Q Exp
+logIODebugS = [|\a b -> logIO ($(logDebugS) a b) |]
+
+logIOInfoS :: Q Exp
+logIOInfoS = [|\a b -> logIO ($(logInfoS) a b) |]
+
+logIOWarnS :: Q Exp
+logIOWarnS = [|\a b -> logIO ($(logWarnS) a b) |]
+
+logIOErrorS :: Q Exp
+logIOErrorS = [|\a b -> logIO ($(logErrorS) a b) |]
+
+logIOOtherS :: Q Exp
+logIOOtherS = [|\a b c -> logIO ($(logOtherS) a b c) |]
