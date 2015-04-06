@@ -187,7 +187,9 @@ jobQueueWorker config calc inner = do
                 Just slave -> do
                     unsubscribeToRequests soc
                     -- Now that we're a slave, doing a heartbeat check
-                    -- is no longer necessary, so kill that thread.
+                    -- is no longer necessary, so deactivate the
+                    -- check, and kill the heartbeat thread.
+                    deactivateHeartbeats redis wid
                     liftIO $ cancel heartbeatThread
                     becomeSlave slave
                     -- Restart the heartbeats thread before

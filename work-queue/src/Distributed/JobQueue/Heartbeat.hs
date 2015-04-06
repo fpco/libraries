@@ -11,6 +11,7 @@
 -- recovery for "Distributed.RedisQueue".
 module Distributed.JobQueue.Heartbeat
     ( sendHeartbeats
+    , deactivateHeartbeats
     , checkHeartbeats
     , recoverFromHeartbeatFailure
     ) where
@@ -30,35 +31,36 @@ import qualified Data.ByteString.Char8 as BS8
 
 -- | This periodically removes the worker's key from the set of
 -- inactive workers.  This set is periodically re-initialized and
--- checked by 'checkHeartbeats'.  Note that using the same 'Seconds'
--- time interval for both of these functions will be unreliable.
+-- checked by 'checkHeartbeats'.
+--
+-- Note that using the same 'Seconds' time interval for both
+-- 'checkHeartbeats' and 'sendHeartbeats' will be unreliable.
 -- Instead, a lesser time interval should be passed to
 -- 'sendHeartbeats', to be sure that the heartbeat is seen by every
 -- iteration of 'checkHeartbeats'.
---
--- This function is cancellable.  When it receives an exception, it
--- removes the worker from the set which are actively checked via
+sendHeartbeats
+    :: MonadConnect m => RedisInfo -> Seconds -> WorkerId -> m void
+sendHeartbeats r (Seconds ivl) wid = do
+    run_ r $ sadd (heartbeatActiveKey r) (unWorkerId wid :| [])
+    forever $ do
+        liftIO $ threadDelay ((fromIntegral ivl `max` 1) * 1000 * 1000)
+        run_ r $ srem (heartbeatInactiveKey r) (unWorkerId wid :| [])
+
+-- | This removes the worker from the set which are actively checked via
 -- heartbeats.  If there's active work, then it throws
 -- 'WorkStillInProgress', but still halts the heartbeats.  When this
 -- happens, the heartbeat checker will re-enqueue the items.  The
 -- occurence of this error indicates misuse of sendHeartbeats, where
 -- it gets cancelled before work is done.
-sendHeartbeats
-    :: MonadConnect m => RedisInfo -> Seconds -> WorkerId -> m void
-sendHeartbeats r (Seconds ivl) wid = sender `finally` deactivate
-  where
-    sender = do
-        run_ r $ sadd (heartbeatActiveKey r) (unWorkerId wid :| [])
-        forever $ do
-            liftIO $ threadDelay ((fromIntegral ivl `max` 1) * 1000 * 1000)
-            run_ r $ srem (heartbeatInactiveKey r) (unWorkerId wid :| [])
-    deactivate = do
-        activeCount <- try $ run r $ llen (LKey (activeKey r wid))
-        case activeCount :: Either RedisException Int64 of
-            Right 0 -> return ()
-            Right _ -> throwIO (WorkStillInProgress wid)
-            _ -> return ()
-        run_ r $ srem (heartbeatActiveKey r) (unWorkerId wid :| [])
+deactivateHeartbeats
+    :: MonadConnect m => RedisInfo -> WorkerId -> m ()
+deactivateHeartbeats r wid = do
+    activeCount <- try $ run r $ llen (LKey (activeKey r wid))
+    case activeCount :: Either RedisException Int64 of
+        Right 0 -> return ()
+        Right _ -> throwIO (WorkStillInProgress wid)
+        _ -> return ()
+    run_ r $ srem (heartbeatActiveKey r) (unWorkerId wid :| [])
 
 -- | Periodically check worker heartbeats.  This uses
 -- 'periodicActionWrapped' to share the responsibility of checking the
