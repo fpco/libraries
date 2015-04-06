@@ -137,14 +137,19 @@ handleWorkerFailure r wid = do
     --
     -- https://github.com/fpco/libraries/blob/9b078aff00aab0a0ee30d33a3ffd9e3f5c869531/work-queue/src/Distributed/RedisQueue.hs#L349
     script = BS8.unlines
-        [ "local xs = redis.call('lrange', KEYS[1], 0, -1)"
-        , "local len = table.getn(xs)"
-        , "if len > 0 then"
-        , "    redis.call('rpush', KEYS[2], unpack(xs))"
+        [ "local xs = redis.pcall('lrange', KEYS[1], 0, -1)"
+        -- This indicates that failure was already handled.
+        , "if xs['err'] then"
+        , "    return 0"
+        , "else"
+        , "    local len = table.getn(xs)"
+        , "    if len > 0 then"
+        , "        redis.call('rpush', KEYS[2], unpack(xs))"
+        , "    end"
         , "    redis.call('del', KEYS[1])"
         , "    redis.call('set', KEYS[1], 'HeartbeatFailure')"
+        , "    return len"
         , "end"
-        , "return len"
         ]
 
 -- | This is called by a worker when it still functions, despite its
