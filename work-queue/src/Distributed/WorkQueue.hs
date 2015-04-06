@@ -4,6 +4,7 @@
 {-# LANGUAGE NoImplicitPrelude  #-}
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE ConstraintKinds  #-}
+{-# LANGUAGE TemplateHaskell  #-}
 -- | Distribute a "Data.WorkQueue" queue over a network via
 -- "Data.Streaming.NetworkMessage".
 --
@@ -27,6 +28,7 @@ import Data.Function                 (fix)
 import Data.Streaming.Network
 import Data.Streaming.NetworkMessage
 import Data.WorkQueue
+import FP.ThreadFileLogger           (logIODebugS, logExceptions)
 import Options.Applicative
 
 data ToSlave initialData payload
@@ -166,12 +168,16 @@ withMaster runApp nmSettings initial inner =
     -- connection to a slave runs 'provideWorker' to run a local
     -- worker on the master that delegates the payloads it receives to
     -- the slave.
-    server queue = runApp $ runNMApp nmSettings $ \nm -> do
+    server queue = logExceptions "server" $ runApp $ runNMApp nmSettings $ \nm -> do
+        let socket = tshow (appSockAddr (nmAppData nm))
+        $logIODebugS "withMaster" $ "Master initializing slave on " ++ socket
         nmWrite nm $ TSInit initial
         provideWorker queue $ \payload -> do
             nmWrite nm $ TSPayload payload
             nmRead nm
+        $logIODebugS "withMaster" $ "Master finalizing slave on " ++ socket
         nmWrite nm TSDone
+        $logIODebugS "withMaster" $ "Master done finalizing slave on " ++ socket
 
 -- | Run a slave to perform computations for a remote master (started with
 -- 'withMaster').
@@ -189,16 +195,21 @@ runSlave cs nmSettings calc =
     liftIO $ runTCPClient cs $ runNMApp nmSettings nmapp
   where
     nmapp nm = tryAny $ do
+        let socket = tshow (appSockAddr (nmAppData nm))
         ts0 <- nmRead nm
         case ts0 of
-            TSInit initialData -> fix $ \loop -> do
-                ts <- nmRead nm
-                case ts of
-                    TSInit _ -> throwIO UnexpectedTSInit
-                    TSPayload payload -> do
-                        calc initialData payload >>= nmWrite nm
-                        loop
-                    TSDone -> return ()
+            TSInit initialData -> do
+                $logIODebugS "runSlave" $ "Starting slave on " ++ socket
+                fix $ \loop -> do
+                    ts <- nmRead nm
+                    case ts of
+                        TSInit _ -> throwIO UnexpectedTSInit
+                        TSPayload payload -> do
+                            $logIODebugS "runSlave" $ "Slave received payload on " ++ socket
+                            calc initialData payload >>= nmWrite nm
+                            loop
+                        TSDone -> return ()
+                $logIODebugS "runSlave" $ "Slave finished on " ++ socket
             TSPayload _ -> throwIO UnexpectedTSPayload
             TSDone -> throwIO UnexpectedTSDone
 
