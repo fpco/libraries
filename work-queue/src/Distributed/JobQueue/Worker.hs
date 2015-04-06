@@ -41,7 +41,7 @@ import Distributed.RedisQueue.Internal
 import Distributed.WorkQueue
 import FP.Redis
 import FP.ThreadFileLogger
-import GHC.IO.Exception (IOException(IOError), ioe_type, IOErrorType(NoSuchThing))
+import GHC.IO.Exception (IOException(IOError))
 import Network.Socket (socketPort)
 
 -- | Configuration of a 'jobQueueWorker'.
@@ -319,10 +319,10 @@ jobQueueWorker config calc inner = do
         -- Heartbeats get their own redis connection, as this way it's
         -- less likely that they'll fail due to the main redis
         -- connection transferring lots of data.
-        withHeartbeats = withAsyncLifted $
-           withLogTag (LogTag (name <> "-heartbeat")) $
-                withRedis' config $ \r ->
-                    sendHeartbeats r (workerHeartbeatSendIvl config) wid
+        withHeartbeats = do
+            let logTag = LogTag (name <> "-heartbeat")
+            withAsyncLifted $ withLogTag logTag $ withRedis' config $ \r ->
+                sendHeartbeats r (workerHeartbeatSendIvl config) wid
     withLogTag (LogTag name) $ withHeartbeats $ loop CheckRequests
 
 -- * Slave Requests

@@ -12,8 +12,8 @@
 module Distributed.JobQueue.Heartbeat
     ( sendHeartbeats
     , deactivateHeartbeats
-    , checkHeartbeats
     , recoverFromHeartbeatFailure
+    , checkHeartbeats
     ) where
 
 import ClassyPrelude
@@ -61,6 +61,14 @@ deactivateHeartbeats r wid = do
         Right _ -> throwIO (WorkStillInProgress wid)
         _ -> return ()
     run_ r $ srem (heartbeatActiveKey r) (unWorkerId wid :| [])
+
+-- | This is called by a worker when it still functions, despite its
+-- work items being re-enqueued after heartbeat failure.  It should
+-- only be called when we can ensure that we won't enqueue any items
+-- on the list stored at 'activeKey' until the heartbeats are being
+-- sent.
+recoverFromHeartbeatFailure :: MonadCommand m => RedisInfo -> WorkerId -> m ()
+recoverFromHeartbeatFailure r wid = run_ r $ del (activeKey r wid :| [])
 
 -- | Periodically check worker heartbeats.  This uses
 -- 'periodicActionWrapped' to share the responsibility of checking the
@@ -151,14 +159,6 @@ handleWorkerFailure r wid = do
         , "    return len"
         , "end"
         ]
-
--- | This is called by a worker when it still functions, despite its
--- work items being re-enqueued after heartbeat failure.  It should
--- only be called when we can ensure that we won't enqueue any items
--- on the list stored at 'activeKey' until the heartbeats are being
--- sent.
-recoverFromHeartbeatFailure :: MonadCommand m => RedisInfo -> WorkerId -> m ()
-recoverFromHeartbeatFailure r wid = run_ r $ del (activeKey r wid :| [])
 
 -- * Functions to compute Redis keys
 
