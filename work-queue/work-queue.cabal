@@ -99,7 +99,6 @@ executable hpc-example-redis
   build-depends:       base
                      , redis-fp
                      , work-queue
-                     , binary
                      , split
                      , stm
                      , bytestring

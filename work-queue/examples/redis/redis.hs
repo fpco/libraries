@@ -5,7 +5,6 @@ module Main where
 
 import ClassyPrelude
 import Control.Monad.Logger (runStdoutLoggingT)
-import Data.Binary (decode)
 import Data.Bits (xor, zeroBits)
 import Data.List.NonEmpty (nonEmpty)
 import Data.List.Split (chunksOf)
@@ -32,10 +31,9 @@ dispatcher = do
              -- Push a single set of work requests.
              let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
              response <- jobQueueRequest config cvs redis workItems
-             let result = decode (fromStrict response) :: Int
              liftIO $ do
                  putStrLn "================"
-                 putStrLn $ "Received result: " ++ tshow result
+                 putStrLn $ "Received result: " ++ tshow (response :: Int)
                  putStrLn "================"
 
 masterOrSlave :: IO ()
