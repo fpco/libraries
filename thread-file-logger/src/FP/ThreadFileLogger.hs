@@ -35,7 +35,7 @@ import Control.Monad.Trans.Control (MonadBaseControl, control)
 import Control.Exception (catch)
 import Language.Haskell.TH (Loc(..), Q, Exp)
 import System.Directory (createDirectoryIfMissing)
-import System.IO (IOMode(AppendMode), openFile, hFlush)
+import System.IO (IOMode(AppendMode), openFile, appendFile, hFlush)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Log.FastLogger (LogStr, toLogStr, fromLogStr)
 import System.Posix.Process (getProcessID)
@@ -222,7 +222,9 @@ getLogHandle fp = returnHandleOr $ do
             return (Just h)
         -- File may have been opened by a different thread,
         -- concurrently.
-        Left err -> returnHandleOr $ liftBase $ throwIO err
+        Left err -> returnHandleOr $ do
+            _ <- tryAny $ appendFile "logs/tfl-errors" ('\n' : show err)
+            return Nothing
   where
     returnHandleOr :: IO (Maybe Handle) -> IO (Maybe Handle)
     returnHandleOr f =
