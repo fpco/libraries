@@ -75,18 +75,20 @@ connect cinfo = do
       where
         clientThread' = do
             (reqQueue, pendingRespQueue) <- atomically ((,) <$> newTSQueue <*> newTSQueue)
-            let runClient :: RunInBase m IO -> IO (StM m ())
-                runClient runInIO =
+            let runClient :: m () -> RunInBase m IO -> IO (StM m ())
+                runClient resetRetries runInIO =
                     CN.runTCPClient
                         (CN.clientSettings (connectPort cinfo) (connectHost cinfo))
-                        (runInIO . app initialTag reqQueue pendingRespQueue connectionMVar)
+                        (\appData -> runInIO $ do
+                            resetRetries
+                            app initialTag reqQueue pendingRespQueue connectionMVar appData)
             case connectRetryPolicy cinfo of
                 Just retryPolicy ->
-                    forever (recovering retryPolicy
-                                        [\_ -> Handler retryHandler]
-                                        (control runClient))
+                    forever (recoveringWithReset retryPolicy
+                                                 [\_ -> Handler retryHandler]
+                                                 (control . runClient))
                 Nothing ->
-                    control runClient
+                    control (runClient (return ()))
         retryHandler :: IOException -> m Bool
         retryHandler e = do
             --TODO SHOULD: improve logging
