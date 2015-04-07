@@ -108,6 +108,7 @@ executable hpc-example-redis
                      , lifted-base
                      , unix
                      , semigroups
+                     , thread-file-logger
   ghc-options:         -Wall -threaded
 
 test-suite test

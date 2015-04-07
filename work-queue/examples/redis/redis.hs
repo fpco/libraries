@@ -5,7 +5,6 @@ module Main where
 
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
-import Control.Monad.Logger (runStdoutLoggingT)
 import Data.Bits (xor, zeroBits)
 import Data.List.NonEmpty (nonEmpty)
 import Data.List.Split (chunksOf)
@@ -13,6 +12,7 @@ import Distributed.JobQueue
 import Distributed.RedisQueue (withRedis)
 import Distributed.WorkQueue (mapQueue)
 import FP.Redis
+import FP.ThreadFileLogger
 
 main :: IO ()
 main = do
@@ -25,7 +25,7 @@ dispatcher :: IO ()
 dispatcher = do
     clearData
     let config = defaultClientConfig
-    runStdoutLoggingT $ withRedis prefix localhost $ \redis ->
+    runThreadFileLoggingT $ withRedis prefix localhost $ \redis ->
         -- Run the client heartbeat checker and back channel
         -- subscription.
         withJobQueueClient config redis $ \cvs -> do
@@ -39,7 +39,7 @@ dispatcher = do
 
 masterOrSlave :: IO ()
 masterOrSlave =
-    runStdoutLoggingT $ jobQueueWorker config calc inner
+    runThreadFileLoggingT $ jobQueueWorker config calc inner
   where
     config = defaultWorkerConfig prefix localhost "localhost"
     calc input = do
@@ -63,6 +63,6 @@ prefix = "fpco:work-queue:"
 
 clearData :: IO ()
 clearData =
-    runStdoutLoggingT $ withConnection localhost $ \redis -> do
+    runThreadFileLoggingT $ withConnection localhost $ \redis -> do
         matches <- runCommand redis $ FP.Redis.keys (prefix <> "*")
         mapM_ (runCommand_ redis . del) (nonEmpty matches)
