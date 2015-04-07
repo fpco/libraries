@@ -21,7 +21,7 @@ module Distributed.JobQueue.Worker
     ) where
 
 import ClassyPrelude
-import Control.Concurrent.Async (Async, async, link, withAsync, cancel)
+import Control.Concurrent.Async (Async, async, withAsync, cancel)
 import Control.Concurrent.STM (check)
 import Control.Monad.Logger (logErrorS, logInfoS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
@@ -245,14 +245,13 @@ jobQueueWorker config calc inner = do
             let subs = subscribe (requestChannel redis :| []) :| []
             -- FIXME: why does this logging stuff cause issues?
             -- tag <- getLogTag
-            thread <- asyncLifted $ do
+            void $ asyncLifted $ do
                 -- setLogTag tag
                 -- logNest "subscribeToRequests" $
                     withSubscriptionsExConn (redisConnectInfo redis) subs $ \conn -> do
                         writeIORef connVar conn
                         return $ trackSubscriptionStatus ready $ \_ _ ->
                             void $ tryPutMVar notified ()
-            liftIO $ link thread
             atomically $ check =<< readTVar ready
             return $ SubscribeToRequests notified connVar
         unsubscribeToRequests CheckRequests = return ()
