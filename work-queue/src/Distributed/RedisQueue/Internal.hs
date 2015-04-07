@@ -7,16 +7,24 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ViewPatterns #-}
 
 -- | Functions and types shared by "Distributed.RedisQueue" and
 -- "Distributed.JobQueue".
 module Distributed.RedisQueue.Internal where
 
 import ClassyPrelude
-import Control.Retry (limitRetries, constantDelay)
+import Control.Concurrent (forkIO)
+import Control.Monad.Catch (Handler(Handler))
+import Control.Monad.Logger (logDebugS, logErrorS)
+import Control.Retry (RetryPolicy, limitRetries, constantDelay)
 import Data.Binary (Binary, decodeOrFail)
+import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Typeable (Proxy(..), typeRep)
 import FP.Redis
+import FP.Redis.Internal (recoveringWithReset)
+import FP.ThreadFileLogger
 
 -- * Types used in the API
 
@@ -102,8 +110,44 @@ withRedis redisKeyPrefix ci f =
         , connectMaxPendingResponses = 1
         , connectRetryPolicy = Just retryPolicy
         }
-    retryPolicy = fromMaybe defaultRetry (connectRetryPolicy ci)
-    defaultRetry = limitRetries 10 ++ constantDelay (1000 * 1000)
+    retryPolicy = fromMaybe defaultRetryPolicy (connectRetryPolicy ci)
+
+-- | It invokes the @IO () -> m ()@ action every time
+-- the subscription is re-established, passing it an action which
+-- disconnects the subscription.
+--
+-- See https://github.com/fpco/libraries/issues/54 for why this needs
+-- to exist.
+withSubscription
+    :: MonadConnect m
+    => RedisInfo
+    -> Channel
+    -> (IO () -> m ())
+    -> (ByteString -> m ())
+    -> m void
+withSubscription r chan connected f = do
+    isDisconnecting <- newIORef False
+    let subs = subscribe (chan :| []) :| []
+        ci = (redisConnectInfo r) { connectRetryPolicy = Nothing }
+        handler = Handler $ \(fromException -> ex) -> case ex of
+            Just DisconnectedException -> not <$> readIORef isDisconnecting
+            _ -> return False
+    forever $ recoveringWithReset defaultRetryPolicy [\_ -> handler] $ \resetRetries -> do
+        $logDebugS "withSubscription" ("Subscribing to " ++ tshow chan)
+        withSubscriptionsWrappedConn ci subs $ \conn -> return $ \msg ->
+            case msg of
+                Unsubscribe {} -> $logErrorS "withSubscription" "Unexpected Unsubscribe"
+                Subscribe {} -> do
+                    $logDebugS "withSubscription" ("Subscribed to " ++ tshow chan)
+                    resetRetries
+                    connected $ do
+                        writeIORef isDisconnecting True
+                        -- Disconnecting can block, so fork a thread.
+                        void $ forkIO $ disconnect conn
+                Message _ x -> f x
+
+defaultRetryPolicy :: RetryPolicy
+defaultRetryPolicy = limitRetries 10 ++ constantDelay (1000 * 1000)
 
 -- | Convenience function to run a redis command.
 run :: MonadCommand m => RedisInfo -> CommandRequest a -> m a

@@ -29,7 +29,7 @@ module Distributed.JobQueue.Client
 
 import           ClassyPrelude
 import           Control.Concurrent.Async (withAsync)
-import           Control.Monad.Logger (MonadLogger, logErrorS)
+import           Control.Monad.Logger (MonadLogger, logErrorS, logInfoS)
 import           Control.Monad.Trans.Control (control)
 import           Data.Binary (encode)
 import           Data.ConcreteTypeRep (fromTypeRep)
@@ -43,14 +43,11 @@ import           FP.Redis
 import           FP.ThreadFileLogger
 import           Focus (Decision(Remove, Replace))
 import qualified STMContainers.Map as SM
+import qualified ListT
 
 -- | Variables used by 'jobQueueClient' / 'jobQueueRequest'.
 data ClientVars m response = ClientVars
-    { clientSubscribed :: TVar Bool
-      -- ^ This is set to 'True' once the client is subscribed to its
-      -- response backchannel, and so ready to send reqeusts.
-      -- 'jobQueueRequest' blocks until this is 'True'.
-    , clientDispatch :: SM.Map RequestId (Either DistributedJobQueueException response -> m ())
+    { clientDispatch :: SM.Map RequestId (Either DistributedJobQueueException response -> m ())
       -- ^ A map between 'RequestId's and their associated handlers.
       -- 'jobQueueClient' uses this to invoke the handlers inserted by
       -- 'jobQueueRequest'.
@@ -58,9 +55,7 @@ data ClientVars m response = ClientVars
 
 -- | Create a new 'ClientVars' value.
 newClientVars :: IO (ClientVars m response)
-newClientVars = ClientVars
-    <$> newTVarIO False
-    <*> SM.newIO
+newClientVars = ClientVars <$> SM.newIO
 
 -- | Configuration used for running the client functions of job-queue.
 data ClientConfig = ClientConfig
@@ -123,10 +118,24 @@ jobQueueClient config cvs redis = do
             withLogTag (LogTag "jobQueueClient") $
             subscribeToResponses redis
                                  (clientBackchannelId config)
-                                 (clientSubscribed cvs)
+                                 handleConnect
                                  handleResponse
   where
     checker = checkHeartbeats redis (clientHeartbeatCheckIvl config)
+    -- When the subscription reconnects, check if any responses came
+    -- back in the meantime.
+    handleConnect _ = do
+        $logInfoS "jobQueueClient" "Checking for responses after (re)connect"
+        contents <- atomically $ ListT.toList $ SM.stream (clientDispatch cvs)
+        forM_ contents $ \(rid, handler) -> do
+            mresponse <- readResponse redis rid
+            case mresponse of
+                Nothing -> return ()
+                Just response -> do
+                    $logInfoS "jobQueueClient" $
+                        "Found a missed result after reconnect:" ++ tshow rid
+                    decodeOrThrow "jobQueueClient" response >>= handler
+                    atomically $ SM.delete rid (clientDispatch cvs)
     handleResponse rid = do
         -- Lookup the handler before fetching / deleting the response,
         -- as the message may get delivered to multiple clients.

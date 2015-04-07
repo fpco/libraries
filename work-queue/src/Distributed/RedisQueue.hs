@@ -190,15 +190,13 @@ readResponse
 readResponse r k = run r $ get (responseDataKey r k)
 
 -- | Subscribes to responses on the channel specified by this client's
--- 'BackchannelId'.  It changes the @subscribed@ 'TVar' to 'True' when
--- the subscription is established, and 'False' when unsubscribed.  In
--- order to be sure to receive the response, clients should wait for
--- the subscription to be established before enqueueing requests.
+-- 'BackchannelId'.  See the docs for 'withSubscription' for more info.
 subscribeToResponses
     :: MonadConnect m
-    => RedisInfo -> BackchannelId -> TVar Bool -> (RequestId -> m ()) -> m void
-subscribeToResponses r bid subscribed f = do
-    let sub = subscribe (responseChannel r bid :| [])
-    withSubscriptionsWrapped (redisConnectInfo r) (sub :| []) $
-        trackSubscriptionStatus subscribed $ \_ k ->
-            f (RequestId k)
+    => RedisInfo
+    -> BackchannelId
+    -> (IO () -> m ())
+    -> (RequestId -> m ())
+    -> m void
+subscribeToResponses r bid connected f =
+    withSubscription r (responseChannel r bid) connected $ f . RequestId

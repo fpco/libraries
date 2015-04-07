@@ -22,7 +22,6 @@ module Distributed.JobQueue.Worker
 
 import ClassyPrelude
 import Control.Concurrent.Async (Async, async, withAsync, cancel)
-import Control.Concurrent.STM (check)
 import Control.Monad.Logger (logErrorS, logInfoS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import Data.Binary (Binary, encode)
@@ -116,7 +115,7 @@ data SubscribeOrCheck
     -- before blocking, it makes one more attempt at popping work,
     -- because some work may have come in before the subscription was
     -- established.
-    = SubscribeToRequests (MVar ()) (IORef Connection)
+    = SubscribeToRequests (MVar ()) (IORef (IO ()))
     -- | This constructor indicates that 'loop' should just check for
     -- work, without subscribing to 'requestChannel'. When the worker
     -- successfully popped work last time, there's no reason to
@@ -236,27 +235,29 @@ jobQueueWorker config calc inner = do
         -- When there isn't any work, run the loop again, this time
         -- with a subscription to the channel.
         subscribeToRequests = do
-            ready <- liftIO $ newTVarIO False
+            ready <- newEmptyMVar
             notified <- newEmptyMVar
             -- This error shouldn't happen because we block on 'ready'
             -- below.  In order for 'ready' to be set to 'True', this
             -- IORef will have been set.
-            connVar <- newIORef (error "impossible: connVar not initialized.")
-            let subs = subscribe (requestChannel redis :| []) :| []
-            -- FIXME: why does this logging stuff cause issues?
-            -- tag <- getLogTag
+            disconnectVar <- newIORef (error "impossible: disconnectVar not initialized.")
+            let handleConnect dc = do
+                    writeIORef disconnectVar dc
+                    void $ tryPutMVar notified ()
+                    void $ tryPutMVar ready ()
             void $ asyncLifted $ do
-                -- setLogTag tag
-                -- logNest "subscribeToRequests" $
-                    withSubscriptionsExConn (redisConnectInfo redis) subs $ \conn -> do
-                        writeIORef connVar conn
-                        return $ trackSubscriptionStatus ready $ \_ _ ->
-                            void $ tryPutMVar notified ()
-            atomically $ check =<< readTVar ready
-            return $ SubscribeToRequests notified connVar
+                logNest "subscribeToRequests" $
+                    withSubscription redis (requestChannel redis) handleConnect $
+                        \_ -> void $ tryPutMVar notified ()
+            -- Wait for the subscription to connect
+            takeMVar ready
+            -- Eat the notification that comes from the initial
+            -- connection.
+            void $ tryTakeMVar notified
+            return $ SubscribeToRequests notified disconnectVar
         unsubscribeToRequests CheckRequests = return ()
-        unsubscribeToRequests (SubscribeToRequests _ connVar) =
-            disconnect =<< readIORef connVar
+        unsubscribeToRequests (SubscribeToRequests _ disconnectVar) =
+            liftIO =<< readIORef disconnectVar
         becomeSlave :: MasterConnectInfo -> m ()
         becomeSlave mci = do
             $logInfoS "JobQueue" (tshow wid ++ " becoming slave of " ++ tshow mci)
