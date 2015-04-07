@@ -4,6 +4,7 @@
 module Main where
 
 import ClassyPrelude
+import Control.Concurrent (threadDelay)
 import Control.Monad.Logger (runStdoutLoggingT)
 import Data.Bits (xor, zeroBits)
 import Data.List.NonEmpty (nonEmpty)
@@ -41,7 +42,9 @@ masterOrSlave =
     runStdoutLoggingT $ jobQueueWorker config calc inner
   where
     config = defaultWorkerConfig prefix localhost "localhost"
-    calc input = return $ foldl' xor zeroBits (input :: [Int])
+    calc input = do
+        threadDelay (1000 * 1000 * 2)
+        return $ foldl' xor zeroBits (input :: [Int])
     inner redis mci request queue = do
         requestSlave redis mci
         subresults <- mapQueue queue request
