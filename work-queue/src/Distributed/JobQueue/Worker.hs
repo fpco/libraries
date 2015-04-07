@@ -7,6 +7,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ExistentialQuantification #-}
 
 -- | This module provides the API used by job-queue workers.  See
 -- "Distributed.JobQueue" for more info.
@@ -28,7 +29,7 @@ import Data.Binary (Binary, encode)
 import Data.ConcreteTypeRep (fromTypeRep)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Streaming.Network (clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
-import Data.Streaming.NetworkMessage (Sendable, defaultNMSettings)
+import Data.Streaming.NetworkMessage (NMSettings, Sendable, defaultNMSettings)
 import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
@@ -107,22 +108,6 @@ defaultWorkerConfig prefix ci hostname = WorkerConfig
     , workerHeartbeatSendIvl = Seconds 15
     }
 
--- | Internal datatype used by 'jobQueueWorker'.
-data SubscribeOrCheck
-    -- | When 'loop' doesn't find any work, it's called again using
-    -- this constructor as its argument.  When this happens, it will
-    -- block on the 'MVar', waiting on the 'requestChannel'.  However,
-    -- before blocking, it makes one more attempt at popping work,
-    -- because some work may have come in before the subscription was
-    -- established.
-    = SubscribeToRequests (MVar ()) (IORef (IO ()))
-    -- | This constructor indicates that 'loop' should just check for
-    -- work, without subscribing to 'requestChannel'. When the worker
-    -- successfully popped work last time, there's no reason to
-    -- believe there isn't more work immediately available.
-    | CheckRequests
-    deriving (Typeable)
-
 -- | This runs a job queue worker.  The data that's being sent between
 -- the servers all need to be 'Sendable' so that they can be
 -- serialized, and so that agreement on types can be checked at
@@ -153,177 +138,227 @@ jobQueueWorker
     -- dispatched to the slaves.
     -> m ()
 jobQueueWorker config calc inner = do
-  wid <- liftIO getWorkerId
-  let name = "worker-" ++ omap replaceChar (tshow (unWorkerId wid))
-      replaceChar c | c `elem` ['\\', '/', '.', '\"'] = '_'
-      replaceChar c = c
-  withLogTag (LogTag name) $ withRedis' config $ \redis -> do
-    -- Here's how this works:
-    --
-    -- 1) The worker starts out as neither a slave or master.
-    --
-    -- 2) If there is a pending 'MasterConnectInfo', then it connects to
-    -- the specified master and starts working.
-    --
-    -- 3) If there is a 'JobRequest', then it becomes a master and
-    -- runs @inner@.
-    --
-    -- 4) If there are neither, then it queries for requests once
-    -- again, this time with a subscription to the 'requestsChannel'.
-    --
-    -- Not having this subscription the first time through is an
-    -- optimization - it allows us to save redis connections and save
-    -- redis the overhead of notifying many workers.  When the system
-    -- isn't saturated in work, we don't really care about
-    -- performance, and so it doesn't matter that we have so many
-    -- connections to redis + it needs to notify many workers.
-    nmSettings <- liftIO defaultNMSettings
-    let loop :: SubscribeOrCheck -> Async () -> m ()
-        loop soc heartbeatThread = do
-            -- If there's slave work to be done, then do it.
-            mslave <- popSlaveRequest redis
-            case mslave of
-                Just slave -> do
-                    unsubscribeToRequests soc
-                    -- Now that we're a slave, doing a heartbeat check
-                    -- is no longer necessary, so deactivate the
-                    -- check, and kill the heartbeat thread.
-                    deactivateHeartbeats redis wid
-                    liftIO $ cancel heartbeatThread
-                    becomeSlave slave
-                    -- Restart the heartbeats thread before
-                    -- re-entering the loop.
-                    withHeartbeats $ loop CheckRequests
-                Nothing -> do
-                    -- There isn't any slave work, so instead check if
-                    -- there's a job request, and become a master if
-                    -- there is one.  If our server dies, then the
-                    -- heartbeat code will re-enqueue the request.
-                    prr <- popRequest redis wid
-                    case prr of
-                        RequestAvailable ri req -> do
-                            unsubscribeToRequests soc
-                            becomeMaster (ri, req)
-                            loop CheckRequests heartbeatThread
-                        NoRequestAvailable -> case soc of
-                            -- If we weren't subscribed to
-                            -- 'requestChannel', then the next
-                            -- iteration should be subscribed.
-                            CheckRequests -> do
-                                soc' <- subscribeToRequests
-                                loop soc' heartbeatThread
-                            -- If we are subscribed to 'requestChannel',
-                            -- then block waiting for a notification.
-                            SubscribeToRequests notified _ -> do
-                                takeMVar notified
-                                loop soc heartbeatThread
-                        -- Let the client know about missing requests.
-                        RequestMissing ri -> do
-                            send ri (Left (RequestMissingException (riRequest ri)))
-                            loop soc heartbeatThread
-                        -- Recover in circumstances where this worker
-                        -- still functions, but failed to send its
-                        -- heartbeat in time.
-                        HeartbeatFailure -> do
-                            $logInfoS "JobQueue" "Recovering from heartbeat failure"
-                            recoverFromHeartbeatFailure redis wid
-                            -- Restart the heartbeat thread, which
-                            -- re-adds the worker to the list of
-                            -- active workers.
-                            liftIO $ cancel heartbeatThread
-                            withHeartbeats $ loop soc
-        -- When there isn't any work, run the loop again, this time
-        -- with a subscription to the channel.
-        subscribeToRequests = do
-            ready <- newEmptyMVar
-            notified <- newEmptyMVar
-            -- This error shouldn't happen because we block on 'ready'
-            -- below.  In order for 'ready' to be set to 'True', this
-            -- IORef will have been set.
-            disconnectVar <- newIORef (error "impossible: disconnectVar not initialized.")
-            let handleConnect dc = do
-                    writeIORef disconnectVar dc
-                    void $ tryPutMVar notified ()
-                    void $ tryPutMVar ready ()
-            void $ asyncLifted $ do
-                logNest "subscribeToRequests" $
-                    withSubscription redis (requestChannel redis) handleConnect $
-                        \_ -> void $ tryPutMVar notified ()
-            -- Wait for the subscription to connect
-            takeMVar ready
-            -- Eat the notification that comes from the initial
-            -- connection.
-            void $ tryTakeMVar notified
-            return $ SubscribeToRequests notified disconnectVar
-        unsubscribeToRequests CheckRequests = return ()
-        unsubscribeToRequests (SubscribeToRequests _ disconnectVar) =
-            liftIO =<< readIORef disconnectVar
-        becomeSlave :: MasterConnectInfo -> m ()
-        becomeSlave mci = do
-            $logInfoS "JobQueue" (tshow wid ++ " becoming slave of " ++ tshow mci)
-            let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
-            eres <- try $ runSlave settings nmSettings (\() -> calc)
-            case eres of
-                -- This indicates that the slave couldn't connect.
-                Left err@(IOError {}) ->
-                    $logInfoS "JobQueue" $
-                        "Failed to connect to master, with " <>
-                        tshow mci <>
-                        ".  This probably isn't an issue - the master likely " <>
-                        "already finished or died.  Here's the exception: " <>
-                        tshow err
-                Right (Right ()) -> return ()
-                Right (Left err) -> do
-                    $logErrorS "JobQueue" $ "Slave threw exception: " ++ tshow err
-                    liftIO $ throwIO err
-        becomeMaster :: (RequestInfo, ByteString) -> m ()
-        becomeMaster (ri, req) = do
-            $logInfoS "JobQueue" (tshow wid ++ " becoming master")
-            boundPort <- newEmptyMVar
-            let ss = setAfterBind
-                    (putMVar boundPort . fromIntegral <=< socketPort)
-                    (serverSettingsTCP (workerPort config) "*")
-            settings <- liftIO defaultNMSettings
-            eres <- tryAny $ withMaster (runTCPServer ss) settings () $ \queue ->
-                withLocalSlaves queue (workerMasterLocalSlaves config) calc $ do
-                    JobRequest {..} <- decodeOrThrow "jobQueueWorker" req
-                    when (jrRequestType /= requestType ||
-                          jrResponseType /= responseType) $
-                        liftIO $ throwIO TypeMismatch
-                            { expectedResponseType = responseType
-                            , actualResponseType = jrResponseType
-                            , expectedRequestType = requestType
-                            , actualRequestType = jrRequestType
-                            }
-                    decoded <- decodeOrThrow "jobQueueWorker" jrBody
-                    port <- readMVar boundPort
-                    let mci = MasterConnectInfo (workerHostName config) port
-                    liftIO $ inner redis mci decoded queue
-            result <-
-                case eres of
-                    Left err -> do
-                        $logErrorS "JobQueue" $
-                            tshow ri <> " failed with " <> tshow err
-                        return (Left (wrapException err))
-                    Right x -> return (Right x)
-            send ri result
-        send :: RequestInfo
-             -> Either DistributedJobQueueException response
-             -> m ()
-        send ri result = sendResponse redis expiry wid ri encoded
-          where
-            expiry = workerResponseDataExpiry config
-            encoded = toStrict (encode result)
-        requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
+    wid <- liftIO getWorkerId
+    let name = "worker-" ++ omap replaceChar (tshow (unWorkerId wid))
+        replaceChar c | c `elem` ['\\', '/', '.', '\"'] = '_'
+        replaceChar c = c
+    withLogTag (LogTag name) $ withRedis' config $ \redis -> do
+        nmSettings <- liftIO defaultNMSettings
+        jobQueueWorkerInternal JQWParams {..}
+
+-- Parameters for helper functions
+data JQWParams request response payload result =
+   (Sendable request, Sendable response, Sendable payload, Sendable result) =>
+   JQWParams
+       { config :: WorkerConfig
+       , calc :: payload -> IO result
+       , inner :: RedisInfo -> MasterConnectInfo -> request -> WorkQueue payload result -> IO response
+       , nmSettings :: NMSettings
+       , wid :: WorkerId
+       , name :: Text
+       , redis :: RedisInfo
+       }
+
+-- datatype used by 'jobQueueWorkerInternal'.
+data MaybeWithSubscription
+    -- | When 'loop' doesn't find any work, it's called again using
+    -- this constructor as its argument.  When this happens, it will
+    -- block on the 'MVar', waiting on the 'requestChannel'.  However,
+    -- before blocking, it makes one more attempt at popping work,
+    -- because some work may have come in before the subscription was
+    -- established.
+    = WithSubscription (MVar ()) (IORef (IO ()))
+    -- | This constructor indicates that 'loop' should just check for
+    -- work, without subscribing to 'requestChannel'. When the worker
+    -- successfully popped work last time, there's no reason to
+    -- believe there isn't more work immediately available.
+    | NoSubscription
+    deriving (Typeable)
+
+-- Here's how this works:
+--
+-- 1) The worker starts out as neither a slave or master.
+--
+-- 2) If there is a pending 'MasterConnectInfo', then it connects to
+-- the specified master and starts working.
+--
+-- 3) If there is a 'JobRequest', then it becomes a master and runs
+-- @inner@.
+--
+-- 4) If there are neither, then it queries for requests once again,
+-- this time with a subscription to the 'requestsChannel'.
+--
+-- Not having this subscription the first time through is an
+-- optimization - it allows us to save redis connections and save
+-- redis the overhead of notifying many workers.  When the system
+-- isn't saturated in work, we don't really care about performance,
+-- and so it doesn't matter that we have so many connections to redis
+-- + it needs to notify many workers.
+jobQueueWorkerInternal
+    :: forall m request response payload result. MonadConnect m
+    => JQWParams request response payload result
+    -> m ()
+jobQueueWorkerInternal jqwp@JQWParams {..} =
+    withLogTag (LogTag name) $ withHeartbeats $ loop NoSubscription
+  where
+    loop :: MaybeWithSubscription -> Async () -> m ()
+    loop mws heartbeatThread = do
+        -- If there's slave work to be done, then do it.
+        mslave <- popSlaveRequest redis
+        case mslave of
+            Just slave -> do
+                unsubscribeToRequests mws
+                -- Now that we're a slave, doing a heartbeat check is
+                -- no longer necessary, so deactivate the check, and
+                -- kill the heartbeat thread.
+                deactivateHeartbeats redis wid
+                liftIO $ cancel heartbeatThread
+                becomeSlave jqwp slave
+                -- Restart the heartbeats thread before re-entering
+                -- the loop.
+                withHeartbeats $ loop NoSubscription
+            Nothing -> do
+                -- There isn't any slave work, so instead check if
+                -- there's a job request, and become a master if there
+                -- is one.  If our server dies, then the heartbeat
+                -- code will re-enqueue the request.
+                prr <- popRequest redis wid
+                case prr of
+                    RequestAvailable ri req -> do
+                        unsubscribeToRequests mws
+                        send ri =<< becomeMaster jqwp ri req
+                        loop NoSubscription heartbeatThread
+                    NoRequestAvailable -> case mws of
+                        -- If we weren't subscribed to
+                        -- 'requestChannel', then the next iteration
+                        -- should be subscribed.
+                        NoSubscription -> do
+                            (notified, dcv) <- subscribeToRequests redis
+                            let mws' = WithSubscription notified dcv
+                            loop mws' heartbeatThread
+                        -- If we are subscribed to 'requestChannel',
+                        -- then block waiting for a notification.
+                        WithSubscription notified _ -> do
+                            takeMVar notified
+                            loop mws heartbeatThread
+                    -- Let the client know about missing requests.
+                    RequestMissing ri -> do
+                        send ri (Left (RequestMissingException (riRequest ri)))
+                        loop mws heartbeatThread
+                    -- Recover in circumstances where this worker
+                    -- still functions, but failed to send its
+                    -- heartbeat in time.
+                    HeartbeatFailure -> do
+                        $logInfoS "JobQueue" "Recovering from heartbeat failure"
+                        recoverFromHeartbeatFailure redis wid
+                        -- Restart the heartbeat thread, which re-adds
+                        -- the worker to the list of active workers.
+                        liftIO $ cancel heartbeatThread
+                        withHeartbeats $ loop mws
+    send :: RequestInfo
+         -> Either DistributedJobQueueException response
+         -> m ()
+    send ri result = sendResponse redis expiry wid ri encoded
+      where
+        expiry = workerResponseDataExpiry config
+        encoded = toStrict (encode result)
+    -- Heartbeats get their own redis connection, as this way it's
+    -- less likely that they'll fail due to the main redis connection
+    -- transferring lots of data.
+    withHeartbeats = do
+        let logTag = LogTag (name <> "-heartbeat")
+        withAsyncLifted $ withLogTag logTag $ withRedis' config $ \r ->
+            sendHeartbeats r (workerHeartbeatSendIvl config) wid
+
+becomeSlave
+    :: MonadConnect m
+    => JQWParams request response payload result
+    -> MasterConnectInfo
+    -> m ()
+becomeSlave JQWParams {..} mci = do
+    $logInfoS "JobQueue" (tshow wid ++ " becoming slave of " ++ tshow mci)
+    let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
+    eres <- try $ runSlave settings nmSettings (\() -> calc)
+    case eres of
+        -- This indicates that the slave couldn't connect.
+        Left err@(IOError {}) ->
+            $logInfoS "JobQueue" $
+                "Failed to connect to master, with " <>
+                tshow mci <>
+                ".  This probably isn't an issue - the master likely " <>
+                "already finished or died.  Here's the exception: " <>
+                tshow err
+        Right (Right ()) -> return ()
+        Right (Left err) -> do
+            $logErrorS "JobQueue" $ "Slave threw exception: " ++ tshow err
+            liftIO $ throwIO err
+
+becomeMaster
+    :: forall m request response payload result. MonadConnect m
+    => JQWParams request response payload result
+    -> RequestInfo
+    -> ByteString
+    -> m (Either DistributedJobQueueException response)
+becomeMaster JQWParams {..} ri req = do
+    $logInfoS "JobQueue" (tshow wid ++ " becoming master")
+    let requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
-        -- Heartbeats get their own redis connection, as this way it's
-        -- less likely that they'll fail due to the main redis
-        -- connection transferring lots of data.
-        withHeartbeats = do
-            let logTag = LogTag (name <> "-heartbeat")
-            withAsyncLifted $ withLogTag logTag $ withRedis' config $ \r ->
-                sendHeartbeats r (workerHeartbeatSendIvl config) wid
-    withLogTag (LogTag name) $ withHeartbeats $ loop CheckRequests
+    boundPort <- newEmptyMVar
+    let ss = setAfterBind
+            (putMVar boundPort . fromIntegral <=< socketPort)
+            (serverSettingsTCP (workerPort config) "*")
+    eres <- tryAny $ withMaster (runTCPServer ss) nmSettings () $ \queue ->
+        withLocalSlaves queue (workerMasterLocalSlaves config) calc $ do
+            JobRequest {..} <- decodeOrThrow "jobQueueWorker" req
+            when (jrRequestType /= requestType ||
+                  jrResponseType /= responseType) $
+                liftIO $ throwIO TypeMismatch
+                    { expectedResponseType = responseType
+                    , actualResponseType = jrResponseType
+                    , expectedRequestType = requestType
+                    , actualRequestType = jrRequestType
+                    }
+            decoded <- decodeOrThrow "jobQueueWorker" jrBody
+            port <- readMVar boundPort
+            let mci = MasterConnectInfo (workerHostName config) port
+            liftIO $ inner redis mci decoded queue
+    case eres of
+        Left err -> do
+            $logErrorS "JobQueue" $
+                tshow ri <> " failed with " <> tshow err
+            return (Left (wrapException err))
+        Right x -> return (Right x)
+
+subscribeToRequests
+    :: MonadConnect m
+    => RedisInfo
+    -> m (MVar (), IORef (IO ()))
+subscribeToRequests redis = do
+    ready <- newEmptyMVar
+    notified <- newEmptyMVar
+    -- This error shouldn't happen because we block on 'ready'
+    -- below.  In order for 'ready' to be set to 'True', this
+    -- IORef will have been set.
+    disconnectVar <- newIORef (error "impossible: disconnectVar not initialized.")
+    let handleConnect dc = do
+            writeIORef disconnectVar dc
+            void $ tryPutMVar notified ()
+            void $ tryPutMVar ready ()
+    void $ asyncLifted $ do
+        logNest "subscribeToRequests" $
+            withSubscription redis (requestChannel redis) handleConnect $
+                \_ -> void $ tryPutMVar notified ()
+    -- Wait for the subscription to connect
+    takeMVar ready
+    -- Eat the notification that comes from the initial
+    -- connection.
+    void $ tryTakeMVar notified
+    return (notified, disconnectVar)
+
+unsubscribeToRequests :: MonadConnect m => MaybeWithSubscription -> m ()
+unsubscribeToRequests NoSubscription = return ()
+unsubscribeToRequests (WithSubscription _ disconnectVar) =
+    liftIO =<< readIORef disconnectVar
 
 -- * Slave Requests
 
