@@ -80,10 +80,9 @@ responseChannel r k =
 
 -- | Given a 'WorkerId', computes the name of a redis key which usually contains a list.  This list holds the
 -- items the worker is currently working on.
-
 --
 -- See the documentation for 'Distributed.RedisQueue.HeartbeatFailure'
--- for more information on why
+-- for more information on why this is not an 'LKey'.
 activeKey :: RedisInfo -> WorkerId -> Key
 activeKey r k = Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
 
