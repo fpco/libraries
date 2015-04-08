@@ -28,13 +28,14 @@ module Distributed.JobQueue.Client
     where
 
 import           ClassyPrelude
-import           Control.Concurrent.Async (withAsync)
+import           Control.Concurrent.Async (race)
 import           Control.Monad.Logger (MonadLogger, logErrorS, logInfoS)
-import           Control.Monad.Trans.Control (control)
+import           Control.Monad.Trans.Control (liftBaseWith, restoreM)
 import           Data.Binary (encode)
 import           Data.ConcreteTypeRep (fromTypeRep)
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.Typeable (typeRep, Proxy(..))
+import           Data.Void (absurd)
 import           Distributed.JobQueue.Heartbeat (checkHeartbeats)
 import           Distributed.JobQueue.Shared
 import           Distributed.RedisQueue
@@ -94,10 +95,13 @@ withJobQueueClient
     :: (MonadConnect m, Sendable response)
     => ClientConfig -> RedisInfo -> (ClientVars m response -> m a) -> m a
 withJobQueueClient config redis f = do
-    control $ \restore -> do
+    result <- liftBaseWith $ \restore -> do
         cvs <- newClientVars
-        withAsync (restore (jobQueueClient config cvs redis)) $ \_ ->
-            restore (f cvs)
+        race (restore (jobQueueClient config cvs redis))
+             (restore (f cvs))
+    case result of
+        Left v -> absurd =<< restoreM v
+        Right x -> restoreM x
 
 -- | Runs a listener for responses from workers, which dispatches to
 -- callbacks registered with 'jobQueueRequest'.  It also runs
@@ -113,15 +117,18 @@ jobQueueClient
     -> RedisInfo
     -> m void
 jobQueueClient config cvs redis = do
-    control $ \restore ->
-        withAsync (restore checker) $ \_ -> restore $
-            withLogTag (LogTag "jobQueueClient") $
-            subscribeToResponses redis
-                                 (clientBackchannelId config)
-                                 handleConnect
-                                 handleResponse
+    result <- liftBaseWith $ \restore ->
+        race (restore checker) (restore subscriber)
+    case result of
+        Left v -> absurd =<< restoreM v
+        Right v -> absurd =<< restoreM v
   where
     checker = checkHeartbeats redis (clientHeartbeatCheckIvl config)
+    subscriber = withLogTag (LogTag "jobQueueClient") $
+        subscribeToResponses redis
+                             (clientBackchannelId config)
+                             handleConnect
+                             handleResponse
     -- When the subscription reconnects, check if any responses came
     -- back in the meantime.
     handleConnect _ = do
