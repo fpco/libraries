@@ -7,7 +7,13 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Distributed.JobQueueSpec where
+module Distributed.JobQueueSpec
+    ( spec
+    -- Used by PeriodicSpec
+    , jqit
+    , allocateAsync
+    , randomDelay
+    ) where
 
 import ClassyPrelude hiding (keys)
 import Control.Concurrent.Async (Async, race, async, cancel)

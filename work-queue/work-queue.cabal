@@ -17,11 +17,16 @@ Flag coverage
     Description:       Run tests with code coverage.
     Default:           False
 
+Flag long-tests
+    Description:       Run tests that take a lot of time.
+    Default:           False
+
 library
   exposed-modules:     Data.WorkQueue
                        Data.Streaming.NetworkMessage
                        Distributed.JobQueue
                        Distributed.JobQueue.Client
+                       Distributed.JobQueue.Periodic
                        Distributed.JobQueue.Worker
                        Distributed.RedisQueue
                        Distributed.RedisQueue.Internal
@@ -155,6 +160,8 @@ test-suite test
   if flag(coverage)
       ghc-options:     -fhpc
       cpp-options:     -DCOVERAGE
+  if flag(long-tests)
+      cpp-options:     -DLONG_TESTS
 
 benchmark bench
   type:                exitcode-stdio-1.0
