@@ -21,6 +21,7 @@ import Control.Concurrent.Lifted (threadDelay)
 import Control.Monad.Logger (MonadLogger, logInfoS, logWarnS, logErrorS)
 import Data.Binary (encode)
 import Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
+import Distributed.JobQueue.Periodic (periodicWrapped)
 import Distributed.JobQueue.Shared
 import Distributed.RedisQueue
 import Distributed.RedisQueue.Internal
@@ -76,8 +77,16 @@ recoverFromHeartbeatFailure r wid = run_ r $ del (activeKey r wid :| [])
 -- this should use the same time interval.
 checkHeartbeats
     :: MonadConnect m => RedisInfo -> Seconds -> m void
-checkHeartbeats r ivl =
-    periodicActionWrapped (redisConnection r) (heartbeatTimeKey r) ivl $ logNest "checkHeartbeats" $ do
+checkHeartbeats r (Seconds ivl) =
+    periodicWrapped (redisConnection r)
+                    (heartbeatTimeKey r)
+                    -- Time interval between actions
+                    (Seconds ivl)
+                    -- Frequency that the mutex is checked
+                    (Seconds (max 1 (ivl `div` 2)))
+                    -- Mutex ttl while executing the action
+                    (Seconds (max 2 (ivl `div` 2)))
+    $ logNest "checkHeartbeats" $ do
         -- Check if the last iteration of this heartbeat check ran
         -- successfully.  If it did, then we can use the contents of
         -- the inactive list.  The flag also gets set to False here,
@@ -176,5 +185,5 @@ heartbeatFunctioningKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:function
 -- Prefix used for the 'periodicActionWrapped' invocation, which is
 -- used to share the responsibility of periodically checking
 -- heartbeats.
-heartbeatTimeKey :: RedisInfo -> PeriodicPrefix
-heartbeatTimeKey r = PeriodicPrefix $ redisKeyPrefix r <> "heartbeat:time"
+heartbeatTimeKey :: RedisInfo -> MutexKey
+heartbeatTimeKey r = MutexKey $ Key $ redisKeyPrefix r <> "heartbeat:time"
