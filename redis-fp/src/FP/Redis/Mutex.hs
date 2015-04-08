@@ -9,6 +9,7 @@ module FP.Redis.Mutex
     , periodicActionWrapped
     , periodicActionEx
     , withMutex
+    , holdMutexDuring
     , acquireMutex
     , tryAcquireMutex
     , releaseMutex
@@ -67,7 +68,7 @@ periodicActionEx :: (MonadConnect m)
                  -> m void
 periodicActionEx conn (PeriodicPrefix pre) (Seconds period) inner = forever $ do
     let mutexKey = MutexKey $ Key $ pre ++ ".mutex"
-    sleepSeconds <- withMutex conn mutexKey $ do
+    sleepSeconds <- withMutex conn mutexKey (Seconds 5) (Seconds 90) $ do
         let lastStartedKey = VKey (Key (pre ++ ".last-started-at"))
         maybeLastStartedAt <- runCommand conn (get lastStartedKey)
         curTime <- liftIO $ Time.getCurrentTime
@@ -92,36 +93,60 @@ periodicActionEx conn (PeriodicPrefix pre) (Seconds period) inner = forever $ do
 -- of refreshing the mutex for you in an async thread, without the action
 -- needing to call `refreshMutex`.
 withMutex :: MonadCommand m
-          => forall a. Connection
+          => Connection
              -- ^ Redis connection
           -> MutexKey
              -- ^ Mutex key
+          -> Seconds
+             -- ^ Refresh interval - how often the mutex is set.
+          -> Seconds
+             -- ^ Mutex time-to-live.  If the process exits without
+             -- cleaning up, or gets disconnected from redis, this is
+             -- how long other processes will need to wait until the
+             -- mutex is available.
+             --
+             -- In order for this function to guarantee that it will
+             -- either hold the mutex or throw an error, this needs to
+             -- be larger than the maximum time spent retrying.
           -> m a
              -- ^ I/O action to run while mutex is claimed.
           -> m a
              -- ^ Value returned by the I/O action
-withMutex conn key inner =
+withMutex conn key refresh mutexTtl inner =
     bracket (acquireMutex conn mutexTtl key)
-            (releaseMutex conn key) $ \mutexToken ->
-        control $ \runInIO ->
-            -- This is the same pattern as `race`, but using waitEitherCatch for more control
-            -- over exception handling (otherwise ThreadKilled exceptions end up being rethrown)
-            Async.withAsync (runInIO $ refreshThread mutexToken) $ \a ->
-                Async.withAsync (runInIO inner) $ \b -> do
-                    w <- Async.waitEitherCatch a b
-                    case w of
-                        Left (Left e) -> throwM e
-                        Left (Right _) -> error "FP.Redis.Mutex.waitMutex: refreshThread should never return, but it did!"
-                        Right (Left e) -> throwM e
-                        Right (Right v) -> return v
+            (releaseMutex conn key)
+            (\token -> holdMutexDuring conn key token refresh mutexTtl inner)
+
+-- | While the inner action is running, this periodically refreshes a
+-- mutex that has already been acquired, likely by 'tryAcquireMutex'.
+-- This will throw an exception if the mutex isn't already acquired.
+--
+-- Note that this doesn't release the mutex when the inner action
+-- completes.
+holdMutexDuring :: MonadCommand m
+                => Connection
+                -> MutexKey
+                -> MutexToken
+                -> Seconds
+                -> Seconds
+                -> m a
+                -> m a
+holdMutexDuring conn key token (Seconds refresh) mutexTtl inner =
+    control $ \runInIO ->
+        -- This is the same pattern as `race`, but using waitEitherCatch for more control
+        -- over exception handling (otherwise ThreadKilled exceptions end up being rethrown)
+        Async.withAsync (runInIO refreshThread) $ \a ->
+            Async.withAsync (runInIO inner) $ \b -> do
+                w <- Async.waitEitherCatch a b
+                case w of
+                    Left (Left e) -> throwM e
+                    Left (Right _) -> error "FP.Redis.Mutex.holdMutexDuring: refreshThread should never return, but it did!"
+                    Right (Left e) -> throwM e
+                    Right (Right v) -> return v
   where
-    refreshThread mutexToken = forever $ do
-        liftIO (threadDelay (refreshInterval * 1000000))
-        refreshMutex conn mutexTtl key mutexToken
-    -- This TTL should be at least as long as a cycle of retries in case the Redis server is
-    -- temporarily unreachable.
-    mutexTtl = Seconds 90
-    refreshInterval = 5 :: Int
+    refreshThread = forever $ do
+        liftIO (threadDelay (fromIntegral refresh * 1000000))
+        refreshMutex conn mutexTtl key token
 
 -- | Acquire a mutex.  This will block until the mutex is available.  It will
 -- retry for a limited time if the Redis server is unreachable.
