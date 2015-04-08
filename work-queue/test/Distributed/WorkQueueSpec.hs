@@ -218,8 +218,10 @@ runMasterOrSlave RedisConfig {..} | isThreadDelay = runThreadFileLoggingT $ do
         inner :: RedisInfo -> MasterConnectInfo -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
         inner redis mci request queue = do
             requestSlave redis mci
-            void $ mapQueue queue request
-            return 0
+            results <- mapQueue queue request
+            if results == fmap (\_ -> 0) request
+                then return 0
+                else return 1
         config = workerConfig
             { workerMasterLocalSlaves = read (unpack lslaves)
             }

@@ -103,7 +103,7 @@ spec = do
             (do void $ timeout (1000 * 1000 * 2) $
                     randomJobRequester sets 254 `race`
                     randomJobRequester sets 255
-                checkRequestsAnswered sets 60)
+                checkRequestsAnswered (== 0) sets 60)
     jqit "Sends an exception to the client on type mismatch" $ do
         resultVar <- forkDispatcher' defaultRequest
         _ <- forkWorker "redis" 0
@@ -177,7 +177,7 @@ sendJobRequest sets request =
                 return rid
 
 forkResponseWaiter
-    :: forall response. Sendable response
+    :: forall response. (Sendable response, Ord response)
     => RequestSets response
     -> ResourceT IO (Async ())
 forkResponseWaiter sets = allocateAsync responseWaiter
@@ -199,7 +199,7 @@ forkResponseWaiter sets = allocateAsync responseWaiter
             result <- takeMVar resultVar
             case result of
                 Left ex -> liftIO $ throwIO ex
-                Right (_ :: response) -> atomicInsert rid (receivedResponses sets)
+                Right x -> atomicInsert (rid, x) (receivedResponses sets)
 
 clientConfig :: ClientConfig
 clientConfig = defaultClientConfig
@@ -215,7 +215,7 @@ randomSlaveSpawner which = runResourceT $ runThreadFileLoggingT $ withLogTag (Lo
     $logInfoS "randomSlaveSpawner" $ "Cancelling worker started at " ++ tshow startTime
     cancelProcess pid
 
-randomWaiterSpawner :: Sendable response => RequestSets response -> IO ()
+randomWaiterSpawner :: (Sendable response, Ord response) => RequestSets response -> IO ()
 randomWaiterSpawner sets = runResourceT $ runThreadFileLoggingT $ withLogTag (LogTag "randomWaiterSpawner") $ forM_ [0..] $ \n -> do
     startTime <- liftIO getCurrentTime
     $logInfoS "randomWaiterSpawner" $ "Forking waiter at " ++ tshow startTime
@@ -233,14 +233,17 @@ randomJobRequester sets cnt = runResourceT $ runThreadFileLoggingT $ withLogTag 
     lift $ void $ allocateAsync (sendJobRequest sets request)
     randomDelay 100 200
 
-checkRequestsAnswered :: (MonadIO m, MonadBaseControl IO m) => RequestSets response -> Int -> m ()
-checkRequestsAnswered sets seconds = do
+checkRequestsAnswered :: (MonadIO m, MonadBaseControl IO m, Show response) => (response -> Bool) -> RequestSets response -> Int -> m ()
+checkRequestsAnswered correct sets seconds = do
     lastSummaryRef <- newIORef (error "impossible: lastSummaryRef")
     let loop = do
             unwatched <- readIORef (unwatchedRequests sets)
             sent <- readIORef (sentRequests sets)
             received <- readIORef (receivedResponses sets)
-            let unreceived = sent `S.difference` received
+            let wrongResults = S.filter (not . correct . snd) received
+            unless (S.null wrongResults) $
+                fail $ "Received wrong results: " ++ show wrongResults
+            let unreceived = sent `S.difference` (S.map fst received)
             writeIORef lastSummaryRef (unwatched, sent, unreceived)
             if S.null unwatched && S.null unreceived
                 then return ()
@@ -253,8 +256,7 @@ checkRequestsAnswered sets seconds = do
                 "\nsent = " ++ show sent ++
                 "\nunwatched = " ++ show unwatched ++
                 "\nunreceived = " ++ show unreceived ++
-                "\ndiff1 = " ++ show (unwatched `S.difference` unreceived) ++
-                "\ndiff2 = " ++ show (unreceived `S.difference` unwatched)
+                "\nunreveived - unwatched = " ++ show (unreceived `S.difference` unwatched)
         Just () -> do
             sent <- readIORef (sentRequests sets)
             when (S.null sent) $ fail "Didn't send any requests."
@@ -301,11 +303,11 @@ localhost :: ConnectInfo
 localhost = connectInfo "localhost"
 
 -- Keeping track of requests which have been sent, haven't yet been
--- watched, and have been received.  The 'response' type is phantom,
--- and just used to keep response types consistent across calls.
+-- watched, and have been received.
 
 data RequestSets response = RequestSets
-    { unwatchedRequests, sentRequests, receivedResponses :: IORef (S.Set RequestId)
+    { unwatchedRequests, sentRequests :: IORef (S.Set RequestId)
+    , receivedResponses :: IORef (S.Set (RequestId, response))
     }
 
 mkRequestSets :: (MonadBase IO m, Applicative m) => m (RequestSets response)
