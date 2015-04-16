@@ -58,12 +58,17 @@ periodicEx
     -- is refreshed.
     -> m ()
     -> m void
-periodicEx conn key ivl (Seconds freq) mutexTtl inner = forever $ do
-    mtoken <- tryAcquireMutex conn mutexTtl key
+periodicEx conn key ivl (Seconds freq) mttl inner = forever $ do
+    mtoken <- tryAcquireMutex conn mttl key
     case mtoken of
         Nothing -> threadDelay (fromIntegral freq * 1000000)
         Just token -> flip onException (releaseMutex conn key token) $ do
-            holdMutexDuring conn key token (Seconds 1) mutexTtl inner
+            let settings = MutexSettings
+                    { mutexKey = key
+                    , mutexRefresh = Seconds 1
+                    , mutexTtl = mttl
+                    }
+            holdMutexDuring conn settings token inner
             refreshMutex conn ivl key token
 
 -- | This is the same as 'periodicEx' except it wraps the inner action

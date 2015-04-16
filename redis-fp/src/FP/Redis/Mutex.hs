@@ -1,6 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude, OverloadedStrings, ScopedTypeVariables, TypeFamilies,
              DeriveDataTypeable, FlexibleContexts, FlexibleInstances, RankNTypes, GADTs,
-             ConstraintKinds, NamedFieldPuns, ViewPatterns #-}
+             ConstraintKinds, NamedFieldPuns, ViewPatterns, DeriveGeneric #-}
 
 -- | Mutexes built on Redis operations
 
@@ -23,6 +23,7 @@ import Control.Monad.Logger
 import Control.Monad.Trans.Control (control)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
+import Data.Data (Data)
 import qualified Data.Time as Time
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
@@ -68,7 +69,8 @@ periodicActionEx :: (MonadConnect m)
                  -> m void
 periodicActionEx conn (PeriodicPrefix pre) (Seconds period) inner = forever $ do
     let mutexKey = MutexKey $ Key $ pre ++ ".mutex"
-    sleepSeconds <- withMutex conn mutexKey (Seconds 5) (Seconds 90) $ do
+        settings = defaultMutexSettings mutexKey
+    sleepSeconds <- withMutex conn settings $ do
         let lastStartedKey = VKey (Key (pre ++ ".last-started-at"))
         maybeLastStartedAt <- runCommand conn (get lastStartedKey)
         curTime <- liftIO $ Time.getCurrentTime
@@ -95,27 +97,16 @@ periodicActionEx conn (PeriodicPrefix pre) (Seconds period) inner = forever $ do
 withMutex :: MonadCommand m
           => Connection
              -- ^ Redis connection
-          -> MutexKey
-             -- ^ Mutex key
-          -> Seconds
-             -- ^ Refresh interval - how often the mutex is set.
-          -> Seconds
-             -- ^ Mutex time-to-live.  If the process exits without
-             -- cleaning up, or gets disconnected from redis, this is
-             -- how long other processes will need to wait until the
-             -- mutex is available.
-             --
-             -- In order for this function to guarantee that it will
-             -- either hold the mutex or throw an error, this needs to
-             -- be larger than the maximum time spent retrying.
+          -> MutexSettings
+             -- ^ Mutex settings
           -> m a
              -- ^ I/O action to run while mutex is claimed.
           -> m a
              -- ^ Value returned by the I/O action
-withMutex conn key refresh mutexTtl inner =
-    bracket (acquireMutex conn mutexTtl key)
-            (releaseMutex conn key)
-            (\token -> holdMutexDuring conn key token refresh mutexTtl inner)
+withMutex conn settings inner =
+    bracket (acquireMutex conn (mutexTtl settings) (mutexKey settings))
+            (releaseMutex conn (mutexKey settings))
+            (\token -> holdMutexDuring conn settings token inner)
 
 -- | While the inner action is running, this periodically refreshes a
 -- mutex that has already been acquired, likely by 'tryAcquireMutex'.
@@ -125,13 +116,11 @@ withMutex conn key refresh mutexTtl inner =
 -- completes.
 holdMutexDuring :: MonadCommand m
                 => Connection
-                -> MutexKey
+                -> MutexSettings
                 -> MutexToken
-                -> Seconds
-                -> Seconds
                 -> m a
                 -> m a
-holdMutexDuring conn key token (Seconds refresh) mutexTtl inner =
+holdMutexDuring conn settings token inner =
     control $ \runInIO ->
         -- This is the same pattern as `race`, but using waitEitherCatch for more control
         -- over exception handling (otherwise ThreadKilled exceptions end up being rethrown)
@@ -145,8 +134,9 @@ holdMutexDuring conn key token (Seconds refresh) mutexTtl inner =
                     Right (Right v) -> return v
   where
     refreshThread = forever $ do
-        liftIO (threadDelay (fromIntegral refresh * 1000000))
-        refreshMutex conn mutexTtl key token
+        let refresh = fromIntegral (unSeconds (mutexRefresh settings))
+        liftIO (threadDelay (refresh * 1000000))
+        refreshMutex conn (mutexTtl settings) (mutexKey settings) token
 
 -- | Acquire a mutex.  This will block until the mutex is available.  It will
 -- retry for a limited time if the Redis server is unreachable.
@@ -168,11 +158,11 @@ acquireMutex :: (MonadCommand m)
                 -- ^ Mutex key
              -> m MutexToken
                 -- ^ A token identifying who holds the mutex (see description).
-acquireMutex conn mutexTtl key =
+acquireMutex conn mttl key =
     go initDelay
   where
     go delay = do
-        tokenMaybe <- tryAcquireMutex conn mutexTtl key
+        tokenMaybe <- tryAcquireMutex conn mttl key
         case tokenMaybe of
             Just token -> return token
             Nothing -> do
@@ -194,9 +184,9 @@ tryAcquireMutex :: (MonadCommand m)
                 -> m (Maybe MutexToken)
                     -- ^ Nothing if the mutex is unavailable, or Just a token
                     -- identifying who holds the mutex (see description).
-tryAcquireMutex conn mutexTtl (VKey . unMutexKey -> key) = do
+tryAcquireMutex conn mttl (VKey . unMutexKey -> key) = do
     token <- liftIO $ (BS.concat . BSL.toChunks . UUID.toByteString) <$> UUID.nextRandom
-    re <- runCommand conn (set key token [NX,EX mutexTtl])
+    re <- runCommand conn (set key token [NX,EX mttl])
     return (if re then Just (MutexToken token)
                   else Nothing)
 
@@ -239,7 +229,7 @@ refreshMutex :: MonadCommand m
              -> MutexToken
                 -- ^ The token that was returned by 'acquireMutex'
              -> m ()
-refreshMutex conn mutexTtl key (MutexToken token) = do
+refreshMutex conn mttl key (MutexToken token) = do
     re <- runCommand conn (eval "if redis.call(\"get\",KEYS[1]) == ARGV[2]\n\
                                 \then\n\
                                 \    redis.call(\"setex\",KEYS[1],ARGV[1],ARGV[2])\n\
@@ -248,7 +238,7 @@ refreshMutex conn mutexTtl key (MutexToken token) = do
                                 \    return 0\n\
                                 \end"
                                 [unMutexKey key]
-                                [encodeArg mutexTtl, token])
+                                [encodeArg mttl, token])
     if re == (0::Int64)
         then liftIO $ throwIO IncorrectRedisMutexException
         else return ()
