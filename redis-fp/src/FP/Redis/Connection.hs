@@ -25,7 +25,6 @@ import Control.Monad.Catch (Handler(..))
 import Control.Monad.Extra
 import Control.Monad.Logger
 import Control.Monad.Trans.Control (control, RunInBase, StM)
-import Control.Retry
 import Data.Attoparsec.ByteString (takeTill)
 import Data.Attoparsec.ByteString.Char8
     (Parser, choice, char, isEndOfLine, endOfLine, decimal, signed, take, count)

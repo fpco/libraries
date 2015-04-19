@@ -23,7 +23,6 @@ import Control.Monad.Logger
 import Control.Monad.Trans.Control (control)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
-import Data.Data (Data)
 import qualified Data.Time as Time
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID

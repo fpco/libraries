@@ -16,7 +16,7 @@ import Distributed.JobQueue.Periodic (periodicEx)
 import Distributed.JobQueueSpec (jqit, allocateAsync, randomDelay)
 import Distributed.WorkQueueSpec (redisTestPrefix)
 import FP.Redis
-import FP.Redis.Mutex
+import FP.Redis.Mutex hiding (mutexKey)
 import Test.Hspec (Spec, shouldSatisfy)
 
 spec :: Spec
