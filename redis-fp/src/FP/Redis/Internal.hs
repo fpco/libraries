@@ -11,6 +11,7 @@ import qualified Blaze.ByteString.Builder as Builder
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Builder
 import ClassyPrelude.Conduit hiding (Builder)
 import Control.Concurrent (threadDelay)
+import qualified Control.Concurrent.Async as Async
 import Control.Concurrent.STM (retry)
 import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..), BlockedIndefinitelyOnSTM(..))
 import Control.Monad.Catch (Handler(Handler))
@@ -40,13 +41,57 @@ sendRequest Connection{connectionInfo_, connectionRequestQueue, connectionPendin
     catch (atomically addRequest)
           (\BlockedIndefinitelyOnSTM -> throwIO DisconnectedException)
   where
-    addRequest :: STM ()
     addRequest = do
-        lr <- lengthTSQueue connectionRequestQueue
+        modifyTMVarSTM connectionRequestQueue $ \rqs-> do
+            case rqs of
+                RQConnected requestQueue -> do
+                    addToQueue requestQueue
+                    return (rqs, ())
+                RQLostConnection requestQueue -> do
+                    -- We add our request to the "closed" queue because it might
+                    -- be in the process of auto-reconnecting.
+                    addToQueue requestQueue
+                    return (rqs, ())
+                RQFinal _ -> throwSTM DisconnectedException
+                RQDisconnect -> throwSTM DisconnectedException
+    addToQueue requestQueue = do
+        lr <- lengthTSQueue requestQueue
         when (lr >= connectRequestsPerBatch connectionInfo_ * 2) retry
         lp <- lengthTSQueue connectionPendingResponseQueue
         when (lp >= connectMaxPendingResponses connectionInfo_) retry
-        writeTSQueue connectionRequestQueue request
+        writeTSQueue requestQueue request
+
+-- | Disconnect from Redis server, optionally sending a final command before terminating.
+disconnect' :: MonadCommand m => Connection -> (Maybe (CommandRequest ())) -> m ()
+disconnect' Connection{connectionRequestQueue,connectionThread}
+            maybeFinalCommand = do
+    eres <- case maybeFinalCommand of
+        Just command ->
+            try $ do
+                (reqs, respAction) <- commandToRequestPair (ignoreResult command)
+                case toList reqs of
+                    [req] -> addRequest (Just req)
+                    _ -> error "FP.Redis.Internal.disconnect': final command must be single request"
+                respAction
+        Nothing -> try $ addRequest Nothing
+    liftIO (Async.cancel connectionThread)
+    case eres of
+        Left DisconnectedException -> return ()
+        Left err -> liftIO (throwIO err)
+        Right () -> return ()
+  where
+    addRequest mreq =
+        catch (atomically (addRequest' mreq))
+              (\BlockedIndefinitelyOnSTM -> throwIO DisconnectedException)
+    addRequest' mreq =
+        modifyTMVarSTM connectionRequestQueue $ \rqs -> do
+            case rqs of
+                RQConnected _ -> case mreq of
+                                     Just req -> return (RQFinal req, ())
+                                     Nothing -> return (RQDisconnect, ())
+                RQLostConnection _ -> return (RQDisconnect, ())
+                RQFinal _ -> throwSTM DisconnectedException
+                RQDisconnect -> throwSTM DisconnectedException
 
 -- | Convert 'CommandRequest' to a list of 'Request's and an action to get the response.
 commandToRequestPair :: (MonadIO m, MonadIO n)
@@ -133,3 +178,23 @@ recoveringWithReset (RetryPolicy policy) hs f = mask $ \restore -> do
                       else liftBase $ throwIO e'
                 | otherwise = recover hs'
           recover hs
+
+-- | Modify the contents of a TMVar.  Retries if TMVar is empty.
+modifyTMVarSTM :: TMVar a -> (a -> STM (a, b)) -> STM b
+modifyTMVarSTM tmvar action = do
+    val <- takeTMVar tmvar
+    (val',result) <- action val
+    putTMVar tmvar val'
+    return result
+
+-- | Ignore a command's result.
+ignoreResult :: CommandRequest a -> CommandRequest ()
+ignoreResult (CommandRequest r) = CommandRequest r
+ignoreResult (CommandPure _) = CommandPure ()
+ignoreResult a = CommandAp (CommandPure (const ())) a
+
+-- | Use a general Redis 'Response' result instead of decoding it.
+anyResult :: (Result a) => CommandRequest a -> CommandRequest Response
+anyResult (CommandRequest r) = CommandRequest r
+anyResult (CommandPure v) = CommandPure (encodeResponse v)
+anyResult a = CommandAp (CommandPure encodeResponse) a

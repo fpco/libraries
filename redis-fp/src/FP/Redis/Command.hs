@@ -81,15 +81,3 @@ sendCommand connection command = do
     (reqs, respAction) <- commandToRequestPair command
     mapM_ (sendRequest connection) reqs
     return respAction
-
--- | Ignore a command's result.
-ignoreResult :: CommandRequest a -> CommandRequest ()
-ignoreResult (CommandRequest r) = CommandRequest r
-ignoreResult (CommandPure _) = CommandPure ()
-ignoreResult a = CommandAp (CommandPure (const ())) a
-
--- | Use a general Redis 'Response' result instead of decoding it.
-anyResult :: (Result a) => CommandRequest a -> CommandRequest Response
-anyResult (CommandRequest r) = CommandRequest r
-anyResult (CommandPure v) = CommandPure (encodeResponse v)
-anyResult a = CommandAp (CommandPure encodeResponse) a

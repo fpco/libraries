@@ -9,7 +9,7 @@ module FP.Redis.Command.Scripting
     ( eval )
     where
 
-import ClassyPrelude.Conduit
+import ClassyPrelude.Conduit hiding (keys)
 
 import FP.Redis.Internal
 import FP.Redis.Types.Internal

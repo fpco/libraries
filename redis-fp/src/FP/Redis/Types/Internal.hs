@@ -85,8 +85,19 @@ data Mode = Normal -- ^ Normal connection that receives commands and returns res
           | Subscribed -- ^ Connection that is subscribed to pub/sub channels.
     deriving (Eq, Show, Ord, Data, Typeable, Generic, Enum, Bounded)
 
+-- | Requests queue state.
+data RequestQueueState = RQConnected (TSQueue Request)
+                       | RQLostConnection (TSQueue Request)
+                       | RQFinal Request
+                       | RQDisconnect
+
 -- | Queue of requests.
-type RequestQueue = TSQueue Request
+type RequestQueue = TMVar RequestQueueState
+
+-- | Possible results for getting next request.
+data NextRequest = NoRequest
+                 | NextRequest Request
+                 | FinalRequest Request
 
 -- | Queue of requests that are still awaiting responses.
 type PendingResponseQueue = TSQueue Request

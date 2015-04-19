@@ -29,7 +29,8 @@ select :: Int64 -- ^ Database index
 select database = makeCommand "SELECT" [encodeArg database]
 
 -- | Ask the server to close the connection.
+-- In most cases, it is preferable to use 'disconnect', which will ensure a quick and
+-- clean disconnection.
 -- See <http://redis.io/commands/quit>.
 quit :: CommandRequest ()
 quit = makeCommand "QUIT" []
-

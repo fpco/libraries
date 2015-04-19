@@ -19,7 +19,7 @@ module FP.Redis.Command.List
     , rpoplpush )
     where
 
-import ClassyPrelude.Conduit
+import ClassyPrelude.Conduit hiding (keys)
 import Data.List.NonEmpty (NonEmpty)
 
 import FP.Redis.Internal
