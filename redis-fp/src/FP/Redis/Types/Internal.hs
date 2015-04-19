@@ -10,7 +10,6 @@ module FP.Redis.Types.Internal where
 import ClassyPrelude.Conduit hiding (Builder)
 import Blaze.ByteString.Builder (Builder)
 import Control.Concurrent.Async (Async)
-import Control.Concurrent.BroadcastChan
 import Control.Monad.Logger
 import Control.Retry
 import Control.Concurrent.STM.TSQueue
@@ -103,7 +102,7 @@ data NextRequest = NoRequest
 type PendingResponseQueue = TSQueue Request
 
 -- | Connection to the Redis server used for pub/sub subscriptions.
-data SubscriptionConnection = SubscriptionConnection Connection (BroadcastChan In [Response])
+newtype SubscriptionConnection = SubscriptionConnection Connection
     deriving (Typeable, Generic)
 
 -- | Requests used by pub/sub subscription connections.

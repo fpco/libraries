@@ -143,7 +143,7 @@ withSubscription r chan connected f = do
                     connected $ do
                         writeIORef isDisconnecting True
                         -- Disconnecting can block, so fork a thread.
-                        void $ forkIO $ disconnect conn
+                        void $ forkIO $ disconnectSub conn
                 Message _ x -> f x
 
 defaultRetryPolicy :: RetryPolicy

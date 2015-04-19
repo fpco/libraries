@@ -35,7 +35,7 @@ spec = do
         liftIO $ threadDelay (1000 * 100)
         wasSeen <- readIORef messageSeenRef
         wasSeen `shouldBe` True
-        disconnect =<< readIORef connRef
+        disconnectSub =<< readIORef connRef
         -- Check that messages aren't received once we've disconnected.
         writeIORef messageSeenRef False
         withRedis $ \redis -> runCommand_ redis $ publish chan "message"
@@ -94,7 +94,7 @@ skip :: Monad m => m () -> m ()
 skip _ = return ()
 
 asyncSubscribe :: Channel
-               -> (Connection -> Channel -> ByteString -> LoggingT IO ())
+               -> (SubscriptionConnection -> Channel -> ByteString -> LoggingT IO ())
                -> IO (TVar Bool, Async (Either SomeException ()))
 asyncSubscribe chan f = do
     ready <- newTVarIO False

@@ -11,6 +11,7 @@ module FP.Redis.PubSub
     , withSubscriptionsWrappedConn
     , withSubscriptionsEx
     , withSubscriptionsExConn
+    , disconnectSub
     , subscribe
     , psubscribe
     , unsubscribe
@@ -22,7 +23,7 @@ module FP.Redis.PubSub
 
 --TODO SHOULD: use a connection pool, and re-use a single connection for all subscriptions
 
-import ClassyPrelude.Conduit
+import ClassyPrelude.Conduit hiding (connect)
 import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..))
 import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty)
@@ -49,7 +50,7 @@ withSubscriptionsWrapped connectionInfo_ subscriptions callback =
 withSubscriptionsWrappedConn :: MonadConnect m
                              => ConnectInfo -- ^ Redis connection info
                              -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
-                             -> (Connection -> m (Message -> m ())) -- ^ Callback to receive messages
+                             -> (SubscriptionConnection -> m (Message -> m ())) -- ^ Callback to receive messages
                              -> m void
 withSubscriptionsWrappedConn connectionInfo_ subscriptions callback' =
     withSubscriptionsExConn connectionInfo_ subscriptions wrappedCallback
@@ -85,14 +86,16 @@ withSubscriptionsEx connectionInfo_ subscriptions callback =
 withSubscriptionsExConn :: MonadConnect m
                         => ConnectInfo -- ^ Redis connection info
                         -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
-                        -> (Connection -> m (Message -> m ())) -- ^ Callback to receive messages
+                        -> (SubscriptionConnection -> m (Message -> m ())) -- ^ Callback to receive messages
                         -> m void
 withSubscriptionsExConn connectionInfo_ subscriptions callback' = do
     messageChan <- newChan
-    withConnection
-        (connectionInfo_{connectSubscriptionCallback = Just (writeChan messageChan)
-                        ,connectInitialSubscriptions =
-                            connectInitialSubscriptions connectionInfo_ ++ toList subscriptions})
+    bracket
+        (SubscriptionConnection <$> connect connectionInfo_
+            {connectSubscriptionCallback = Just (writeChan messageChan)
+            ,connectInitialSubscriptions =
+            connectInitialSubscriptions connectionInfo_ ++ toList subscriptions})
+        disconnectSub
         (\conn -> do
             callback <- callback' conn
             forever (loop callback messageChan))
@@ -119,6 +122,13 @@ withSubscriptionsExConn connectionInfo_ subscriptions callback' = do
                 Just (Message channel' payload')
             _ -> Nothing
     decodeMessage _ = Nothing
+
+-- | Disconnect from Redis server.  This does /not/ issue a QUIT command
+-- because doing so while subscribed is not permitted by the Redis protocol.
+disconnectSub :: MonadCommand m => SubscriptionConnection -> m ()
+disconnectSub (SubscriptionConnection conn) =
+    --TODO: would be cleanest to unsubscribe from all channels then issue a QUIT command.
+    disconnect' conn Nothing
 
 --TODO SHOULD: Resurrect this code when we have support for re-establishing subscriptions after a
 --reconnect.
@@ -161,7 +171,7 @@ sendSubscription :: (MonadCommand m)
                  => SubscriptionConnection -- ^ Connection
                  -> SubscriptionRequest -- ^ Subscription command
                  -> m ()
-sendSubscription (SubscriptionConnection conn _) (SubscriptionRequest request) =
+sendSubscription (SubscriptionConnection conn) (SubscriptionRequest request) =
     sendRequest conn request
 
 -- | Subscribes the client to the specified channels.

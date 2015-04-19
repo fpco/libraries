@@ -41,7 +41,6 @@ library
                       ,attoparsec
                       ,base >=4.7
                       ,blaze-builder
-                      ,broadcast-chan
                       ,bytestring
                       ,classy-prelude
                       ,classy-prelude-conduit
