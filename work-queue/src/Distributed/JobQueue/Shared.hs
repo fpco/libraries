@@ -73,10 +73,22 @@ data DistributedJobQueueException
     | OtherException Text Text
     -- ^ This is used to return exceptions to the client, when
     -- exceptions occur while running the job.
-    deriving (Eq, Show, Typeable, Generic)
+    deriving (Eq, Typeable, Generic)
 
 instance Exception DistributedJobQueueException
 instance Binary DistributedJobQueueException
+
+instance Show DistributedJobQueueException where
+    show ex@(WorkStillInProgress {}) =
+        show ex ++
+        " {- This indicates a bug in the work queue library. -}"
+    show ex@(RequestMissingException {}) =
+        show ex ++
+        " {- This likely means that the request body expired in redis. -}"
+    show ex@(ResponseMissingException {}) =
+        show ex ++
+        " {- This likely means that the response body expired in redis. -}"
+    show ex = show ex
 
 wrapException :: SomeException -> DistributedJobQueueException
 wrapException ex =
