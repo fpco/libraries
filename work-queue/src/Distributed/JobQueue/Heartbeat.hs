@@ -62,6 +62,7 @@ deactivateHeartbeats r wid = do
         Right _ -> throwIO (WorkStillInProgress wid)
         _ -> return ()
     run_ r $ srem (heartbeatActiveKey r) (unWorkerId wid :| [])
+    run_ r $ srem (heartbeatInactiveKey r) (unWorkerId wid :| [])
 
 -- | This is called by a worker when it still functions, despite its
 -- work items being re-enqueued after heartbeat failure.  It should
