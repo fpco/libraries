@@ -29,7 +29,7 @@ import Data.Binary (Binary, encode)
 import Data.ConcreteTypeRep (fromTypeRep)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Streaming.Network (clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
-import Data.Streaming.NetworkMessage (NMSettings, Sendable, defaultNMSettings)
+import Data.Streaming.NetworkMessage (NMSettings, Sendable, defaultNMSettings, setNMHeartbeat)
 import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
@@ -66,9 +66,12 @@ data WorkerConfig = WorkerConfig
     , workerMasterLocalSlaves :: Int
       -- ^ How many local slaves a master server should run.
     , workerHeartbeatSendIvl :: Seconds
-      -- ^ The time interval between heartbeata are sent to the
-      -- server.  This must be substantially lower than the rate at
-      -- which they are checked.
+      -- ^ The time interval between heartbeats sent to the server.
+      -- This must be substantially lower than the rate at which they
+      -- are checked.
+    , workerConnectionHeartbeatIvlMicros :: Int
+      -- ^ The time interval between heartbeats sent between masters
+      -- and slaves.
     } deriving (Typeable)
 
 -- | Given a redis key prefix and redis connection information, builds
@@ -106,6 +109,7 @@ defaultWorkerConfig prefix ci hostname = WorkerConfig
     , workerPort = 0
     , workerMasterLocalSlaves = 1
     , workerHeartbeatSendIvl = Seconds 15
+    , workerConnectionHeartbeatIvlMicros = 1000 * 1000 * 15
     }
 
 -- | This runs a job queue worker.  The data that's being sent between
@@ -143,7 +147,9 @@ jobQueueWorker config calc inner = do
         replaceChar c | c `elem` ['\\', '/', '.', '\"'] = '_'
         replaceChar c = c
     withLogTag (LogTag name) $ withRedis' config $ \redis -> do
-        nmSettings <- liftIO defaultNMSettings
+        nmSettings <-
+            setNMHeartbeat (workerConnectionHeartbeatIvlMicros config)  <$>
+            liftIO defaultNMSettings
         jobQueueWorkerInternal JQWParams {..}
 
 -- Parameters for helper functions
