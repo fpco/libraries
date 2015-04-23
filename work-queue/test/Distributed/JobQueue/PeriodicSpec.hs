@@ -92,7 +92,7 @@ runPeriodic
     :: Seconds -> Seconds -> Seconds -> IO () -> M (Async ())
 runPeriodic ivl freq mutexTtl f =
     allocateAsync $ runStdoutLoggingT $ withConnection (connectInfo "localhost") $ \conn ->
-        periodicEx conn mutexKey ivl freq mutexTtl (lift f)
+        periodicEx conn mutexKey' ivl freq mutexTtl (lift f)
 
-mutexKey :: MutexKey
-mutexKey = MutexKey $ Key $ redisTestPrefix ++ ".periodic-mutex"
+mutexKey' :: MutexKey
+mutexKey' = MutexKey $ Key $ redisTestPrefix ++ ".periodic-mutex"

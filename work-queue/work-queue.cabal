@@ -195,6 +195,7 @@ benchmark bench
                      , monad-control
                      , resourcet
                      , criterion
+                     , thread-file-logger
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
   if flag(coverage)
