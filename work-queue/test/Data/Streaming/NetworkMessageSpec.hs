@@ -77,7 +77,7 @@ spec = do
             client app = void $ nmRead app
             server app = appWrite (nmAppData app) "bogus data"
         res <- try $ runClientAndServer client server
-        res `shouldBe` Left (DecodeFailure "Unknown encoding for constructor")
+        res `shouldBe` Left (NMDecodeFailure "Unknown encoding for constructor")
     it "throws HeartbeatFailure when heartbeat intervals are too small" $ do
         exitedLateRef <- newIORef False
         settings <- setNMHeartbeat 10 <$> defaultNMSettings
@@ -86,7 +86,7 @@ spec = do
                 threadDelay (1000 * 200)
                 writeIORef exitedLateRef True
         res <- try $ runClientAndServer' settings both both
-        res `shouldBe` Left HeartbeatFailure
+        res `shouldBe` Left NMHeartbeatFailure
         exitedLate <- readIORef exitedLateRef
         exitedLate `shouldBe` False
 
@@ -114,7 +114,7 @@ expectMismatchedHandshakes _ _ _ _ = do
     nmSettings <- defaultNMSettings
     res <- try $ runClientAndServer'' nmSettings client server
     case res of
-        Left MismatchedHandshakes {} -> return ()
+        Left NMMismatchedHandshakes {} -> return ()
         _ -> fail $ "Expected MismatchedHandshakes, got " ++ show res
     exitedLate <- readIORef exitedLateRef
     exitedLate `shouldBe` False

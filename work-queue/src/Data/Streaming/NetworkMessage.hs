@@ -134,9 +134,9 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                 when (hsISend myHS /= hsYouSend yourHS ||
                       hsYouSend myHS /= hsISend yourHS ||
                       hsExeHash myHS /= hsExeHash yourHS) $ do
-                    throwIO $ MismatchedHandshakes myHS yourHS
+                    throwIO $ NMMismatchedHandshakes myHS yourHS
                 return (yourHS, leftover)
-            Nothing -> throwIO ConnectionClosedBeforeHandshake
+            Nothing -> throwIO NMConnectionClosedBeforeHandshake
     control $ \runInBase -> do
         -- FIXME use a bounded chan perhaps? (Make the queue size
         -- configuration in NMSettings.) Since any data sent will
@@ -204,7 +204,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
         when (start == lastPing')
             $ whenM (readIORef active)
             $ whenM (readIORef blocked)
-            $ throwIO HeartbeatFailure
+            $ throwIO NMHeartbeatFailure
 
     -- It is unnecessary to use atomic operations when modifying the
     -- IORefs passed into this thread.  This is because lastPing and
@@ -253,7 +253,7 @@ appGet :: B.Binary a
 appGet bs0 readChunk =
     loop (B.runGetIncremental B.get `B.pushChunk` bs0)
   where
-    loop (B.Fail _ _ str) = throwIO (DecodeFailure str)
+    loop (B.Fail _ _ str) = throwIO (NMDecodeFailure str)
     loop (B.Partial f) = do
         bs <- readChunk
         if null bs
@@ -273,20 +273,20 @@ data NetworkMessageException
     -- when the two sides of the connection disagree about the
     -- datatypes being sent, or when there is a mismatch in executable
     -- hash.
-    = MismatchedHandshakes Handshake Handshake
+    = NMMismatchedHandshakes Handshake Handshake
     -- | This is thrown by 'runNMApp' if the connection closed during
     -- the initial handshake.
-    | ConnectionClosedBeforeHandshake
+    | NMConnectionClosedBeforeHandshake
     -- | This is thrown by 'runNMApp' if we haven't received a data
     -- packet or ping from the other side of the connection within
     -- @heartbeat * 2@ time.
-    | HeartbeatFailure
+    | NMHeartbeatFailure
     -- | This is thrown by 'nmRead' when the connection is closed.
     | NMConnectionClosed
     -- | This is thrown by 'runNMApp' when there's an error decoding
     -- data sent by the other side of the connection.  This either
     -- indicates a bug in this library, or a misuse of 'nmAppData'.
-    | DecodeFailure String
+    | NMDecodeFailure String
     deriving (Show, Typeable, Eq, Generic)
 instance Exception NetworkMessageException
 instance B.Binary NetworkMessageException
