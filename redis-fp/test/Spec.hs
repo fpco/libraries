@@ -100,7 +100,11 @@ asyncSubscribe chan f = do
     ready <- newTVarIO False
     thread <- async $ tryAny $ void $ runStdoutLoggingT $
         withSubscriptionsExConn localhost (subscribe (chan :| []) :| []) $
-            \conn -> return $ trackSubscriptionStatus ready (f conn)
+            \conn -> return $ \msg ->
+                case msg of
+                    Subscribe {} -> liftIO $ atomically $ writeTVar ready True
+                    Unsubscribe {} -> return ()
+                    Message k x -> f conn k x
     return (ready, thread)
 
 withRedis :: (Connection -> LoggingT IO a) -> IO a
