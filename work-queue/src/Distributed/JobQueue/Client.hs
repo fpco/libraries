@@ -35,7 +35,7 @@ import           Data.Binary (encode)
 import           Data.ConcreteTypeRep (fromTypeRep)
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.Typeable (typeRep, Proxy(..))
-import           Data.Void (absurd)
+import           Data.Void (absurd, Void)
 import           Distributed.JobQueue.Heartbeat (checkHeartbeats)
 import           Distributed.JobQueue.Shared
 import           Distributed.RedisQueue
@@ -92,13 +92,13 @@ defaultBackchannel = "all-servers"
 -- | This is the preferred way to run 'jobQueueClient'.  It ensures
 -- that the thread gets cleaned up when the inner action completes.
 withJobQueueClient
-    :: (MonadConnect m, Sendable response)
+    :: forall m response a. (MonadConnect m, Sendable response)
     => ClientConfig -> RedisInfo -> (ClientVars m response -> m a) -> m a
 withJobQueueClient config redis f = do
     result <- liftBaseWith $ \restore -> do
         cvs <- newClientVars
-        race (restore (jobQueueClient config cvs redis))
-             (restore (f cvs))
+        race (restore (jobQueueClient config cvs redis :: m Void))
+             (restore (f cvs :: m a))
     case result of
         Left v -> absurd =<< restoreM v
         Right x -> restoreM x
@@ -111,14 +111,14 @@ withJobQueueClient config redis f = do
 -- This function should be run in its own thread, as it never returns
 -- (the return type is @void@).
 jobQueueClient
-    :: (MonadConnect m, Sendable response)
+    :: forall m response void. (MonadConnect m, Sendable response)
     => ClientConfig
     -> ClientVars m response
     -> RedisInfo
     -> m void
 jobQueueClient config cvs redis = do
     result <- liftBaseWith $ \restore ->
-        race (restore checker) (restore subscriber)
+        race (restore (checker :: m Void)) (restore (subscriber :: m Void))
     case result of
         Left v -> absurd =<< restoreM v
         Right v -> absurd =<< restoreM v
