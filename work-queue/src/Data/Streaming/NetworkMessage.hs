@@ -5,7 +5,8 @@
 {-# LANGUAGE NoImplicitPrelude          #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
-{-# LANGUAGE ConstraintKinds  #-}
+{-# LANGUAGE ConstraintKinds            #-}
+{-# LANGUAGE TemplateHaskell            #-}
 -- | Pass well-typed messages across a network connection, including heartbeats.
 --
 -- Built on top of "Data.Streaming.Network". This module handles all heartbeat
@@ -308,7 +309,7 @@ data NMSettings = NMSettings
 -- your needs.
 defaultNMSettings :: IO NMSettings
 defaultNMSettings = do
-    exeHash <- executableHash
+    exeHash <- $(executableHash)
     return NMSettings
         { _nmHeartbeat = 200000
         , _nmExeHash = exeHash
