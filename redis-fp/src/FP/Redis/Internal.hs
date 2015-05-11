@@ -16,7 +16,6 @@ import Control.Concurrent.STM (retry)
 import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..), BlockedIndefinitelyOnSTM(..))
 import Control.Monad.Catch (Handler(Handler))
 import Control.Retry (RetryPolicy(RetryPolicy))
-import Data.DList (DList)
 import qualified Data.DList as DList
 import Data.Function (fix)
 
@@ -96,7 +95,7 @@ disconnect' Connection{connectionRequestQueue,connectionThread}
 -- | Convert 'CommandRequest' to a list of 'Request's and an action to get the response.
 commandToRequestPair :: (MonadIO m, MonadIO n)
                      => CommandRequest a
-                     -> m (DList Request, n a)
+                     -> m (DList.DList Request, n a)
 commandToRequestPair (CommandRequest command) = do
     respMVar <- liftIO newEmptyMVar
     let getResponse = do

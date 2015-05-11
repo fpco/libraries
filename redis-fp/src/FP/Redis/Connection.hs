@@ -31,7 +31,6 @@ import Data.Attoparsec.ByteString.Char8
 import Data.Conduit.Attoparsec (conduitParser, PositionRange)
 import Data.Conduit.Blaze (unsafeBuilderToByteString, allocBuffer)
 import qualified Data.Conduit.Network as CN
-import Data.DList (DList)
 import qualified Data.DList as DList
 import qualified Data.Sequence as Seq
 
@@ -87,9 +86,10 @@ connect cinfo = do
                             app initialTag reqQueue pendingRespQueue connectionMVar appData)
             case connectRetryPolicy cinfo of
                 Just retryPolicy ->
-                    forever (recoveringWithReset retryPolicy
-                                                 [\_ -> Handler retryHandler]
-                                                 (control . runClient))
+                    forever (recoveringWithReset
+                               retryPolicy
+                               [\_ -> Handler retryHandler]
+                               (\resetRetries -> control (runClient resetRetries) :: m ()))
                 Nothing ->
                     control (runClient (return ()))
         retryHandler :: IOException -> m Bool
@@ -128,7 +128,7 @@ connect cinfo = do
         atomically requeueRequests
         control (runThreads initialRequestPairs)
       where
-        runThreads :: [((DList Request),IO ())] -> (RunInBase m IO) -> IO (StM m ())
+        runThreads :: [((DList.DList Request),IO ())] -> (RunInBase m IO) -> IO (StM m ())
         runThreads initialRequestPairs runInIO =
             Async.withAsync (Async.race_
                                 (runInIO (setLogTag initialTag >> reqThread))

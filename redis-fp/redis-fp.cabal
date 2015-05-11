@@ -50,7 +50,7 @@ library
                       ,exceptions
                       ,dlist
                       ,lifted-base
-                      ,monad-control < 1.0
+                      ,monad-control
                       ,monad-extras
                       ,monad-logger
                       ,retry
