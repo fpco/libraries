@@ -1,6 +1,0 @@
-[submodule "vendor/mutable-containers"]
-	path = vendor/mutable-containers
-	url = git@github.com:fpco/mutable-containers.git
-[submodule "vendor/executable-hash"]
-	path = vendor/executable-hash
-	url = git@github.com:fpco/executable-hash.git

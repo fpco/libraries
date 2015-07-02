@@ -1,13 +1,13 @@
-import Control.Monad (when)
-import Distribution.Simple
-import System.Directory (doesFileExist)
+import Distribution.Simple (defaultMainWithHooks, simpleUserHooks, postBuild)
+import Distribution.Simple.LocalBuildInfo (buildDir)
 import System.Executable.Hash.Internal (maybeInjectExecutableHash)
 import System.FilePath ((</>))
 
 main :: IO ()
 main = defaultMainWithHooks $ simpleUserHooks
-    { postBuild = \_ _ _ _ ->
-        mapM_ (\n -> maybeInjectExecutableHash ("dist/build" </> n </> n))
+    { postBuild = \_ _ _ buildInfo -> do
+        let dir = buildDir buildInfo
+        mapM_ (\n -> maybeInjectExecutableHash (dir </> n </> n))
             [ "hpc-example-war"
             , "hpc-example-redis"
             , "test"

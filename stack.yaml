@@ -1,0 +1,12 @@
+resolver: lts-2.16
+extra-deps:
+  - concrete-typerep-0.1.0.2
+  - monad-extras-0.5.9
+flags:
+  concrete-typerep:
+    new-typerep: true
+packages:
+  - ./json-conduit
+  - ./redis-fp
+  - ./thread-file-logger
+  - ./work-queue
