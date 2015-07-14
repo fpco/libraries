@@ -94,8 +94,7 @@ connect cinfo = do
                     control (runClient (return ()))
         retryHandler :: IOException -> m Bool
         retryHandler e = do
-            --TODO SHOULD: improve logging
-            logWarnNS logSource ("connect clientThread retryHandler exception: " ++ tshow e)
+            logErrorNS logSource ("Exception in Redis connection thread: " ++ tshow e)
             return True
         outerHandler :: IOException -> m ()
         outerHandler exception = do
