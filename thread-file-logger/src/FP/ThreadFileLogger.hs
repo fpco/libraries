@@ -50,7 +50,7 @@ newtype LogTag = LogTag { unLogTag :: Text }
 
 -- Default to using standard stdout logging and omitting the effect of
 -- this library.
-#if 1
+#ifndef ENABLE_THREAD_FILE_LOGGER
 
 runThreadFileLoggingT :: (MonadBaseControl IO m, MonadIO m) => LoggingT m a -> m a
 runThreadFileLoggingT = runStdoutLoggingT

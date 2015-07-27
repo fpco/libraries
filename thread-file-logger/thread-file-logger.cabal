@@ -13,6 +13,10 @@ build-type:          Simple
 extra-source-files:  README.md
 cabal-version:       >= 1.10
 
+Flag enable
+  Description:       Enable thread file logging (instead of plain stdout)
+  Default:           False
+
 library
   exposed-modules:     FP.ThreadFileLogger
   build-depends:       base
@@ -33,3 +37,5 @@ library
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall
+  if flag(enable)
+    ghc-options:       -DENABLE_THREAD_FILE_LOGGER
