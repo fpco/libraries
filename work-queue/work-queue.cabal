@@ -122,10 +122,14 @@ test-suite test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
   main-is:             Main.hs
-  other-modules:       Data.WorkQueueSpec
+  other-modules:       Control.Concurrent.ThreadPoolSpec
+                       Control.Exception.MaskSpec
                        Data.Streaming.NetworkMessageSpec
+                       Data.WorkQueueSpec
+                       Distributed.JobQueue.PeriodicSpec
+                       Distributed.JobQueueSpec
                        Distributed.WorkQueueSpec
-                       Control.Concurrent.ThreadPoolSpec
+                       Spec
   build-depends:       base
                      , work-queue
                      , hspec
