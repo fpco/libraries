@@ -109,7 +109,7 @@ defaultWorkerConfig prefix ci hostname = WorkerConfig
     , workerPort = 0
     , workerMasterLocalSlaves = 1
     , workerHeartbeatSendIvl = Seconds 15
-    , workerConnectionHeartbeatIvlMicros = 1000 * 1000 * 15
+    , workerConnectionHeartbeatIvlMicros = 1000 * 1000 * 2
     }
 
 -- | This runs a job queue worker.  The data that's being sent between
