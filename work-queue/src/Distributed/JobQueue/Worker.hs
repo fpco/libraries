@@ -313,21 +313,22 @@ becomeMaster JQWParams {..} ri req = do
     let ss = setAfterBind
             (putMVar boundPort . fromIntegral <=< socketPort)
             (serverSettingsTCP (workerPort config) "*")
-    eres <- tryAny $ withMaster (runTCPServer ss) nmSettings () $ \queue ->
-        withLocalSlaves queue (workerMasterLocalSlaves config) calc $ do
-            JobRequest {..} <- decodeOrThrow "jobQueueWorker" req
-            when (jrRequestType /= requestType ||
-                  jrResponseType /= responseType) $
-                liftIO $ throwIO TypeMismatch
-                    { expectedResponseType = responseType
-                    , actualResponseType = jrResponseType
-                    , expectedRequestType = requestType
-                    , actualRequestType = jrRequestType
-                    }
-            decoded <- decodeOrThrow "jobQueueWorker" jrBody
-            port <- readMVar boundPort
-            let mci = MasterConnectInfo (workerHostName config) port
-            liftIO $ inner redis mci decoded queue
+    eres <- tryAny $ do
+       JobRequest {..} <- decodeOrThrow "jobQueueWorker" req
+       when (jrRequestType /= requestType ||
+             jrResponseType /= responseType) $ do
+           liftIO $ throwIO TypeMismatch
+               { expectedResponseType = responseType
+               , actualResponseType = jrResponseType
+               , expectedRequestType = requestType
+               , actualRequestType = jrRequestType
+               }
+       decoded <- decodeOrThrow "jobQueueWorker" jrBody
+       withMaster (runTCPServer ss) nmSettings () $ \queue ->
+           withLocalSlaves queue (workerMasterLocalSlaves config) calc $ do
+               port <- readMVar boundPort
+               let mci = MasterConnectInfo (workerHostName config) port
+               liftIO $ inner redis mci decoded queue
     case eres of
         Left err -> do
             $logErrorS "JobQueue" $
