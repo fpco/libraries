@@ -7,6 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE ConstraintKinds            #-}
 {-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE ViewPatterns               #-}
 -- | Pass well-typed messages across a network connection, including heartbeats.
 --
 -- Built on top of "Data.Streaming.Network". This module handles all heartbeat
@@ -36,8 +37,10 @@ module Data.Streaming.NetworkMessage
     ) where
 
 import           ClassyPrelude
-import           Control.Concurrent          (threadDelay)
+import           Control.Concurrent          (threadDelay, myThreadId, throwTo
+                                             ,forkIO)
 import qualified Control.Concurrent.Async    as A
+import           Control.Exception           (AsyncException(ThreadKilled))
 import           Control.Monad.Base          (liftBase)
 import           Control.Monad.Trans.Control (MonadBaseControl, control)
 import qualified Data.Binary                 as B
@@ -45,9 +48,10 @@ import qualified Data.Binary.Get             as B
 import           Data.ConcreteTypeRep        (ConcreteTypeRep, fromTypeRep)
 import           Data.Function               (fix)
 import           Data.Streaming.Network      (AppData, appRead, appWrite)
-import           Data.Vector.Binary          () -- commonly needed orphans
-import           System.Executable.Hash      (executableHash)
 import           Data.Typeable               (Proxy(..), typeRep)
+import           Data.Vector.Binary          () -- commonly needed orphans
+import           Data.Void (absurd)
+import           System.Executable.Hash      (executableHash)
 
 -- | A network message application.
 --
@@ -180,25 +184,37 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                 }
             send :: Message iSend -> IO ()
             send x = writeChan outgoing $! toStrict (B.encode x)
-        A.runConcurrently $
-            A.Concurrently (sendPing send yourHS active) *>
-            A.Concurrently (checkHeartbeat lastPing active blocked) *>
-            A.Concurrently (recvWorker incoming lastPing active blocked leftover) *>
-            A.Concurrently (sendWorker outgoing) *>
-            A.Concurrently (runInBase (nmApp nad) `finally`
-                            send Complete `finally`
-                            finished incoming active)
+        -- Ping / heartbeat are managed by withAsync, so that they're
+        -- interrupted once the other threads have exited.
+        A.withAsync (sendPing send yourHS `A.race`
+                     checkHeartbeat lastPing active blocked) $ \pingThread -> do
+            linkNoThreadKilled pingThread $ \_ ->
+                A.runConcurrently $
+                    A.Concurrently (recvWorker incoming lastPing active blocked leftover) *>
+                    A.Concurrently (sendWorker outgoing) *>
+                    A.Concurrently (runInBase (nmApp nad) `finally`
+                                    send Complete `finally`
+                                    finished incoming active)
   where
-    while ref inner = do
-        loop
-      where
-        loop = whenM (readIORef ref) (inner >> loop)
+    -- If an exception is thrown in the heartbeat thread, then it
+    -- should be rethrown to the main thread.  If it's a ThreadKilled
+    -- exception, then it isn't rethrown, because we expect it to get
+    -- killed when we exit the 'withAsync'.
+    linkNoThreadKilled otherThread inner = do
+        tid <- myThreadId
+        flip A.withAsync inner $ do
+            eres <- A.waitCatch otherThread
+            case eres of
+                Right (Left x) -> absurd x
+                Right (Right x) -> absurd x
+                Left (fromException -> Just ThreadKilled) -> return ()
+                Left err -> throwTo tid err
 
-    sendPing send yourHS active = while active $ do
+    sendPing send yourHS = forever $ do
         () <- send Ping
         threadDelay $ hsHeartbeat yourHS
 
-    checkHeartbeat lastPing active blocked = while active $ do
+    checkHeartbeat lastPing active blocked = forever $ do
         start <- readIORef lastPing
         threadDelay $ heartbeat * 2
         lastPing' <- readIORef lastPing
