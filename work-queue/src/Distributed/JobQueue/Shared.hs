@@ -79,16 +79,29 @@ instance Exception DistributedJobQueueException
 instance Binary DistributedJobQueueException
 
 instance Show DistributedJobQueueException where
-    show ex@(WorkStillInProgress {}) =
-        show ex ++
-        " {- This indicates a bug in the work queue library. -}"
-    show ex@(RequestMissingException {}) =
-        show ex ++
-        " {- This likely means that the request body expired in redis. -}"
-    show ex@(ResponseMissingException {}) =
-        show ex ++
-        " {- This likely means that the response body expired in redis. -}"
-    show ex = show ex
+    show (WorkStillInProgress wid) =
+        "WorkStillInProgress (" ++
+        show wid ++
+        ") {- This indicates a bug in the work queue library. -}"
+    show (RequestMissingException wid) =
+        "RequestMissingException (" ++
+        show wid ++
+        ") {- This likely means that the request body expired in redis. -}"
+    show (ResponseMissingException rid) =
+        "ResponseMissingException (" ++
+        show rid ++
+        ") {- This likely means that the response body expired in redis. -}"
+    show (TypeMismatch {..}) =
+        "TypeMismatch { " ++
+        "expectedResponseType = " ++ show expectedResponseType ++
+        "actualResponseType = " ++ show actualResponseType ++
+        "expectedRequestType = " ++ show expectedRequestType ++
+        "actualRequestType = " ++ show actualRequestType ++
+        " }"
+    show (NetworkMessageException nme) =
+        "NetworkMessageException (" ++ show nme ++ ")"
+    show (OtherException ty txt) =
+        "OtherException " ++ show ty ++ " " ++ show txt
 
 wrapException :: SomeException -> DistributedJobQueueException
 wrapException ex =
