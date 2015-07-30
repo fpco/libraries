@@ -294,7 +294,7 @@ becomeSlave JQWParams {..} mci = do
                 ".  This probably isn't an issue - the master likely " <>
                 "already finished or died.  Here's the exception: " <>
                 tshow err
-        Right (Right ()) -> return ()
+        Right (Right ()) -> $logInfoS "JobQueue" (tshow wid ++ " done being slave of " ++ tshow mci)
         Right (Left err) -> do
             $logErrorS "JobQueue" $ "Slave threw exception: " ++ tshow err
             liftIO $ throwIO err
@@ -334,7 +334,9 @@ becomeMaster JQWParams {..} ri req = do
             $logErrorS "JobQueue" $
                 tshow ri <> " failed with " <> tshow err
             return (Left (wrapException err))
-        Right x -> return (Right x)
+        Right x -> do
+            $logInfoS "JobQueue" "Done being master"
+            return (Right x)
 
 subscribeToRequests
     :: MonadConnect m
