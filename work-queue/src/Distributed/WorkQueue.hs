@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE ConstraintKinds  #-}
 {-# LANGUAGE TemplateHaskell  #-}
+{-# LANGUAGE TypeFamilies     #-}
 -- | Distribute a "Data.WorkQueue" queue over a network via
 -- "Data.Streaming.NetworkMessage".
 --

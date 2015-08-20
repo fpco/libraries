@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE CPP #-}
@@ -20,9 +21,9 @@ import           Distributed.RedisQueue
 import           Distributed.WorkQueue
 import           FP.Redis (Seconds(..), connectInfo)
 import           FP.ThreadFileLogger
-import           Filesystem (isFile, removeFile)
 import qualified Network.Socket as NS
 import           Prelude (appendFile, read)
+import           System.Directory (doesFileExist, removeFile)
 import           System.Environment (withArgs)
 import           System.Environment.Executable (getExecutablePath)
 import           System.Exit (ExitCode(ExitSuccess))
@@ -284,7 +285,7 @@ waitForSocket = loop (100 :: Int)
 -- Remove the specified file, if it exists.
 removeFileIfExists :: FilePath -> IO ()
 removeFileIfExists fp = do
-    exists <- isFile fp
+    exists <- doesFileExist fp
     when exists $ removeFile fp
 
 type Process = Either ProcessHandle (Async ())

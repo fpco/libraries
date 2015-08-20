@@ -35,10 +35,12 @@ library
                        Control.Exception.Mask
   other-modules:       Distributed.JobQueue.Shared
                        Distributed.JobQueue.Heartbeat
+                       Data.ConcreteTypeRep
   build-depends:       base
                      , async
                      , binary
                      , classy-prelude
+                     , hashable
                      , lifted-base
                      , monad-control
                      , retry
@@ -50,7 +52,6 @@ library
                      , void
                      , mono-traversable
                      , transformers
-                     , concrete-typerep
                      , bytestring
                      , redis-fp
                      , executable-hash >= 0.2.0.0
@@ -146,7 +147,7 @@ test-suite test
                      , unix
                      , split
                      , classy-prelude
-                     , system-fileio
+                     , directory
                      , executable-path
                      , process
                      , silently

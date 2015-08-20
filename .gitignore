@@ -12,3 +12,4 @@ cabal.config
 .shake.*
 .docker-sandbox
 .eventlog
+.stack-work/
