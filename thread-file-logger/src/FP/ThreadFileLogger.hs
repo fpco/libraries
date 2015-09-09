@@ -29,12 +29,13 @@ module FP.ThreadFileLogger
 
 import ClassyPrelude hiding (catch)
 import Control.Concurrent.Lifted (ThreadId, myThreadId)
+import Control.Exception (catch)
 import Control.Monad.Base (MonadBase(liftBase))
 import Control.Monad.Logger (LogSource, LogLevel(LevelInfo), LoggingT, runLoggingT, defaultLogStr, runStdoutLoggingT, logDebugS, logInfoS, logWarnS, logErrorS, logOtherS)
 import Control.Monad.Trans.Control (MonadBaseControl, control)
-import Control.Exception (catch)
 import Language.Haskell.TH (Loc(..), Q, Exp)
 import System.Directory (createDirectoryIfMissing)
+import System.FilePath (takeDirectory)
 import System.IO (IOMode(AppendMode), openFile, appendFile, hFlush)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Log.FastLogger (LogStr, toLogStr, fromLogStr)
@@ -212,7 +213,7 @@ globalFileMap = unsafePerformIO (newIORef mempty)
 
 getLogHandle :: FilePath -> IO (Maybe Handle)
 getLogHandle fp = returnHandleOr $ do
-    liftBase $ createDirectoryIfMissing True (fpToString (directory fp))
+    liftBase $ createDirectoryIfMissing True (takeDirectory fp)
     eres <- tryAny $ openFile (fpToString fp) AppendMode
     case eres of
         -- Since the file open succeeded, the handle really
