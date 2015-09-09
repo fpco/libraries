@@ -126,7 +126,7 @@ runArgs getInitialData calc inner = liftIO $ do
 
     slave host port = do
         nmSettings <- defaultNMSettings
-        void $ runSlave cs nmSettings calc
+        void $ runSlave cs nmSettings (\_ -> return ()) calc
       where
         cs = clientSettingsTCP port $ fromString $ unpack host
 
@@ -190,17 +190,21 @@ runSlave
        )
     => ClientSettings
     -> NMSettings
+    -> (initialData -> IO ())
     -> (initialData -> payload -> IO result)
     -> m (Either SomeException ())
-runSlave cs nmSettings calc =
+runSlave cs nmSettings init calc =
     liftIO $ runTCPClient cs $ runNMApp nmSettings nmapp
   where
     nmapp nm = tryAny $ do
         let socket = tshow (appSockAddr (nmAppData nm))
+        $logIODebugS "runSlave" $ "Starting slave on " ++ socket
         ts0 <- nmRead nm
         case ts0 of
             TSInit initialData -> do
-                $logIODebugS "runSlave" $ "Starting slave on " ++ socket
+                $logIODebugS "runSlave" $ "Running initial action"
+                init initialData
+                $logIODebugS "runSlave" $ "Listening for payloads"
                 fix $ \loop -> do
                     ts <- nmRead nm
                     case ts of

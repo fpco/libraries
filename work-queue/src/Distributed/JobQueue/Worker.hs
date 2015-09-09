@@ -212,17 +212,24 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
         -- If there's slave work to be done, then do it.
         mslave <- popSlaveRequest redis
         case mslave of
-            Just slave -> do
-                unsubscribeToRequests mws
-                -- Now that we're a slave, doing a heartbeat check is
-                -- no longer necessary, so deactivate the check, and
-                -- kill the heartbeat thread.
-                deactivateHeartbeats redis wid
-                liftIO $ cancel heartbeatThread
-                becomeSlave jqwp slave
-                -- Restart the heartbeats thread before re-entering
-                -- the loop.
-                withHeartbeats $ loop NoSubscription
+            Just slave -> liftBaseWith $ \restore -> do
+                initCalledRef <- newIORef False
+                let init = void $ restore $ do
+                        liftIO $ writeIORef initCalledRef True
+                        unsubscribeToRequests mws
+                        -- Now that we're a slave, doing a heartbeat check is
+                        -- no longer necessary, so deactivate the check, and
+                        -- kill the heartbeat thread.
+                        deactivateHeartbeats redis wid
+                        liftIO $ cancel heartbeatThread
+                void $ restore $ do
+                    becomeSlave jqwp slave init
+                    -- Restart the heartbeats thread before re-entering
+                    -- the loop, if it was stopped.
+                    initCalled <- readIORef initCalledRef
+                    if initCalled
+                        then withHeartbeats (loop NoSubscription)
+                        else loop mws heartbeatThread
             Nothing -> do
                 -- There isn't any slave work, so instead check if
                 -- there's a job request, and become a master if there
@@ -280,11 +287,12 @@ becomeSlave
     :: MonadConnect m
     => JQWParams request response payload result
     -> MasterConnectInfo
+    -> IO ()
     -> m ()
-becomeSlave JQWParams {..} mci = do
+becomeSlave JQWParams {..} mci init = do
     $logInfoS "JobQueue" (tshow wid ++ " becoming slave of " ++ tshow mci)
     let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
-    eres <- try $ runSlave settings nmSettings (\() -> calc)
+    eres <- try $ runSlave settings nmSettings (\() -> init) (\() -> calc)
     case eres of
         -- This indicates that the slave couldn't connect.
         Left err@(IOError {}) ->
