@@ -256,7 +256,7 @@ checkRequestsAnswered correct sets seconds = do
                 "\nsent = " ++ show sent ++
                 "\nunwatched = " ++ show unwatched ++
                 "\nunreceived = " ++ show unreceived ++
-                "\nunreveived - unwatched = " ++ show (unreceived `S.difference` unwatched)
+                "\nunreceived - unwatched = " ++ show (unreceived `S.difference` unwatched)
         Just () -> do
             sent <- readIORef (sentRequests sets)
             when (S.null sent) $ fail "Didn't send any requests."
