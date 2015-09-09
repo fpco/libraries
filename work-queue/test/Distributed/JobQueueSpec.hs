@@ -165,13 +165,13 @@ sendJobRequest sets request =
         mresult <- timeout (1000 * 1000) $ sendRequest clientConfig redis request
         case mresult of
             Nothing -> do
-                $logError "Timed out waiting for request ID"
+                $logError "Timed out waiting for request to be sent"
                 fail "sendJobRequest failed"
             Just (_, Just (_ :: response)) -> do
                 $logError "Didn't expect to find a cached result"
                 fail "sendJobRequest failed"
             Just (rid, Nothing) -> do
-                $logDebug $ "Sent job request " ++ tshow rid
+                $logDebug $ "Successfully sent job request " ++ tshow rid
                 atomicInsert rid (sentRequests sets)
                 atomicInsert rid (unwatchedRequests sets)
                 return rid

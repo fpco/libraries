@@ -246,13 +246,16 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
                         -- 'requestChannel', then the next iteration
                         -- should be subscribed.
                         NoSubscription -> do
+                            $logInfoS "JobQueue" "Re-running requests, with subscription"
                             (notified, dcv) <- subscribeToRequests redis
                             let mws' = WithSubscription notified dcv
                             loop mws' heartbeatThread
                         -- If we are subscribed to 'requestChannel',
                         -- then block waiting for a notification.
                         WithSubscription notified _ -> do
+                            $logInfoS "JobQueue" "Waiting for request notification"
                             takeMVar notified
+                            $logInfoS "JobQueue" "Got notified of an available request"
                             loop mws heartbeatThread
                     -- Let the client know about missing requests.
                     RequestMissing ri -> do
@@ -302,7 +305,8 @@ becomeSlave JQWParams {..} mci init = do
                 ".  This probably isn't an issue - the master likely " <>
                 "already finished or died.  Here's the exception: " <>
                 tshow err
-        Right (Right ()) -> $logInfoS "JobQueue" (tshow wid ++ " done being slave of " ++ tshow mci)
+        Right (Right ()) ->
+            $logInfoS "JobQueue" (tshow wid ++ " done being slave of " ++ tshow mci)
         Right (Left err) -> do
             $logErrorS "JobQueue" $ "Slave threw exception: " ++ tshow err
             liftIO $ throwIO err

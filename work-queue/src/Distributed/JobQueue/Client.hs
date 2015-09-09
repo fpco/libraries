@@ -29,7 +29,7 @@ module Distributed.JobQueue.Client
 
 import           ClassyPrelude
 import           Control.Concurrent.Async (race)
-import           Control.Monad.Logger (MonadLogger, logErrorS, logInfoS)
+import           Control.Monad.Logger (MonadLogger, logErrorS, logInfoS, logDebugS)
 import           Control.Monad.Trans.Control (liftBaseWith, restoreM)
 import           Data.Binary (encode)
 import           Data.ConcreteTypeRep (fromTypeRep)
@@ -210,15 +210,20 @@ sendRequest
 sendRequest config redis request = do
     let (ri, encoded) = prepareRequest config request (Proxy :: Proxy response)
         k = riRequest ri
+    $logDebugS "sendRequest" $ "Checking for response for request " <> tshow k
     mresponse <- checkForResponse redis k
     case mresponse of
         Nothing -> do
+            $logDebugS "sendRequest" $ "Sending request " <> tshow k
             sendRequestIgnoringCache config redis ri encoded
             return (k, Nothing)
-        Just (Left _) -> do
+        Just (Left err) -> do
+            $logDebugS "sendRequest" $ "Cached response to " <> tshow k <> " is an error: " <> tshow err
+            $logDebugS "sendRequest" $ "Clearing response cache for " <> tshow k
             clearResponse redis k
             return (k, Nothing)
-        Just (Right x) ->
+        Just (Right x) -> do
+            $logDebugS "sendRequest" $ "Using cached response for " <> tshow k
             return (k, Just x)
 
 -- Computes the 'RequestInfo' and encoded bytes for a request.
@@ -240,12 +245,15 @@ prepareRequest config request _ = (ri, encoded)
 -- Internal function to send a request without checking redis for an
 -- existing response.
 sendRequestIgnoringCache
-    :: MonadCommand m
+    :: (MonadCommand m, MonadLogger m)
     => ClientConfig -> RedisInfo -> RequestInfo -> ByteString -> m ()
 sendRequestIgnoringCache config redis ri encoded = do
     let expiry = clientRequestExpiry config
+    $logDebugS "sendRequest" $ "Pushing request " <> tshow ri
     pushRequest redis expiry ri encoded
+    $logDebugS "sendRequest" $ "Notifying about request " <> tshow ri
     notifyRequestAvailable redis
+    $logDebugS "sendRequest" $ "Done notifying about request " <> tshow ri
 
 -- | This registers a callback to handle the response to the specified
 -- 'RequestId'.  Note that synchronous exceptions thrown by the
@@ -277,7 +285,7 @@ registerResponseCallback cvs redis k handler = do
         alreadyGotCalled <- readIORef gotCalledRef
         unless alreadyGotCalled $ do
             atomically $ SM.delete k (clientDispatch cvs)
-            logCallbackExceptions $ handler response
+            logCallbackExceptions k $ handler response
 
 -- Like 'registerResponseCallback, but without checking if the result
 -- already exists.
@@ -293,14 +301,14 @@ registerResponseCallbackInternal cvs k handler = do
   where
     addOrExtend Nothing = return ((), Replace runHandler)
     addOrExtend (Just old) = return ((), Replace (\x -> old x >> runHandler x))
-    runHandler = logCallbackExceptions . handler
+    runHandler = logCallbackExceptions k . handler
 
 -- Internal function used to catch and log exceptions which occur in
 -- the callback handlers.
-logCallbackExceptions :: (MonadCommand m, MonadLogger m) => m () -> m ()
-logCallbackExceptions f =
+logCallbackExceptions :: (MonadCommand m, MonadLogger m) => RequestId -> m () -> m ()
+logCallbackExceptions k f =
      catchAny f $ \ex ->
-         $logErrorS "JobQueue" ("logCallbackExceptions: " ++ tshow ex)
+         $logErrorS "JobQueue" ("Exception thrown in job-queue client callback for request " ++ tshow k ++ ": " ++ tshow ex)
 
 -- | Check for a response, give a 'RequestId'.
 checkForResponse

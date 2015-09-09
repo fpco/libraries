@@ -21,6 +21,7 @@ import Blaze.ByteString.Builder (Builder)
 import qualified Blaze.ByteString.Builder as Builder
 import qualified Control.Concurrent.Async as Async
 import Control.Concurrent.STM (retry)
+import Control.Exception (AsyncException(ThreadKilled))
 import Control.Monad.Catch (Handler(..))
 import Control.Monad.Extra
 import Control.Monad.Logger
@@ -278,7 +279,9 @@ connect cinfo = do
     showEx s i = do
         r <- catch i
             (\(e::SomeException) -> do
-                logDebugNS logSource (s ++ ": EXCEPTION " ++ tshow e)
+                case fromException e of
+                    Just ThreadKilled -> return ()
+                    _ -> logDebugNS logSource (s ++ ": EXCEPTION " ++ tshow e)
                 throwM e)
         logDebugNS logSource (s ++ ": returning")
         return r
