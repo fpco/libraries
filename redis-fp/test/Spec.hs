@@ -3,10 +3,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TupleSections #-}
 
 import ClassyPrelude
-import Control.Concurrent.Async (Async, async, waitCatch)
-import Control.Concurrent.Lifted (threadDelay, fork)
+import Control.Concurrent.Async (Async, async, waitCatch, cancel, poll)
+import Control.Concurrent.Lifted (threadDelay, fork, killThread)
 import Control.Concurrent.STM (check)
 import Control.Monad.Logger (runStdoutLoggingT, LoggingT)
 import Data.List.NonEmpty (NonEmpty((:|)))
@@ -25,7 +26,7 @@ spec = do
         let chan = "test-chan-1"
         connRef <- newIORef (error "connRef uninitialized")
         messageSeenRef <- newIORef False
-        (ready, _) <- asyncSubscribe chan $ \conn _ _ -> do
+        (ready, thread) <- asyncSubscribe chan $ \conn _ _ -> do
             writeIORef connRef conn
             writeIORef messageSeenRef True
         -- Check that messages are received once we've subscribed.
@@ -42,6 +43,8 @@ spec = do
         liftIO $ threadDelay (1000 * 100)
         wasSeen' <- readIORef messageSeenRef
         wasSeen' `shouldBe` False
+        -- Kill subscriber
+        cancel thread
     it "throws exceptions from within withSubscriptionsEx" $ do
         let chan = "test-chan-2"
         (ready, thread) <- asyncSubscribe chan $ \_ _ _ ->
@@ -62,12 +65,12 @@ spec = do
         res <- timeout (1000 * 1000) $ withRedis $ \redis ->
             runCommand redis $ brpop ("foobar_list" :| []) (Seconds 0)
         res `shouldBe` (Just (Just ("foobar_list", "my data")))
-    skip $ it "can interrupt subscriptions" $ do
+    it "can interrupt subscriptions" $ do
         let chan = "test-chan-3"
             sub = subscribe (chan :| [])
         messageSeenRef <- newIORef False
         timeoutSucceededRef <- newIORef False
-        _ <- fork $
+        tid <- fork $
             (void $ timeout (1000 * 10) $ runStdoutLoggingT $ withSubscriptionsWrapped localhost (sub :| []) $ \msg ->
                 case msg of
                     Message {} -> liftIO $ writeIORef messageSeenRef True
@@ -80,6 +83,7 @@ spec = do
         messageSeen `shouldBe` False
         timeoutSucceded <- readIORef timeoutSucceededRef
         timeoutSucceded `shouldBe` True
+        killThread tid
     it "throws DisconnectedException when running a command on a disconnected connection" $ do
         withRedis $ \r -> do
             let cmd = set "test-key" "test" []
@@ -89,6 +93,31 @@ spec = do
                 case ex of
                     DisconnectedException -> True
                     _ -> False
+    it "publish succeeds in a timely manner" $ do
+        let chan = "test-chan-2"
+            msg = "test message"
+            cnt = 10 :: Int
+        countRef <- newIORef 0
+        -- Fork some listeners
+        listeners <- forM [1..cnt] $ \_ -> asyncSubscribe chan $ \_ _ msg' -> do
+            liftIO $ msg' `shouldBe` msg
+            atomicModifyIORef' countRef ((,()) . (+1))
+        -- Wait for them to be ready
+        mapM_ (\(ready, _) -> atomically $ check =<< readTVar ready) listeners
+        -- Publish some messages
+        forM_ [1..cnt] $ \_ -> do
+          mres <- timeout (1000 * 100) $ withRedis $ \r ->
+              runCommand_ r $ publish chan msg
+          when (isNothing mres) $ fail "Publish took too long"
+        -- Wait a little bit
+        threadDelay (1000 * 100)
+        -- Check the listeners for exceptions
+        mapM_ (mapM_ (either throwIO (either throwIO (\_ -> return ()))) <=< poll . snd) listeners
+        -- Expect that every listener got the message
+        count <- readIORef countRef
+        count `shouldBe` (cnt * cnt)
+        -- Kill all the listeners
+        mapM_ (cancel . snd) listeners
 
 skip :: Monad m => m () -> m ()
 skip _ = return ()
