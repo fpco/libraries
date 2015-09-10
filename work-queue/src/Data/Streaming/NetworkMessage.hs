@@ -37,8 +37,7 @@ module Data.Streaming.NetworkMessage
     ) where
 
 import           ClassyPrelude
-import           Control.Concurrent          (threadDelay, myThreadId, throwTo
-                                             ,forkIO)
+import           Control.Concurrent          (threadDelay, myThreadId, throwTo)
 import qualified Control.Concurrent.Async    as A
 import           Control.Exception           (AsyncException(ThreadKilled))
 import           Control.Monad.Base          (liftBase)
@@ -50,7 +49,7 @@ import           Data.Function               (fix)
 import           Data.Streaming.Network      (AppData, appRead, appWrite)
 import           Data.Typeable               (Proxy(..), typeRep)
 import           Data.Vector.Binary          () -- commonly needed orphans
-import           Data.Void (absurd)
+import           Data.Void                   (absurd)
 import           System.Executable.Hash      (executableHash)
 
 -- | A network message application.
@@ -194,7 +193,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
         -- interrupted once the other threads have exited.
         A.withAsync (sendPing send yourHS `A.race`
                      checkHeartbeat lastPing active blocked) $ \pingThread -> do
-            linkNoThreadKilled pingThread $ \_ ->
+            linkNoThreadKilled pingThread $
                 A.runConcurrently $
                     A.Concurrently (recvWorker incoming lastPing active blocked leftover) *>
                     A.Concurrently (sendWorker outgoing) *>
@@ -206,10 +205,10 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
     -- should be rethrown to the main thread.  If it's a ThreadKilled
     -- exception, then it isn't rethrown, because we expect it to get
     -- killed when we exit the 'withAsync'.
-    linkNoThreadKilled otherThread inner = do
+    linkNoThreadKilled pingThread inner = do
         tid <- myThreadId
-        flip A.withAsync inner $ do
-            eres <- A.waitCatch otherThread
+        flip A.withAsync (\_ -> inner) $ do
+            eres <- A.waitCatch pingThread
             case eres of
                 Right (Left x) -> absurd x
                 Right (Right x) -> absurd x
@@ -252,8 +251,8 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
             Nothing -> finished incoming active NMConnectionDropped
 
     finished incoming active ex = do
-         atomicWriteIORef active False
-         writeChan incoming (Left ex)
+        atomicWriteIORef active False
+        writeChan incoming (Left ex)
 
     sendWorker outgoing = fix $ \loop -> do
         bs <- readChan outgoing

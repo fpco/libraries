@@ -4,7 +4,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 module Data.Streaming.NetworkMessageSpec (spec) where
 
-import           Control.Applicative
 import           Control.Concurrent
 import           Control.Concurrent.Async
 import           Control.Exception
