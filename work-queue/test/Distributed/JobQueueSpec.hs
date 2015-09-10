@@ -98,9 +98,9 @@ spec = do
             randomSlaveSpawner "redis-long" `race`
             randomWaiterSpawner "waiter-1" sets `race`
             randomWaiterSpawner "waiter-2" sets `race`
-            -- Run job requesters for 2 seconds, then check that all
+            -- Run job requesters for 10 seconds, then check that all
             -- the responses eventually came back.
-            (do void $ timeout (1000 * 1000 * 2) $
+            (do void $ timeout (1000 * 1000 * 10) $
                     randomJobRequester sets 254 `race`
                     randomJobRequester sets 255
                 checkRequestsAnswered (== 0) sets 60)
