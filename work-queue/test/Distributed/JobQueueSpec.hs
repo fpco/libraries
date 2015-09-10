@@ -285,10 +285,12 @@ clearRedisKeys =
         matches <- runCommand redis $ keys (redisTestPrefix <> "*")
         mapM_ (runCommand_ redis . del) (nonEmpty matches)
 
+{-
 clearSlaveRequests :: MonadIO m => m ()
 clearSlaveRequests =
     liftIO $ runThreadFileLoggingT $ logNest "clearSlaveRequests" $ withRedis redisTestPrefix localhost $ \r -> do
         run_ r $ del (unLKey (slaveRequestsKey r) :| [])
+-}
 
 enqueueSlaveRequest :: MonadIO m => MasterConnectInfo -> m ()
 enqueueSlaveRequest mci =
