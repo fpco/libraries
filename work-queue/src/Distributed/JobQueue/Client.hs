@@ -24,6 +24,8 @@ module Distributed.JobQueue.Client
     , jobQueueRequest
     , checkForResponse
     , DistributedJobQueueException(..)
+    -- * Exposed for the test-suite
+    , prepareRequest
     )
     where
 

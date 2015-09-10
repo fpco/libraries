@@ -25,6 +25,7 @@ import Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
 import Data.Binary (encode)
 import Data.List.NonEmpty (nonEmpty, NonEmpty(..))
 import Data.List.Split (chunksOf)
+import Data.Proxy (Proxy(..))
 import Data.Streaming.NetworkMessage (Sendable)
 import Distributed.JobQueue
 import Distributed.RedisQueue
@@ -95,8 +96,8 @@ spec = do
             randomSlaveSpawner "redis-long" `race`
             randomSlaveSpawner "redis-long" `race`
             randomSlaveSpawner "redis-long" `race`
-            randomWaiterSpawner sets `race`
-            randomWaiterSpawner sets `race`
+            randomWaiterSpawner "waiter-1" sets `race`
+            randomWaiterSpawner "waiter-2" sets `race`
             -- Run job requesters for 2 seconds, then check that all
             -- the responses eventually came back.
             (do void $ timeout (1000 * 1000 * 2) $
@@ -162,12 +163,13 @@ sendJobRequest
 sendJobRequest sets request =
     runThreadFileLoggingT $ logNest "sendJobRequest" $ withRedis redisTestPrefix localhost $ \redis -> do
         mresult <- timeout (1000 * 1000) $ sendRequest clientConfig redis request
+        let (ri, _) = prepareRequest clientConfig request (Proxy :: Proxy response)
         case mresult of
             Nothing -> do
-                $logError "Timed out waiting for request to be sent"
+                $logError $ "Timed out waiting for request to be sent: " <> tshow ri
                 fail "sendJobRequest failed"
             Just (_, Just (_ :: response)) -> do
-                $logError "Didn't expect to find a cached result"
+                $logError $ "Didn't expect to find a cached result: " <> tshow ri
                 fail "sendJobRequest failed"
             Just (rid, Nothing) -> do
                 $logDebug $ "Successfully sent job request " ++ tshow rid
@@ -177,14 +179,15 @@ sendJobRequest sets request =
 
 forkResponseWaiter
     :: forall response. (Sendable response, Ord response)
-    => RequestSets response
+    => LogTag
+    -> RequestSets response
     -> ResourceT IO (Async ())
-forkResponseWaiter sets = allocateAsync responseWaiter
+forkResponseWaiter tag sets = allocateAsync responseWaiter
   where
     -- Takes some items from the unwatchedRequests set and waits on it.
     responseWaiter :: IO ()
     responseWaiter = do
-        runThreadFileLoggingT $ logNest "response-waiter" $ withRedis redisTestPrefix localhost $ \redis -> do
+        runThreadFileLoggingT $ logNest tag $ withRedis redisTestPrefix localhost $ \redis -> do
             withJobQueueClient clientConfig redis $ \cvs ->
                 foldl' raceLifted
                        (forever $ threadDelay maxBound)
@@ -206,25 +209,26 @@ clientConfig = defaultClientConfig
     }
 
 randomSlaveSpawner :: String -> IO ()
-randomSlaveSpawner which = runResourceT $ runThreadFileLoggingT $ withLogTag (LogTag "randomSlaveSpawner") $ forM_ [0..] $ \n -> do
+randomSlaveSpawner which = runResourceT $ runThreadFileLoggingT $ withLogTag "randomSlaveSpawner" $ forM_ [0..] $ \n -> do
     startTime <- liftIO getCurrentTime
-    $logInfoS "randomSlaveSpawner" $ "Forking worker at " ++ tshow startTime
+    $logInfo $ "Forking worker at " ++ tshow startTime
     pid <- lift $ forkWorker which 0
     randomDelay (500 * n) (500 + 500 * n)
-    $logInfoS "randomSlaveSpawner" $ "Cancelling worker started at " ++ tshow startTime
+    $logInfo $ "Cancelling worker started at " ++ tshow startTime
     cancelProcess pid
 
-randomWaiterSpawner :: (Sendable response, Ord response) => RequestSets response -> IO ()
-randomWaiterSpawner sets = runResourceT $ runThreadFileLoggingT $ withLogTag (LogTag "randomWaiterSpawner") $ forM_ [0..] $ \n -> do
+randomWaiterSpawner :: (Sendable response, Ord response)
+                    => LogTag -> RequestSets response -> IO ()
+randomWaiterSpawner tag sets = runResourceT $ runThreadFileLoggingT $ withLogTag tag $ forM_ [0..] $ \n -> do
     startTime <- liftIO getCurrentTime
-    $logInfoS "randomWaiterSpawner" $ "Forking waiter at " ++ tshow startTime
-    tid <- lift $ forkResponseWaiter sets
+    $logInfo $ "Forking waiter at " ++ tshow startTime
+    tid <- lift $ forkResponseWaiter tag sets
     randomDelay (500 * n) (2500 + 500 * n)
-    $logInfoS "randomWaiterSpawner" $ "Cancelling waiter started at " ++ tshow startTime
+    $logInfo $ "Cancelling waiter started at " ++ tshow startTime
     liftIO $ cancel tid
 
 randomJobRequester :: Sendable response => RequestSets response -> Int -> IO ()
-randomJobRequester sets cnt = runResourceT $ runThreadFileLoggingT $ withLogTag (LogTag "randomJobRequester") $ forM_ [0..] $ \(n :: Int) -> do
+randomJobRequester sets cnt = runResourceT $ runThreadFileLoggingT $ withLogTag "randomJobRequester" $ forM_ [0..] $ \(n :: Int) -> do
     -- "redis-long" interprets this as a number of ms to delay.
     ms <- liftIO $ randomRIO (0, 200)
     let request :: Vector [Int]

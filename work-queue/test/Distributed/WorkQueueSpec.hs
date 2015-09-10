@@ -208,7 +208,7 @@ runMasterOrSlave XorConfig {..} = do
         inner () queue = do
             subresults <- mapQueue queue (chunksOf xorChunkSize xs)
             calc () subresults
-    logExceptions "runMasterOrSlave" $ runArgs' sharedConfig initialData calc inner
+    runArgs' sharedConfig initialData calc inner
 runMasterOrSlave RedisConfig {..} | isThreadDelay = runThreadFileLoggingT $ do
     [lslaves] <- liftIO getArgs
     let calc :: [Int] -> IO Int
