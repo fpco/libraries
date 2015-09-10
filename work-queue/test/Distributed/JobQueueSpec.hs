@@ -56,9 +56,6 @@ spec = do
         liftIO $ do
             isNothing noResult `shouldBe` True
             cancelProcess master
-            putStrLn "=================================="
-            putStrLn "Master cancelled"
-            putStrLn "=================================="
         -- One of these will become a master and one will become a
         -- slave.
         --
