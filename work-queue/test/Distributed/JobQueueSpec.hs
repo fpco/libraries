@@ -16,8 +16,10 @@ module Distributed.JobQueueSpec
     ) where
 
 import ClassyPrelude hiding (keys)
-import Control.Concurrent.Async (Async, race, async, cancel)
+import Control.Concurrent (forkIO, myThreadId, ThreadId)
+import Control.Concurrent.Async (Async, race, async, cancel, waitCatch)
 import Control.Concurrent.Lifted (threadDelay)
+import Control.Exception (AsyncException(ThreadKilled), throwTo)
 import Control.Monad.Logger
 import Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
 import Data.Binary (encode)
@@ -333,9 +335,40 @@ withItem ref f = do
             Just x -> restore (f x) `onException` atomicInsert x ref
 
 allocateAsync :: IO a -> ResourceT IO (Async a)
-allocateAsync f = fmap snd $ allocate (async f) cancel
+allocateAsync f = fmap snd $ allocate linkedAsync cancel
+  where
+    linkedAsync = do
+        thread <- async f
+        linkIgnoreThreadKilled thread
+        return thread
+
+-- Something that gives a capability like this should be in the async
+-- library...
+linkIgnoreThreadKilled :: Async a -> IO ()
+linkIgnoreThreadKilled a = do
+    me <- myThreadId
+    void $ forkRepeat $ do
+        eres <- waitCatch a
+        case eres of
+            Left (fromException -> Just ThreadKilled) -> return ()
+            Left err -> throwTo me err
+            Right _ -> return ()
 
 raceLifted :: MonadBaseControl IO m => m a -> m b -> m ()
 raceLifted f g =
     liftBaseWith $ \restore ->
         void $ restore f `race` restore g
+
+-- Copied from async library
+
+-- | Fork a thread that runs the supplied action, and if it raises an
+-- exception, re-runs the action.  The thread terminates only when the
+-- action runs to completion without raising an exception.
+forkRepeat :: IO a -> IO ThreadId
+forkRepeat action =
+  mask $ \restore ->
+    let go = do r <- try (restore action)
+                case r of
+                  Left (_ :: SomeException) -> go
+                  _                         -> return ()
+    in forkIO go
