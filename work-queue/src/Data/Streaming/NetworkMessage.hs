@@ -141,14 +141,14 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                       hsExeHash myHS /= hsExeHash yourHS) $ do
                     throwIO $ NMMismatchedHandshakes myHS yourHS
                 return (yourHS, leftover)
-            Nothing -> throwIO NMConnectionClosedBeforeHandshake
+            Nothing -> throwIO NMConnectionDropped
     control $ \runInBase -> do
         -- FIXME use a bounded chan perhaps? (Make the queue size
         -- configuration in NMSettings.) Since any data sent will
         -- count as a ping, this would not interfere with the
         -- heartbeat.
         outgoing <- newChan :: IO (Chan ByteString)
-        incoming <- newChan :: IO (Chan (IO youSend))
+        incoming <- newChan :: IO (Chan (Either NetworkMessageException youSend))
 
         -- Our heartbeat logic involves two threads: the recvWorker thread
         -- increments lastPing every time it reads a chunk of data, and the
@@ -178,9 +178,15 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                 { _nmAppData = ad
                 , _nmWrite = send . Payload
                 , _nmRead = do
-                    whenM (not <$> readIORef active) $
-                        liftIO $ throwIO NMConnectionClosed
-                    join (readChan incoming)
+                    eres <- readChan incoming
+                    case eres of
+                        Right res -> return res
+                        Left err -> do
+                            -- Put it back on the channel so that
+                            -- subsequent requests get the same
+                            -- message.
+                            writeChan incoming (Left err)
+                            throwIO err
                 }
             send :: Message iSend -> IO ()
             send x = writeChan outgoing $! toStrict (B.encode x)
@@ -194,7 +200,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                     A.Concurrently (sendWorker outgoing) *>
                     A.Concurrently (runInBase (nmApp nad) `finally`
                                     send Complete `finally`
-                                    finished incoming active)
+                                    finished incoming active NMConnectionClosed)
   where
     -- If an exception is thrown in the heartbeat thread, then it
     -- should be rethrown to the main thread.  If it's a ThreadKilled
@@ -239,15 +245,15 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
             Just (Ping, leftover') ->
                 loop leftover'
             Just (Payload p, leftover') ->
-                writeChan incoming (return p) >> loop leftover'
+                writeChan incoming (Right p) >> loop leftover'
             -- We're done when the "Complete" message is received
             -- or the connection is closed
-            Just (Complete, _) -> finished incoming active
-            Nothing -> finished incoming active
+            Just (Complete, _) -> finished incoming active NMConnectionClosed
+            Nothing -> finished incoming active NMConnectionDropped
 
-    finished incoming active = do
+    finished incoming active ex = do
          atomicWriteIORef active False
-         writeChan incoming (throwIO NMConnectionClosed)
+         writeChan incoming (Left ex)
 
     sendWorker outgoing = fix $ \loop -> do
         bs <- readChan outgoing
@@ -291,15 +297,15 @@ data NetworkMessageException
     -- datatypes being sent, or when there is a mismatch in executable
     -- hash.
     = NMMismatchedHandshakes Handshake Handshake
-    -- | This is thrown by 'runNMApp' if the connection closed during
-    -- the initial handshake.
-    | NMConnectionClosedBeforeHandshake
     -- | This is thrown by 'runNMApp' if we haven't received a data
     -- packet or ping from the other side of the connection within
     -- @heartbeat * 2@ time.
     | NMHeartbeatFailure
     -- | This is thrown by 'nmRead' when the connection is closed.
     | NMConnectionClosed
+    -- | This is thrown by 'nmRead' and 'runNMApp' when the connection
+    -- gets unexpectedly terminated.
+    | NMConnectionDropped
     -- | This is thrown by 'runNMApp' when there's an error decoding
     -- data sent by the other side of the connection.  This either
     -- indicates a bug in this library, or a misuse of 'nmAppData'.
