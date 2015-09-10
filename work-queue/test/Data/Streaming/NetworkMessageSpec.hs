@@ -85,7 +85,10 @@ spec = do
                 threadDelay (1000 * 200)
                 writeIORef exitedLateRef True
         res <- try $ runClientAndServer' settings both both
-        res `shouldBe` Left NMHeartbeatFailure
+        -- One of the ends of the connection will throw heartbeat
+        -- failure, and the other will see that the connection
+        -- dropped.
+        res `shouldSatisfy` (`elem` [Left NMHeartbeatFailure, Left NMConnectionDropped])
         exitedLate <- readIORef exitedLateRef
         exitedLate `shouldBe` False
 

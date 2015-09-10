@@ -50,6 +50,7 @@ import           Data.Streaming.Network      (AppData, appRead, appWrite)
 import           Data.Typeable               (Proxy(..), typeRep)
 import           Data.Vector.Binary          () -- commonly needed orphans
 import           Data.Void                   (absurd)
+import           GHC.IO.Exception            (IOException(ioe_type), IOErrorType(ResourceVanished))
 import           System.Executable.Hash      (executableHash)
 
 -- | A network message application.
@@ -196,7 +197,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
             linkNoThreadKilled pingThread $
                 A.runConcurrently $
                     A.Concurrently (recvWorker incoming lastPing active blocked leftover) *>
-                    A.Concurrently (sendWorker outgoing) *>
+                    A.Concurrently (sendWorker outgoing incoming active) *>
                     A.Concurrently (runInBase (nmApp nad) `finally`
                                     send Complete `finally`
                                     finished incoming active NMConnectionClosed)
@@ -234,12 +235,15 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
     -- checking is done periodically at a user specified interval, and
     -- so reordering of concurrent reads / writes is acceptable.
     recvWorker incoming lastPing active blocked = fix $ \loop leftover -> do
-        mgot <- appGet leftover $ do
+        mgot <- appGet leftover (do
             writeIORef blocked True
             bs <- appRead ad
             writeIORef blocked False
             modifyIORef' lastPing (+ 1)
-            return bs
+            return bs) `catch` \ex ->
+                if isResourceVanished ex
+                    then return Nothing
+                    else throwIO ex
         case mgot of
             Just (Ping, leftover') ->
                 loop leftover'
@@ -250,20 +254,36 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
             Just (Complete, _) -> finished incoming active NMConnectionClosed
             Nothing -> finished incoming active NMConnectionDropped
 
+    isResourceVanished ex = ioe_type ex == ResourceVanished
+
     finished incoming active ex = do
         atomicWriteIORef active False
         writeChan incoming (Left ex)
 
-    sendWorker outgoing = fix $ \loop -> do
+    sendWorker outgoing incoming active = fix $ \loop -> do
         bs <- readChan outgoing
         -- NOTE: even though bs could be quite large, appRead will
         -- receive small chunks of it.  This means that 'appRead'
         -- won't block for very long, and the heartbeat code will
         -- function properly.
-        appWrite ad bs
         if bs == toStrict (B.encode (Complete :: Message iSend))
-            then return ()
-            else loop
+            then do
+                appWrite ad bs `catch` \ex ->
+                    -- Ignore resource vanished if the connection is done.
+                    if isResourceVanished ex
+                        then return ()
+                        else throwIO ex
+            else do
+                appWrite ad bs `catch` \ex ->
+                    -- ResourceVanished indicates that the connection
+                    -- got dropped, so throw that nicer exception
+                    -- instead.
+                    if isResourceVanished ex
+                        then do
+                            finished incoming active NMConnectionDropped
+                            throwIO NMConnectionDropped
+                        else throwIO ex
+                loop
 
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and
