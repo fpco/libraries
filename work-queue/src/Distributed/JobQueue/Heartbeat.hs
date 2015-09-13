@@ -18,7 +18,7 @@ module Distributed.JobQueue.Heartbeat
 
 import ClassyPrelude
 import Control.Concurrent.Lifted (threadDelay)
-import Control.Monad.Logger (MonadLogger, logInfoS, logWarnS, logErrorS)
+import Control.Monad.Logger (MonadLogger, logInfoS, logWarnS, logErrorS, logDebugS)
 import Data.Binary (encode)
 import Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
 import Distributed.JobQueue.Periodic (periodicWrapped)
@@ -93,6 +93,7 @@ checkHeartbeats r (Seconds ivl) =
         -- the inactive list.  The flag also gets set to False here,
         -- such that if a failure happens in the middle, the next run
         -- will know to not use the data.
+        $logDebugS "JobQueue" "Checking heartbeat functioning flag"
         functioning <-
             run r (getset (heartbeatFunctioningKey r) (toStrict (encode False)))
         inactive <- if functioning == Just (toStrict (encode True))
@@ -101,10 +102,14 @@ checkHeartbeats r (Seconds ivl) =
                 -- jobs back to the requests queue.  If we re-enqueued
                 -- some requests, then send out a notification about
                 -- it.
+                $logDebugS "JobQueue" "Heartbeat is functioning, fetching inactive list"
                 inactive <- run r $ smembers (heartbeatInactiveKey r)
+                $logDebugS "JobQueue" "Got inactive list"
                 reenquedSome <- any id <$>
                     mapM (handleWorkerFailure r . WorkerId) inactive
-                when reenquedSome $ notifyRequestAvailable r
+                when reenquedSome $ do
+                  $logDebugS "JobQueue" "Notifying that some requests were re-enqueued"
+                  notifyRequestAvailable r
                 return inactive
             else do
                 if isJust functioning
@@ -117,13 +122,13 @@ checkHeartbeats r (Seconds ivl) =
                 requestsCount <- run r $ llen (requestsKey r)
                 when (requestsCount > 0) $ notifyRequestAvailable r
                 return []
-        -- Populate the list of inactive workers for the next
-        -- heartbeat.
+        $logDebugS "JobQueue" "Populating the list of inactive workers for the next heartbeat"
         workers <- run r $ smembers (heartbeatActiveKey r)
         run_ r $ del (unSKey (heartbeatInactiveKey r) :| [])
         mapM_ (run_ r . sadd (heartbeatInactiveKey r)) (nonEmpty workers)
-        -- Record that the heartbeat check was successful.
+        $logDebugS "JobQueue" "Setting the heartbeat functioning flag"
         run_ r $ set (heartbeatFunctioningKey r) (toStrict (encode True)) []
+        $logDebugS "JobQueue" "Heartbeat check done!"
 
 handleWorkerFailure
     :: (MonadCommand m, MonadLogger m) => RedisInfo -> WorkerId -> m Bool
