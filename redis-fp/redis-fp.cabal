@@ -82,3 +82,24 @@ test-suite test
                      , stm
                      , monad-control
   ghc-options:         -Wall -threaded
+
+test-suite fuzz-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Fuzz.hs
+  build-depends:       base
+                     , redis-fp
+                     , async
+                     , bytestring
+                     , containers
+                     , hspec
+                     , lifted-base
+                     , monad-control
+                     , monad-logger
+                     , mtl
+                     , transformers
+                     , transformers-base
+                     , random
+                     , semigroups
+                     , vector
+  ghc-options:         -Wall -threaded
