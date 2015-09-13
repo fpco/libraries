@@ -117,8 +117,6 @@ checkHeartbeats r (Seconds ivl) =
                 requestsCount <- run r $ llen (requestsKey r)
                 when (requestsCount > 0) $ notifyRequestAvailable r
                 return []
-        -- Remove the inactive workers from the list of workers.
-        mapM_ (run_ r . srem (heartbeatActiveKey r)) (nonEmpty inactive)
         -- Populate the list of inactive workers for the next
         -- heartbeat.
         workers <- run r $ smembers (heartbeatActiveKey r)
@@ -130,7 +128,7 @@ checkHeartbeats r (Seconds ivl) =
 handleWorkerFailure
     :: (MonadCommand m, MonadLogger m) => RedisInfo -> WorkerId -> m Bool
 handleWorkerFailure r wid = do
-    moved <- run r $ (eval script ks [] :: CommandRequest Int64)
+    moved <- run r $ (eval script ks as :: CommandRequest Int64)
     case moved of
         0 -> $logWarnS "JobQueue" $ tshow wid <>
             " failed its heartbeat, but didn't have items to re-enqueue."
@@ -144,7 +142,11 @@ handleWorkerFailure r wid = do
             ]
     return (moved > 0)
   where
-    ks = [activeKey r wid, unLKey (requestsKey r)]
+    as = [unWorkerId wid]
+    ks = [ activeKey r wid
+         , unLKey (requestsKey r)
+         , unSKey (heartbeatActiveKey r)
+         ]
     -- NOTE: In order to handle moving many requests, this script
     -- should probaly work around the limits of lua 'unpack'. This is
     -- fine for now, because we should only have at most one item in
@@ -166,6 +168,7 @@ handleWorkerFailure r wid = do
         , "    end"
         , "    redis.call('del', KEYS[1])"
         , "    redis.call('set', KEYS[1], 'HeartbeatFailure')"
+        , "    redis.pcall('srem', KEYS[3], ARGV[1])"
         , "    return len"
         , "end"
         ]
