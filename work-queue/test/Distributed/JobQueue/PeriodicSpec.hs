@@ -34,7 +34,7 @@ spec = do
     jqit "short actions work (50 threads)" $
         testPeriodic 1 2 2 0 500 30 0 $ \run ->
             replicateM_ 50 (randomDelay 0 1000 >> run)
-    jqit "long actions work (50 threads)" $
+    jqit "long actions work (2 threads)" $
         testPeriodic 1 2 2 5000 5000 30 0 $ \run ->
             replicateM_ 2 (randomDelay 0 1000 >> run)
     jqit "long actions work (50 threads)" $
