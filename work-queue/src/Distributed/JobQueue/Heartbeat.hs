@@ -96,7 +96,7 @@ checkHeartbeats r (Seconds ivl) =
         $logDebugS "JobQueue" "Checking heartbeat functioning flag"
         functioning <-
             run r (getset (heartbeatFunctioningKey r) (toStrict (encode False)))
-        inactive <- if functioning == Just (toStrict (encode True))
+        if functioning == Just (toStrict (encode True))
             then do
                 -- Fetch the list of inactive workers and move their
                 -- jobs back to the requests queue.  If we re-enqueued
@@ -110,7 +110,6 @@ checkHeartbeats r (Seconds ivl) =
                 when reenquedSome $ do
                   $logDebugS "JobQueue" "Notifying that some requests were re-enqueued"
                   notifyRequestAvailable r
-                return inactive
             else do
                 if isJust functioning
                     then $logWarnS "JobQueue" "Last heartbeat check failed"
@@ -121,7 +120,6 @@ checkHeartbeats r (Seconds ivl) =
                 -- notification.
                 requestsCount <- run r $ llen (requestsKey r)
                 when (requestsCount > 0) $ notifyRequestAvailable r
-                return []
         $logDebugS "JobQueue" "Populating the list of inactive workers for the next heartbeat"
         workers <- run r $ smembers (heartbeatActiveKey r)
         run_ r $ del (unSKey (heartbeatInactiveKey r) :| [])
