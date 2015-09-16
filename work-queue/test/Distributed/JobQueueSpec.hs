@@ -104,6 +104,20 @@ spec = do
                     randomJobRequester sets 254 `race`
                     randomJobRequester sets 255
                 checkRequestsAnswered (== 0) sets 60)
+    {-  Commented out because this is a bit of a weird thing to test
+    jqit "Sends requests despite a bunch of other redis connections" $ do
+        (sets :: RequestSets Int) <- mkRequestSets
+        forM_ [0..100] $ \ix -> void $ allocateAsync $ runThreadFileLoggingT $ do
+            withRedis redisTestPrefix localhost $ \r -> forM_ [0..] $ \jx -> do
+                let msg = pack $ encodeUtf8 $ "hi" ++ show (ix, jx)
+                run_ r $ set (VKey (Key (redisTestPrefix <> ":test-key"))) msg []
+                threadDelay (10 * 1000)
+        void $ liftIO $ timeout (1000 * 1000 * 10) $
+            randomJobRequester sets 254
+        threadDelay (1000 * 1000 * 10)
+        sent <- liftIO $ readIORef (sentRequests sets)
+        liftIO $ length sent `shouldSatisfy` (>0)
+    -}
     jqit "Sends an exception to the client on type mismatch" $ do
         resultVar <- forkDispatcher' defaultRequest
         _ <- forkWorker "redis" 0
