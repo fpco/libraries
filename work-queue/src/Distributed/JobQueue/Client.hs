@@ -26,6 +26,7 @@ module Distributed.JobQueue.Client
     , DistributedJobQueueException(..)
     -- * Exposed for the test-suite
     , prepareRequest
+    , sendRequestIgnoringCache
     )
     where
 
