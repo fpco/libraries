@@ -29,7 +29,7 @@ import Data.Proxy (Proxy(..))
 import Data.Streaming.NetworkMessage (Sendable)
 import Distributed.JobQueue
 import Distributed.RedisQueue
-import Distributed.RedisQueue.Internal (run_)
+import Distributed.RedisQueue.Internal (run_, run, requestsKey)
 import Distributed.WorkQueueSpec (redisTestPrefix, forkWorker, cancelProcess)
 import FP.Redis
 import FP.ThreadFileLogger
@@ -255,11 +255,13 @@ checkRequestsAnswered correct sets seconds = do
     case result of
         Nothing -> do
             (unwatched, sent, unreceived) <- readIORef lastSummaryRef
+            inFlight <- getInFlightRequests
             fail $ "Didn't receive all requests:" ++
                 "\nsent = " ++ show sent ++
                 "\nunwatched = " ++ show unwatched ++
                 "\nunreceived = " ++ show unreceived ++
-                "\nunreceived - unwatched = " ++ show (unreceived `S.difference` unwatched)
+                "\nunreceived - unwatched = " ++ show (unreceived `S.difference` unwatched) ++
+                "\ninFlight = " ++ show inFlight
         Just () -> do
             sent <- readIORef (sentRequests sets)
             when (S.null sent) $ fail "Didn't send any requests."
@@ -306,6 +308,21 @@ enqueueSlaveRequest mci =
 
 localhost :: ConnectInfo
 localhost = connectInfo "localhost"
+
+-- Check the redis state for which requests are still being worked on. NOTE: If
+-- this is used while mutation is happening, we'll potentially get strange
+      -- results, since this isn't done automically.
+getInFlightRequests :: MonadIO m => m ([RequestId], [(WorkerId, RequestId)])
+getInFlightRequests =
+    liftIO $ runThreadFileLoggingT $ withRedis redisTestPrefix localhost $ \r -> do
+        inactiveRequests <- run r $ lrange (requestsKey r) 0 (-1)
+        let activePrefix = redisTestPrefix <> "active:"
+        activeKeys <- run r $ keys (activePrefix <> "*")
+        results <- forM activeKeys $ \k ->
+            forM (fmap WorkerId (stripPrefix activePrefix (unKey k))) $ \wid -> do
+                requests <- run r $ lrange (LKey k) 0 (-1)
+                return (map ((wid,) . RequestId) requests)
+        return (map RequestId inactiveRequests, concat (concatMap maybeToList results))
 
 -- Keeping track of requests which have been sent, haven't yet been
 -- watched, and have been received.
