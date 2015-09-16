@@ -201,6 +201,7 @@ benchmark bench
                      , resourcet
                      , criterion
                      , thread-file-logger
+                     , directory
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
   if flag(coverage)
