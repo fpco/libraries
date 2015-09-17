@@ -160,7 +160,12 @@ sendResponse r expiry wid ri x = do
     let ak = LKey (activeKey r wid)
     removed <- try $ run r $ lrem ak 1 (toStrict (encode ri))
     case removed :: Either RedisException Int64 of
-        Right 1 -> return ()
+        Right 1 -> do
+            -- Remove the request data, as it's no longer needed.  We don't
+            -- check if the removal succeeds, as this may not be the first
+            -- time a response is sent for the request.  See the error message
+            -- above.
+            run_ r $ del (unVKey (requestDataKey r k) :| [])
         _ -> $logWarnS "RedisQueue" $
             tshow k <>
             " isn't a member of active queue (" <>
@@ -168,11 +173,6 @@ sendResponse r expiry wid ri x = do
             "), likely indicating that a heartbeat failure happened, causing\
             \ it to be erroneously re-enqueued.  This doesn't affect\
             \ correctness, but could mean that redundant work is performed."
-    -- Remove the request data, as it's no longer needed.  We don't
-    -- check if the removal succeeds, as this may not be the first
-    -- time a response is sent for the request.  See the error message
-    -- above.
-    run_ r $ del (unVKey (requestDataKey r k) :| [])
 
 -- | Clears the cached response for the specified 'RequestId'.  This
 -- is useful in cases where a response is expected to be temporary,
