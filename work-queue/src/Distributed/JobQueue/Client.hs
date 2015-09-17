@@ -224,6 +224,7 @@ sendRequest config redis request = do
             $logDebugS "sendRequest" $ "Cached response to " <> tshow k <> " is an error: " <> tshow err
             $logDebugS "sendRequest" $ "Clearing response cache for " <> tshow k
             clearResponse redis k
+            sendRequestIgnoringCache config redis ri encoded
             return (k, Nothing)
         Just (Right x) -> do
             $logDebugS "sendRequest" $ "Using cached response for " <> tshow k
