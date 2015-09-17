@@ -54,6 +54,7 @@ import           ClassyPrelude
 import           Control.Monad.Logger (MonadLogger, logWarnS)
 import qualified Crypto.Hash.SHA1 as SHA1
 import           Data.Binary (encode)
+import qualified Data.ByteString.Base64 as Base64
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Distributed.RedisQueue.Internal
 import           FP.Redis
@@ -62,7 +63,7 @@ import           FP.Redis
 requestInfo :: BackchannelId -> ByteString -> RequestInfo
 requestInfo bid request = RequestInfo bid k
   where
-    k = RequestId (SHA1.hash request)
+    k = RequestId (Base64.encode (SHA1.hash request))
 
 -- | Pushes a request to the compute workers.  If the result has been
 -- computed previously, and the result is still cached, then it's

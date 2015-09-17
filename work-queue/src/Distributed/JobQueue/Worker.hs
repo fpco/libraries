@@ -448,7 +448,7 @@ withRedis' :: MonadConnect m => WorkerConfig -> (RedisInfo -> m a) -> m a
 withRedis' config = withRedis (workerKeyPrefix config) (workerConnectInfo config)
 
 getWorkerId :: IO WorkerId
-getWorkerId = WorkerId . toStrict . UUID.toByteString <$> UUID.nextRandom
+getWorkerId = WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom
 
 asyncLifted :: MonadBaseControl IO m => m () -> m (Async ())
 asyncLifted f = liftBaseWith $ \restore -> async (void (restore f))
