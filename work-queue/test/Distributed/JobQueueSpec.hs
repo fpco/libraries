@@ -332,11 +332,12 @@ getInFlightRequests =
         inactiveRequests <- run r $ lrange (requestsKey r) 0 (-1)
         let activePrefix = redisTestPrefix <> "active:"
         activeKeys <- run r $ keys (activePrefix <> "*")
-        results <- forM activeKeys $ \k ->
-            forM (fmap WorkerId (stripPrefix activePrefix (unKey k))) $ \wid -> do
-                requests <- run r $ lrange (LKey k) 0 (-1)
-                return (map ((wid,) . RequestId) requests)
-        return (map RequestId inactiveRequests, concat (concatMap maybeToList results))
+        results <- forM activeKeys $ \active ->
+            forM (fmap WorkerId (stripPrefix activePrefix (unKey active))) $ \wid -> do
+                requests <- try $ run r $ lrange (LKey active) 0 (-1)
+                let toResult (decode . fromStrict -> RequestInfo _ k) = (wid, k)
+                return (either (\(_ :: SomeException) -> []) (map toResult) requests)
+        return (map RequestId inactiveRequests, concat (catMaybes results))
 
 -- Keeping track of requests which have been sent, haven't yet been
 -- watched, and have been received.
