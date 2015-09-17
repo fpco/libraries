@@ -16,19 +16,17 @@ module Distributed.JobQueue.Heartbeat
     , checkHeartbeats
     ) where
 
-import ClassyPrelude
-import Control.Concurrent.Lifted (threadDelay)
-import Control.Monad.Logger (MonadLogger, logInfoS, logWarnS, logErrorS, logDebugS)
-import Data.Binary (encode)
-import Data.List.NonEmpty (NonEmpty((:|)), nonEmpty)
-import Distributed.JobQueue.Periodic (periodicWrapped)
-import Distributed.JobQueue.Shared
-import Distributed.RedisQueue
-import Distributed.RedisQueue.Internal
-import FP.Redis
-import FP.Redis.Mutex
-import FP.ThreadFileLogger
+import           ClassyPrelude
+import           Control.Concurrent.Lifted (threadDelay)
+import           Control.Monad.Logger (MonadLogger, logWarnS, logErrorS, logDebug)
 import qualified Data.ByteString.Char8 as BS8
+import           Data.List.NonEmpty (NonEmpty((:|)))
+import           Data.Time.Clock.POSIX
+import           Distributed.JobQueue.Shared
+import           Distributed.RedisQueue
+import           Distributed.RedisQueue.Internal
+import           FP.Redis
+import           FP.ThreadFileLogger
 
 -- | This periodically removes the worker's key from the set of
 -- inactive workers.  This set is periodically re-initialized and
@@ -42,10 +40,13 @@ import qualified Data.ByteString.Char8 as BS8
 sendHeartbeats
     :: MonadConnect m => RedisInfo -> Seconds -> WorkerId -> m void
 sendHeartbeats r (Seconds ivl) wid = do
+    sendHeartbeat
     run_ r $ sadd (heartbeatActiveKey r) (unWorkerId wid :| [])
     forever $ do
         liftIO $ threadDelay ((fromIntegral ivl `max` 1) * 1000 * 1000)
-        run_ r $ srem (heartbeatInactiveKey r) (unWorkerId wid :| [])
+        sendHeartbeat
+  where
+    sendHeartbeat = setTime r (heartbeatKey r wid) =<< liftIO getPOSIXTime
 
 -- | This removes the worker from the set which are actively checked via
 -- heartbeats.  If there's active work, then it throws
@@ -62,7 +63,6 @@ deactivateHeartbeats r wid = do
         Right _ -> throwIO (WorkStillInProgress wid)
         _ -> return ()
     run_ r $ srem (heartbeatActiveKey r) (unWorkerId wid :| [])
-    run_ r $ srem (heartbeatInactiveKey r) (unWorkerId wid :| [])
 
 -- | This is called by a worker when it still functions, despite its
 -- work items being re-enqueued after heartbeat failure.  It should
@@ -78,55 +78,35 @@ recoverFromHeartbeatFailure r wid = run_ r $ del (activeKey r wid :| [])
 -- this should use the same time interval.
 checkHeartbeats
     :: MonadConnect m => RedisInfo -> Seconds -> m void
-checkHeartbeats r (Seconds ivl) =
-    periodicWrapped (redisConnection r)
-                    (heartbeatTimeKey r)
-                    -- Time interval between actions
-                    (Seconds ivl)
-                    -- Frequency that the mutex is checked
-                    (Seconds (max 1 (ivl `div` 2)))
-                    -- Mutex ttl while executing the action
-                    (Seconds (max 2 (ivl `div` 2)))
-    $ logNest "checkHeartbeats" $ do
-        -- Check if the last iteration of this heartbeat check ran
-        -- successfully.  If it did, then we can use the contents of
-        -- the inactive list.  The flag also gets set to False here,
-        -- such that if a failure happens in the middle, the next run
-        -- will know to not use the data.
-        $logDebugS "JobQueue" "Checking heartbeat functioning flag"
-        functioning <-
-            run r (getset (heartbeatFunctioningKey r) (toStrict (encode False)))
-        if functioning == Just (toStrict (encode True))
-            then do
-                -- Fetch the list of inactive workers and move their
-                -- jobs back to the requests queue.  If we re-enqueued
-                -- some requests, then send out a notification about
-                -- it.
-                $logDebugS "JobQueue" "Heartbeat is functioning, fetching inactive list"
-                inactive <- run r $ smembers (heartbeatInactiveKey r)
-                $logDebugS "JobQueue" "Got inactive list"
-                reenquedSome <- any id <$>
-                    mapM (handleWorkerFailure r . WorkerId) inactive
-                when reenquedSome $ do
-                  $logDebugS "JobQueue" "Notifying that some requests were re-enqueued"
-                  notifyRequestAvailable r
-            else do
-                if isJust functioning
-                    then $logWarnS "JobQueue" "Last heartbeat check failed"
-                    else $logInfoS "JobQueue" "First heartbeat check"
-                -- The reasoning here is that if the last heartbeat
-                -- check failed, it might have enqueued requests.  We
-                -- check if there are any, and if so, send a
-                -- notification.
-                requestsCount <- run r $ llen (requestsKey r)
-                when (requestsCount > 0) $ notifyRequestAvailable r
-        $logDebugS "JobQueue" "Populating the list of inactive workers for the next heartbeat"
-        workers <- run r $ smembers (heartbeatActiveKey r)
-        run_ r $ del (unSKey (heartbeatInactiveKey r) :| [])
-        mapM_ (run_ r . sadd (heartbeatInactiveKey r)) (nonEmpty workers)
-        $logDebugS "JobQueue" "Setting the heartbeat functioning flag"
-        run_ r $ set (heartbeatFunctioningKey r) (toStrict (encode True)) []
-        $logDebugS "JobQueue" "Heartbeat check done!"
+checkHeartbeats r (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
+    $logDebug "Checking if enough time has elapsed since last heartbeat check."
+    startTime <- liftIO getPOSIXTime
+    let oldTime = startTime - fromIntegral ivl
+    mlastTime <- getTime r (heartbeatLastCheckKey r)
+    -- Do the heartbeat check when enough time has elapsed since the last check,
+    -- or when no check has ever happened.
+    when (maybe True (< oldTime) mlastTime) $ do
+        -- Blocks other checkers from starting, for the first half of the
+        -- heartbeat interval.
+        $logDebug "Trying to acquire heartbeat check mutex."
+        let expiry = Seconds (max 1 (ivl `div` 2))
+        gotMutex <- run r $ set (heartbeatMutexKey r) "" [NX, EX expiry]
+        when gotMutex $ do
+            $logDebug "Acquired heartbeat check mutex."
+            workers <- run r $ smembers (heartbeatActiveKey r)
+            reenqueuedSome <- fmap (any id) $ forM workers $ \widbs -> do
+                let wid = WorkerId widbs
+                mheartbeatTime <- getTime r (heartbeatKey r wid)
+                -- If the heartbeat hasn't been updated within the check
+                -- interval, re-enqueue its requests.
+                if maybe True (< oldTime) mheartbeatTime
+                    then handleWorkerFailure r wid
+                    else return False
+            when reenqueuedSome $ do
+                $logDebug "Notifying that some requests were re-enqueued"
+                notifyRequestAvailable r
+            $logDebug "Setting timestamp for last heartbeat check"
+            setTime r (heartbeatLastCheckKey r) startTime
 
 handleWorkerFailure
     :: (MonadCommand m, MonadLogger m) => RedisInfo -> WorkerId -> m Bool
@@ -176,21 +156,39 @@ handleWorkerFailure r wid = do
         , "end"
         ]
 
+-- * Utilities for reading and writing timestamps
+
+-- Rounds time to the nearest millisecond.
+
+setTime :: (MonadCommand m) => RedisInfo -> VKey -> POSIXTime -> m ()
+setTime r k t = run_ r $ set k (BS8.pack (show (floor (t * 1000) :: Int))) []
+
+getTime :: (MonadCommand m) => RedisInfo -> VKey -> m (Maybe POSIXTime)
+getTime r k = do
+    mbs <- run r $ get k
+    case mbs of
+        Nothing -> return Nothing
+        Just bs ->
+            case readMay (BS8.unpack bs) of
+                Nothing -> fail $ "Failed to decode timestamp in key " ++ show k
+                Just result -> return $ Just (fromInteger result / 1000)
+
 -- * Functions to compute Redis keys
 
-heartbeatInactiveKey, heartbeatActiveKey :: RedisInfo -> SKey
--- A set of 'WorkerId' who have not yet removed their keys (indicating
--- that they're still alive and responding to heartbeats).
-heartbeatInactiveKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:inactive"
--- A set of 'WorkerId's that are currently thought to be running.
+-- | Stores the timestamp of the last heartbeat from the given worker.
+heartbeatKey :: RedisInfo -> WorkerId -> VKey
+heartbeatKey r wid = VKey $ Key $ redisKeyPrefix r <> "heartbeat:worker:" <> unWorkerId wid
+
+-- | A set of 'WorkerId's that are currently thought to be running.
+heartbeatActiveKey :: RedisInfo -> SKey
 heartbeatActiveKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:active"
 
--- Stores a "Data.Binary" encoded 'Bool'.
-heartbeatFunctioningKey :: RedisInfo -> VKey
-heartbeatFunctioningKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:functioning"
+-- | Timestamp for the last time the heartbeat check successfully ran.
+heartbeatLastCheckKey :: RedisInfo -> VKey
+heartbeatLastCheckKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:last-check"
 
--- Prefix used for the 'periodicActionWrapped' invocation, which is
--- used to share the responsibility of periodically checking
--- heartbeats.
-heartbeatTimeKey :: RedisInfo -> MutexKey
-heartbeatTimeKey r = MutexKey $ Key $ redisKeyPrefix r <> "heartbeat:time"
+-- | Key used as a simple mutex to signal that some server is currently doing
+-- the heartbeat check. Note that this is just to avoid unnecessary work, and
+-- correctness doesn't rely on it.
+heartbeatMutexKey :: RedisInfo -> VKey
+heartbeatMutexKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:mutex"
