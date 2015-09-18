@@ -31,7 +31,7 @@ import ClassyPrelude hiding (catch)
 import Control.Concurrent.Lifted (ThreadId, myThreadId)
 import Control.Exception (catch)
 import Control.Monad.Base (MonadBase(liftBase))
-import Control.Monad.Logger (LogSource, LogLevel(LevelInfo), LoggingT, runLoggingT, defaultLogStr, runStdoutLoggingT, logDebugS, logInfoS, logWarnS, logErrorS, logOtherS)
+import Control.Monad.Logger (LogSource, LogLevel(LevelInfo, LevelWarn), LoggingT, runLoggingT, filterLogger, defaultLogStr, runStdoutLoggingT, logDebugS, logInfoS, logWarnS, logErrorS, logOtherS)
 import Control.Monad.Trans.Control (MonadBaseControl, control)
 import Language.Haskell.TH (Loc(..), Q, Exp)
 import System.Directory (createDirectoryIfMissing)
@@ -54,7 +54,7 @@ newtype LogTag = LogTag { unLogTag :: Text }
 #ifndef ENABLE_THREAD_FILE_LOGGER
 
 runThreadFileLoggingT :: (MonadBaseControl IO m, MonadIO m) => LoggingT m a -> m a
-runThreadFileLoggingT = runStdoutLoggingT
+runThreadFileLoggingT = runStdoutLoggingT . defaultFiltering
 
 logNest :: MonadBaseControl IO m => LogTag -> m a -> m a
 logNest _ = id
@@ -77,7 +77,11 @@ filterThreadLogger
 filterThreadLogger _ = id
 
 logIO :: MonadBase IO m => LoggingT IO a -> m a
-logIO = liftBase . runStdoutLoggingT
+logIO = liftBase . runStdoutLoggingT . defaultFiltering
+
+-- Instead of jamming tons of debug info into stdout, just show warnings and errors
+defaultFiltering :: LoggingT m a -> LoggingT m a
+defaultFiltering = filterLogger (\_ l -> l > LevelWarn)
 
 #else
 
