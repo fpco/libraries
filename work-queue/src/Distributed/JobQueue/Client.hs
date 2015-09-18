@@ -69,8 +69,6 @@ data ClientConfig = ClientConfig
       -- clients.
     , clientRequestExpiry :: Seconds
       -- ^ The expiry time of the request data stored in redis.
-    , clientBackchannelId :: BackchannelId
-      -- ^ Identifies the channel used to notify about a response.
     } deriving (Typeable)
 
 -- | A default client configuration:
@@ -84,13 +82,7 @@ defaultClientConfig :: ClientConfig
 defaultClientConfig = ClientConfig
     { clientHeartbeatCheckIvl = Seconds 30
     , clientRequestExpiry = Seconds 3600
-    , clientBackchannelId = defaultBackchannel
     }
-
--- | A default backchannel.  If all clients use this, then they'll all
--- be notified about responses.
-defaultBackchannel :: BackchannelId
-defaultBackchannel = "all-servers"
 
 -- | This is the preferred way to run 'jobQueueClient'.  It ensures
 -- that the thread gets cleaned up when the inner action completes.
@@ -128,10 +120,7 @@ jobQueueClient config cvs redis = do
   where
     checker = checkHeartbeats redis (clientHeartbeatCheckIvl config)
     subscriber = withLogTag (LogTag "jobQueueClient") $
-        subscribeToResponses redis
-                             (clientBackchannelId config)
-                             handleConnect
-                             handleResponse
+        subscribeToResponses redis handleConnect handleResponse
     -- When the subscription reconnects, check if any responses came
     -- back in the meantime.
     handleConnect _ = do
@@ -178,8 +167,7 @@ jobQueueRequest
     -> request
     -> m response
 jobQueueRequest config cvs redis request = do
-    let (ri, encoded) = prepareRequest config request (Proxy :: Proxy response)
-        k = riRequest ri
+    let (k, encoded) = prepareRequest config request (Proxy :: Proxy response)
     mresponse <- checkForResponse redis k
     case mresponse of
         Just eres ->
@@ -191,7 +179,7 @@ jobQueueRequest config cvs redis request = do
             -- this highly unlikely)
             resultVar <- newEmptyMVar
             registerResponseCallbackInternal cvs k $ putMVar resultVar
-            sendRequestIgnoringCache config redis ri encoded
+            sendRequestIgnoringCache config redis k encoded
             eres <- takeMVar resultVar
             either (liftIO . throwIO) return eres
 
@@ -211,35 +199,33 @@ sendRequest
     -> request
     -> m (RequestId, Maybe response)
 sendRequest config redis request = do
-    let (ri, encoded) = prepareRequest config request (Proxy :: Proxy response)
-        k = riRequest ri
+    let (k, encoded) = prepareRequest config request (Proxy :: Proxy response)
     $logDebugS "sendRequest" $ "Checking for response for request " <> tshow k
     mresponse <- checkForResponse redis k
     case mresponse of
         Nothing -> do
             $logDebugS "sendRequest" $ "Sending request " <> tshow k
-            sendRequestIgnoringCache config redis ri encoded
+            sendRequestIgnoringCache config redis k encoded
             return (k, Nothing)
         Just (Left err) -> do
             $logDebugS "sendRequest" $ "Cached response to " <> tshow k <> " is an error: " <> tshow err
             $logDebugS "sendRequest" $ "Clearing response cache for " <> tshow k
             clearResponse redis k
-            sendRequestIgnoringCache config redis ri encoded
+            sendRequestIgnoringCache config redis k encoded
             return (k, Nothing)
         Just (Right x) -> do
             $logDebugS "sendRequest" $ "Using cached response for " <> tshow k
             return (k, Just x)
 
--- Computes the 'RequestInfo' and encoded bytes for a request.
+-- Computes the 'RequestId' and encoded bytes for a request.
 prepareRequest
     :: forall request response. (Sendable response, Sendable request)
     => ClientConfig
     -> request
     -> Proxy response
-    -> (RequestInfo, ByteString)
-prepareRequest config request _ = (ri, encoded)
+    -> (RequestId, ByteString)
+prepareRequest config request _ = (getRequestId encoded, encoded)
   where
-    ri = requestInfo (clientBackchannelId config) encoded
     encoded = toStrict $ encode JobRequest
         { jrRequestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         , jrResponseType = fromTypeRep (typeRep (Proxy :: Proxy response))
@@ -250,14 +236,14 @@ prepareRequest config request _ = (ri, encoded)
 -- existing response.
 sendRequestIgnoringCache
     :: (MonadCommand m, MonadLogger m)
-    => ClientConfig -> RedisInfo -> RequestInfo -> ByteString -> m ()
-sendRequestIgnoringCache config redis ri encoded = do
+    => ClientConfig -> RedisInfo -> RequestId -> ByteString -> m ()
+sendRequestIgnoringCache config redis k encoded = do
     let expiry = clientRequestExpiry config
-    $logDebugS "sendRequest" $ "Pushing request " <> tshow ri
-    pushRequest redis expiry ri encoded
-    $logDebugS "sendRequest" $ "Notifying about request " <> tshow ri
+    $logDebugS "sendRequest" $ "Pushing request " <> tshow k
+    pushRequest redis expiry k encoded
+    $logDebugS "sendRequest" $ "Notifying about request " <> tshow k
     notifyRequestAvailable redis
-    $logDebugS "sendRequest" $ "Done notifying about request " <> tshow ri
+    $logDebugS "sendRequest" $ "Done notifying about request " <> tshow k
 
 -- | This registers a callback to handle the response to the specified
 -- 'RequestId'.  Note that synchronous exceptions thrown by the

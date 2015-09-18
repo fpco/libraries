@@ -35,13 +35,6 @@ data RedisInfo = RedisInfo
     , redisKeyPrefix :: ByteString
     } deriving (Typeable)
 
--- | ID of a redis channel used for notifications about a particular
--- request.  One way to use this is to give each client server its own
--- 'BackchannelId', so that it is only informed of responses
--- associated with the requests it makes.
-newtype BackchannelId = BackchannelId { unBackchannelId :: ByteString }
-    deriving (Eq, Ord, Show, Binary, IsString, Typeable)
-
 -- | Every worker has a 'WorkerId' to uniquely identify it.  It's
 -- needed for the fault tolerance portion - in the event that a worker
 -- goes down we need to be able to re-enqueue its work.
@@ -54,21 +47,10 @@ newtype WorkerId = WorkerId { unWorkerId :: ByteString }
 newtype RequestId = RequestId { unRequestId :: ByteString }
     deriving (Eq, Ord, Show, Binary, Hashable, Typeable)
 
--- * Datatypes used for serialization / deserialization
-
--- | Encoding used when enqueuing to the 'requestsKey' list.
-data RequestInfo = RequestInfo
-    { riBackchannel :: BackchannelId
-    , riRequest :: RequestId
-    }
-    deriving (Eq, Ord, Show, Generic, Typeable)
-
-instance Binary RequestInfo
-
 -- * Functions to compute Redis keys
 
--- | List of "Data.Binary" encoded @RequestInfo@.  The client enqueues
--- requests to this list, and the workers pop them off.
+-- | List of 'WorkerId'. The client enqueues requests to this list,
+-- and the workers pop them off.
 requestsKey :: RedisInfo -> LKey
 requestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests"
 
@@ -82,9 +64,8 @@ responseDataKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestI
 
 -- | Given a 'BackchannelId', computes the name of a 'Channel'.  This
 -- 'Channel' is used to notify clients when responses are available.
-responseChannel :: RedisInfo -> BackchannelId -> Channel
-responseChannel r k =
-    Channel $ redisKeyPrefix r <> "responses:" <> unBackchannelId k
+responseChannel :: RedisInfo -> Channel
+responseChannel r = Channel $ redisKeyPrefix r <> "response-channel"
 
 -- | Given a 'WorkerId', computes the name of a redis key which usually
 -- contains a list.  This list holds the items the worker is currently

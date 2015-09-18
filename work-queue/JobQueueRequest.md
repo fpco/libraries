@@ -54,9 +54,7 @@ one (computations must be deterministic to enable this caching!)
 
   - The key `request:<RequestId>` gets set with the request data.
 
-  - The list at `requests` gets `RequestInfo` pushed to it. This stores the
-    `RequestId`, along with a `BackchannelId`, which specifies which channel to
-    notify when a response is available.
+  - The list at `requests` gets `RequestId` pushed to it.
 
   - The channel at `requests-channel` gets an empty message sent to it,
     notifying any idle workers that there is work to do.
@@ -133,19 +131,18 @@ running the master, then it is sent.  Here's how this works:
 
   - `response:<RequestId>` gets set with the encoded response / exception.
 
-  - `response-channel:<BackchannelId>` gets notified of the response, in the
-    form of an encoded `RequestId`.
+  - `response-channel` gets notified of the response, in the form of an encoded
+    `RequestId`.
 
-  - The `RequestInfo` entry in `active:<WorkerId>` gets removed, since the work
-  is done.
+  - The `RequestId` entry in `active:<WorkerId>` gets removed, since the work is
+  done.
 
   - The `request:<RequestId>` data gets deleted, since it's no longer needed.
 
 # Client receives response
 
-If the client is being used with the callbacks API, then the notification on the
-`response-channel:<BackchannelId>` channel lets it know that the response is
-ready.
+If the client is being used with the callbacks API, then the notification on
+`response-channel` lets it know that the response is ready.
 
 Otherwise, the client is periodically checking `checkForResponse`. Either way,
 reading the response simply consists of getting the value from

@@ -35,11 +35,12 @@
 -- user of this API can handle the circumstance that a worker has
 -- failed.  This is handled by "Distributed.JobQueue".
 module Distributed.RedisQueue
-    ( RedisInfo(..), RequestInfo(..)
-    , RequestId(..), BackchannelId(..), WorkerId(..)
+    ( RedisInfo(..)
+    , RequestId(..)
+    , WorkerId(..)
     , withRedis
     -- * Request API used by clients
-    , requestInfo
+    , getRequestId
     , pushRequest
     , readResponse
     , clearResponse
@@ -59,11 +60,9 @@ import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Distributed.RedisQueue.Internal
 import           FP.Redis
 
--- | Computes a 'RequestInfo' by hashing the request.
-requestInfo :: BackchannelId -> ByteString -> RequestInfo
-requestInfo bid request = RequestInfo bid k
-  where
-    k = RequestId (Base64.encode (SHA1.hash request))
+-- | Computes a 'RequestId' by hashing the request.
+getRequestId :: ByteString -> RequestId
+getRequestId request = RequestId (Base64.encode (SHA1.hash request))
 
 -- | Pushes a request to the compute workers.  If the result has been
 -- computed previously, and the result is still cached, then it's
@@ -79,26 +78,24 @@ pushRequest
     :: MonadCommand m
     => RedisInfo
     -> Seconds
-    -> RequestInfo
+    -> RequestId
     -> ByteString
     -> m ()
-pushRequest r expiry info request = do
-    let k = riRequest info
+pushRequest r expiry k request = do
     -- Store the request data as a normal redis value.
     run_ r $ set (requestDataKey r k) request [EX expiry]
     -- Enqueue its ID on the requests list.
-    let encoded = toStrict (encode info)
-    run_ r $ lpush (requestsKey r) (encoded :| [])
+    run_ r $ lpush (requestsKey r) (unRequestId k :| [])
 
 -- | Result value of 'popRequest'.
 data PopRequestResult
     -- | Returned when 'popRequest' successfully retrieved some data.
-    = RequestAvailable RequestInfo ByteString
+    = RequestAvailable RequestId ByteString
     -- | Returned when there isn't a request to fetch.
     | NoRequestAvailable
     -- | Returned when 'popRequest' got a request but couldn't find
     -- the request data. This probably means that it expired in redis.
-    | RequestMissing RequestInfo
+    | RequestMissing RequestId
     -- | Returned when the the worker failed its heartbeat.  This
     -- occurs when the worker's 'activeKey' contains the string value
     -- @"HeartbeatFailure"@ rather than a list of requests.  This is
@@ -132,12 +129,11 @@ popRequest r wid = do
         Right Nothing ->
             return NoRequestAvailable
         Right (Just bs) -> do
-            info <- decodeOrThrow "popRequest" bs
-            let k = riRequest info
+            let k = RequestId bs
             mx <- run r $ get (requestDataKey r k)
             case mx of
-                Nothing -> return (RequestMissing info)
-                Just x -> return (RequestAvailable info x)
+                Nothing -> return (RequestMissing k)
+                Just x -> return (RequestAvailable k x)
 
 -- | Send a response for a particular request.  This is done by the
 -- compute workers once they're done with the computation, and have
@@ -148,18 +144,17 @@ sendResponse
     => RedisInfo
     -> Seconds
     -> WorkerId
-    -> RequestInfo
+    -> RequestId
     -> ByteString
     -> m ()
-sendResponse r expiry wid ri x = do
-    let k = riRequest ri
+sendResponse r expiry wid k x = do
     -- Store the response data, and notify the client that it's ready.
     run_ r $ set (responseDataKey r k) x [EX expiry]
-    run_ r $ publish (responseChannel r (riBackchannel ri)) (unRequestId k)
+    run_ r $ publish (responseChannel r) (unRequestId k)
     -- Remove the RequestId associated with this response, from the
     -- list of in-progress requests.
     let ak = LKey (activeKey r wid)
-    removed <- try $ run r $ lrem ak 1 (toStrict (encode ri))
+    removed <- try $ run r $ lrem ak 1 (unRequestId k)
     case removed :: Either RedisException Int64 of
         Right 1 -> do
             -- Remove the request data, as it's no longer needed.  We don't
@@ -190,14 +185,13 @@ readResponse
     => RedisInfo -> RequestId -> m (Maybe ByteString)
 readResponse r k = run r $ get (responseDataKey r k)
 
--- | Subscribes to responses on the channel specified by this client's
--- 'BackchannelId'.  See the docs for 'withSubscription' for more info.
+-- | Subscribes to the response channel. See the docs for 'withSubscription' for
+-- more info.
 subscribeToResponses
     :: MonadConnect m
     => RedisInfo
-    -> BackchannelId
     -> (IO () -> m ())
     -> (RequestId -> m ())
     -> m void
-subscribeToResponses r bid connected f =
-    withSubscription r (responseChannel r bid) connected $ f . RequestId
+subscribeToResponses r connected f =
+    withSubscription r (responseChannel r) connected $ f . RequestId

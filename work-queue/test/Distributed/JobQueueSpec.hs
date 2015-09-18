@@ -24,7 +24,7 @@ import           Control.Monad.Base (MonadBase)
 import           Control.Monad.Logger
 import           Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import           Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
-import           Data.Binary (encode, decode)
+import           Data.Binary (encode)
 import           Data.Bits (shiftL)
 import           Data.List (nub)
 import           Data.List.NonEmpty (nonEmpty, NonEmpty(..))
@@ -298,7 +298,7 @@ checkRequestsAnswered correct sets seconds = runThreadFileLoggingT $ withLogTag 
                             Left (_ :: SomeException) -> return [] -- Indicates heartbeat failure
                             Right requests -> do
                                 mtime <- run r $ zscore (heartbeatActiveKey r) (unWorkerId wid)
-                                let toResult (decode . fromStrict -> RequestInfo _ k) = (wid, delta, k)
+                                let toResult k = (wid, delta, RequestId k)
                                     delta = fmap (\time -> start `diffUTCTime` posixSecondsToUTCTime (realToFrac time)) mtime
                                 return $ map toResult requests
                 return (map RequestId inactiveRequests, concat (catMaybes results), mLastTime)

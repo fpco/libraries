@@ -237,9 +237,9 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
                 -- code will re-enqueue the request.
                 prr <- popRequest redis wid
                 case prr of
-                    RequestAvailable ri req -> do
+                    RequestAvailable k req -> do
                         unsubscribeToRequests mws
-                        send ri =<< becomeMaster jqwp ri req
+                        send k =<< becomeMaster jqwp k req
                         loop NoSubscription heartbeatThread
                     NoRequestAvailable -> case mws of
                         -- If we weren't subscribed to
@@ -258,8 +258,8 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
                             $logInfoS "JobQueue" "Got notified of an available request"
                             loop mws heartbeatThread
                     -- Let the client know about missing requests.
-                    RequestMissing ri -> do
-                        send ri (Left (RequestMissingException (riRequest ri)))
+                    RequestMissing k -> do
+                        send k (Left (RequestMissingException k))
                         loop mws heartbeatThread
                     -- Recover in circumstances where this worker
                     -- still functions, but failed to send its
@@ -271,10 +271,10 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
                         -- the worker to the list of active workers.
                         liftIO $ cancel heartbeatThread
                         withHeartbeats $ loop mws
-    send :: RequestInfo
+    send :: RequestId
          -> Either DistributedJobQueueException response
          -> m ()
-    send ri result = sendResponse redis expiry wid ri encoded
+    send k result = sendResponse redis expiry wid k encoded
       where
         expiry = workerResponseDataExpiry config
         encoded = toStrict (encode result)
@@ -314,10 +314,10 @@ becomeSlave JQWParams {..} mci init = do
 becomeMaster
     :: forall m request response payload result. MonadConnect m
     => JQWParams request response payload result
-    -> RequestInfo
+    -> RequestId
     -> ByteString
     -> m (Either DistributedJobQueueException response)
-becomeMaster JQWParams {..} ri req = do
+becomeMaster JQWParams {..} k req = do
     $logInfoS "JobQueue" (tshow wid ++ " becoming master")
     let requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
@@ -344,7 +344,7 @@ becomeMaster JQWParams {..} ri req = do
     case eres of
         Left err -> do
             $logErrorS "JobQueue" $
-                tshow ri <> " failed with " <> tshow err
+                tshow k <> " failed with " <> tshow err
             return (Left (wrapException err))
         Right x -> do
             $logInfoS "JobQueue" "Done being master"
