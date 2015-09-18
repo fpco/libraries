@@ -161,24 +161,33 @@ into these details:
 The clients of the job-queue periodically check that the workers are sending
 heartbeats to redis.  Here's how this works:
 
-* There is a set of currently active workers stored at `heartbeat:active`.  When
-  the worker becomes a master, it adds itself to the active set.
+* There is a sorted set of currently active workers, `heartbeat:active`, where
+  the 'score' associated with the `WorkerId` is its POSIX timestamp. Server
+  clocks must be roughly synchronized.
 
-* There is a set of potentially-inactive workers stored at `heartbeat:inactive`.
-  A heartbeat from a worker is simply removing its ID from the set.
+* There is a `heartbeat:last-check` value, which stores the timestamp of the
+  last heartbeat check.
 
-The clients use redis mutexes to ensure that the following heartbeat check is
-run periodically by one of the clients:
+* Loop forever, with a thread delay of the heartbeat check interval
 
-(0) The workers in `heartbeat:inactive` are assumed to be dead, have all of
-their work items re-enqueued on the `requests` list.  The collected workers are
-removed from `heartbeat:active`.
+* Read the timestamp of `heartbeat:last-check`, and if enough time has elapsed,
+  perform the check (otherwise continue looping):
 
-(1) `heartbeat:inactive` is deleted and repopulated with the members of
-`heartbeat:active`.
+* Use the `zrange` redis command to fetch the list of active workers who's last
+  heartbeat came before `startTime - checkIvl`.  For each of the inactive workers:
 
-This works, because the workers periodically remove themselves from
-`heartbeat:inactive`, at a higher frequency than the heartbeat is checked.
+  - All of their work items re-enqueued on the `requests` list. The collected
+    workers are removed from `heartbeat:active`.
+
+  - Check if the last heartbeat timestamp is too old, and if it is, then use the
+    existing heartbeat failure code to migrate its items.
+
+* Put the start time in `heartbeat:last-check`.
+
+As an optimization, `heartbeat:mutex` is used to make it likely that only one
+client is executing the heartbeat check at once. However, this is not necessary
+for correctness - the heartbeat check can be executed by multiple clients at
+once.
 
 ## Master <-> slave communication failure (work-queue)
 
