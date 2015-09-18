@@ -22,7 +22,7 @@ import Control.Concurrent.Lifted (threadDelay)
 import Control.Exception (AsyncException(ThreadKilled), throwTo)
 import Control.Monad.Logger
 import Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
-import Data.Binary (encode)
+import Data.Binary (encode, decode)
 import Data.List.NonEmpty (nonEmpty, NonEmpty(..))
 import Data.List.Split (chunksOf)
 import Data.Proxy (Proxy(..))
@@ -82,13 +82,20 @@ spec = do
         _ <- forkWorker "redis" 0
         resultVar <- forkDispatcher
         checkResult 5 resultVar 0
-    jqit "Preserves data despite slaves being started and killed periodically" $ do
-        resultVar <- forkDispatcher
+    -- jqit "Preserves data despite slaves being started and killed periodically (all using the same request)" $ do
+    --     resultVars <- replicateM 10 forkDispatcher
+    --     liftIO $ void $
+    --         randomSlaveSpawner "redis" `race`
+    --         randomSlaveSpawner "redis" `race`
+    --         randomSlaveSpawner "redis" `race`
+            -- checkResults 60 resultVars (repeat 0)
+    jqit "Preserves data despite slaves being started and killed periodically (different requests)" $ do
+        resultVars <- forM [1..10] (forkDispatcher' . mkRequest)
         liftIO $ void $
             randomSlaveSpawner "redis" `race`
             randomSlaveSpawner "redis" `race`
             randomSlaveSpawner "redis" `race`
-            checkResult 60 resultVar 0
+            checkResults 60 resultVars (repeat 0)
     jqit "Works despite clients and workers being started and killed periodically" $ do
         (sets :: RequestSets Int) <- mkRequestSets
         liftIO $ void $
@@ -286,12 +293,18 @@ randomDelay minMillis maxMillis = do
     threadDelay (1000 * ms)
 
 checkResult :: MonadIO m => Int -> MVar (Either DistributedJobQueueException Int) -> Int -> m ()
-checkResult seconds resultVar expected = liftIO $ do
-    result <- timeout (seconds * 1000 * 1000) $ takeMVar resultVar
-    case result of
-        Just (Left ex) -> liftIO $ throwIO ex
-        Just (Right x) -> x `shouldBe` expected
-        Nothing -> fail "Timed out waiting for value"
+checkResult seconds resultVar expected = checkResults seconds [resultVar] [expected]
+
+checkResults :: MonadIO m => Int -> [MVar (Either DistributedJobQueueException Int)] -> [Int] -> m ()
+checkResults seconds resultVars expecteds = liftIO $ do
+    mresults <- timeout (seconds * 1000 * 1000) $ mapM takeMVar resultVars
+    case mresults of
+        Nothing -> fail "Timed out waiting for value(s)"
+        Just results ->
+            forM_ (zip results expecteds) $ \(result, expected) ->
+                case result of
+                    Left ex -> liftIO $ throwIO ex
+                    Right x -> x `shouldBe` expected
 
 getException :: (Show r, MonadIO m) => Int -> MVar (Either DistributedJobQueueException r) -> m DistributedJobQueueException
 getException seconds resultVar = liftIO $ do
