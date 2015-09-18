@@ -32,8 +32,9 @@ library
                        Distributed.WorkQueue
                        Control.Concurrent.ThreadPool
                        Control.Exception.Mask
-  other-modules:       Distributed.JobQueue.Shared
+                       -- Exposed for testing purposes
                        Distributed.JobQueue.Heartbeat
+  other-modules:       Distributed.JobQueue.Shared
                        Data.ConcreteTypeRep
   build-depends:       base
                      , async

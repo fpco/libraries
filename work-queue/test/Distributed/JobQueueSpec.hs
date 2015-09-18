@@ -15,31 +15,35 @@ module Distributed.JobQueueSpec
     , randomDelay
     ) where
 
-import ClassyPrelude hiding (keys)
-import Control.Concurrent (forkIO, myThreadId, ThreadId)
-import Control.Concurrent.Async (Async, race, async, cancel, waitCatch)
-import Control.Concurrent.Lifted (threadDelay)
-import Control.Exception (AsyncException(ThreadKilled), throwTo)
-import Control.Monad.Logger
-import Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
-import Data.Binary (encode, decode)
-import Data.List.NonEmpty (nonEmpty, NonEmpty(..))
-import Data.List.Split (chunksOf)
-import Data.Proxy (Proxy(..))
-import Data.Streaming.NetworkMessage (Sendable)
-import Distributed.JobQueue
-import Distributed.RedisQueue
-import Distributed.RedisQueue.Internal (run_, run, requestsKey)
-import Distributed.WorkQueueSpec (redisTestPrefix, forkWorker, cancelProcess)
-import FP.Redis
-import FP.ThreadFileLogger
-import System.Random (randomRIO)
-import System.Timeout.Lifted (timeout)
-import Test.Hspec (Spec, it, shouldBe)
-import Data.Bits (shiftL)
+import           ClassyPrelude hiding (keys)
+import           Control.Concurrent (forkIO, myThreadId, ThreadId)
+import           Control.Concurrent.Async (Async, race, async, cancel, waitCatch)
+import           Control.Concurrent.Lifted (threadDelay)
+import           Control.Exception (AsyncException(ThreadKilled), throwTo)
+import           Control.Monad.Base (MonadBase)
+import           Control.Monad.Logger
+import           Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
+import           Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
+import           Data.Binary (encode, decode)
+import           Data.Bits (shiftL)
+import           Data.List (nub)
+import           Data.List.NonEmpty (nonEmpty, NonEmpty(..))
+import           Data.List.Split (chunksOf)
+import           Data.Proxy (Proxy(..))
 import qualified Data.Set as S
-import Control.Monad.Base (MonadBase)
-import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
+import           Data.Streaming.NetworkMessage (Sendable)
+import           Data.Time
+import           Data.Time.Clock.POSIX
+import           Distributed.JobQueue
+import           Distributed.JobQueue.Heartbeat (heartbeatActiveKey, getLastHeartbeatTime)
+import           Distributed.RedisQueue
+import           Distributed.RedisQueue.Internal (run_, run, requestsKey)
+import           Distributed.WorkQueueSpec (redisTestPrefix, forkWorker, cancelProcess)
+import           FP.Redis
+import           FP.ThreadFileLogger
+import           System.Random (randomRIO)
+import           System.Timeout.Lifted (timeout)
+import           Test.Hspec (Spec, it, shouldBe)
 
 spec :: Spec
 spec = do
@@ -226,8 +230,11 @@ forkResponseWaiter tag sets = allocateAsync responseWaiter
 
 clientConfig :: ClientConfig
 clientConfig = defaultClientConfig
-    { clientHeartbeatCheckIvl = Seconds 2
+    { clientHeartbeatCheckIvl = heartbeatCheckIvl
     }
+
+heartbeatCheckIvl :: Seconds
+heartbeatCheckIvl = Seconds 2
 
 randomSlaveSpawner :: String -> IO ()
 randomSlaveSpawner which = runResourceT $ runThreadFileLoggingT $ withLogTag "randomSlaveSpawner" $ forM_ [0..] $ \n -> do
@@ -267,22 +274,64 @@ checkRequestsAnswered correct sets seconds = do
             let wrongResults = S.filter (not . correct . snd) received
             unless (S.null wrongResults) $
                 fail $ "Received wrong results: " ++ show wrongResults
-            let unreceived = sent `S.difference` (S.map fst received)
+            let unreceived = sent `S.difference` S.map fst received
             writeIORef lastSummaryRef (unwatched, sent, unreceived)
+            -- NOTE: uncomment this for lots more debug info
+            -- mapM_ ($logDebug . pack) . lines =<< getSummary
             if S.null unwatched && S.null unreceived
                 then return ()
-                else threadDelay (10 * 1000) >> loop
-    result <- timeout (seconds * 1000 * 1000) loop
-    case result of
-        Nothing -> do
+                else threadDelay (1000 * 1000) >> loop
+        getSummary = liftIO $ do
             (unwatched, sent, unreceived) <- readIORef lastSummaryRef
-            inFlight <- getInFlightRequests
-            fail $ "Didn't receive all requests:" ++
+            start <- getCurrentTime
+            (pending, active, mLastTime) <- runThreadFileLoggingT $ withRedis redisTestPrefix localhost $ \r -> do
+                mLastTime <- getLastHeartbeatTime r
+                inactiveRequests <- run r $ lrange (requestsKey r) 0 (-1)
+                let activePrefix = redisTestPrefix <> "active:"
+                activeKeys <- run r $ keys (activePrefix <> "*")
+                results <- forM activeKeys $ \active ->
+                    forM (fmap WorkerId (stripPrefix activePrefix (unKey active))) $ \wid -> do
+                        erequests <- try $ run r $ lrange (LKey active) 0 (-1)
+                        case erequests of
+                            Left (_ :: SomeException) -> return [] -- Indicates heartbeat failure
+                            Right requests -> do
+                                mtime <- run r $ zscore (heartbeatActiveKey r) (unWorkerId wid)
+                                let toResult (decode . fromStrict -> RequestInfo _ k) = (wid, delta, k)
+                                    delta = fmap (\time -> start `diffUTCTime` posixSecondsToUTCTime (realToFrac time)) mtime
+                                return $ map toResult requests
+                return (map RequestId inactiveRequests, concat (catMaybes results), mLastTime)
+            -- TODO: May also make sense to check that requests we have received
+            -- aren't in the pending / active lists.
+            let summary :: String
+                summary =
+                    if not (null unwatched) then "Some requests weren't watched" else
+                    if null unreceived then "All responses received" else
+                    if not (null requestsLost) then "Some request was lost! Argh!" else
+                    if not (null oldHeartbeats) then "Heartbeat checker failed to re-enqueue items" else
+                    "Test timed out too early, but no there was no data loss, and heartbeats seem to function."
+                requestsLost =
+                    map fst $
+                    filter (isNothing . snd) $
+                    map (\x -> (x, find (\(_, _, y) -> x == y) active)) $
+                    filter (`onotElem` pending) (S.toList unreceived)
+                ivl = fromIntegral (unSeconds heartbeatCheckIvl)
+                oldHeartbeats = nub (filter (\(_, t, _) -> maybe True (> ivl) t) active)
+                timeSinceLastHeartbeat = fmap (diffUTCTime start . posixSecondsToUTCTime) mLastTime
+            return $
                 "\nsent = " ++ show sent ++
                 "\nunwatched = " ++ show unwatched ++
                 "\nunreceived = " ++ show unreceived ++
-                "\nunreceived - unwatched = " ++ show (unreceived `S.difference` unwatched) ++
-                "\ninFlight = " ++ show inFlight
+                "\npending = " ++ show pending ++
+                "\nactive = " ++ show active ++
+                "\noldHeartbeats = " ++ show oldHeartbeats ++
+                "\nrequestsLost = " ++ show requestsLost ++
+                "\ntimeSinceLastHeartbeat = " ++ show timeSinceLastHeartbeat ++
+                "\nsummary = " ++ show summary
+    result <- timeout (seconds * 1000 * 1000) loop
+    case result of
+        Nothing -> do
+            summary <- getSummary
+            fail $ "Didn't receive all requests:" ++ summary
         Just () -> do
             sent <- readIORef (sentRequests sets)
             when (S.null sent) $ fail "Didn't send any requests."
@@ -335,22 +384,6 @@ enqueueSlaveRequest mci =
 
 localhost :: ConnectInfo
 localhost = connectInfo "localhost"
-
--- Check the redis state for which requests are still being worked on. NOTE: If
--- this is used while mutation is happening, we'll potentially get strange
-      -- results, since this isn't done automically.
-getInFlightRequests :: MonadIO m => m ([RequestId], [(WorkerId, RequestId)])
-getInFlightRequests =
-    liftIO $ runThreadFileLoggingT $ withRedis redisTestPrefix localhost $ \r -> do
-        inactiveRequests <- run r $ lrange (requestsKey r) 0 (-1)
-        let activePrefix = redisTestPrefix <> "active:"
-        activeKeys <- run r $ keys (activePrefix <> "*")
-        results <- forM activeKeys $ \active ->
-            forM (fmap WorkerId (stripPrefix activePrefix (unKey active))) $ \wid -> do
-                requests <- try $ run r $ lrange (LKey active) 0 (-1)
-                let toResult (decode . fromStrict -> RequestInfo _ k) = (wid, k)
-                return (either (\(_ :: SomeException) -> []) (map toResult) requests)
-        return (map RequestId inactiveRequests, concat (catMaybes results))
 
 -- Keeping track of requests which have been sent, haven't yet been
 -- watched, and have been received.
