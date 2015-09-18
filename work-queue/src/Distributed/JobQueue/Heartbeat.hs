@@ -6,6 +6,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ViewPatterns #-}
 
 -- | This module handles the implementation of heartbeat check /
 -- recovery for "Distributed.RedisQueue".
@@ -14,6 +15,9 @@ module Distributed.JobQueue.Heartbeat
     , deactivateHeartbeats
     , recoverFromHeartbeatFailure
     , checkHeartbeats
+    -- Exported for use by the tests
+    , heartbeatActiveKey
+    , getLastHeartbeatTime
     ) where
 
 import           ClassyPrelude
@@ -41,12 +45,13 @@ sendHeartbeats
     :: MonadConnect m => RedisInfo -> Seconds -> WorkerId -> m void
 sendHeartbeats r (Seconds ivl) wid = do
     sendHeartbeat
-    run_ r $ sadd (heartbeatActiveKey r) (unWorkerId wid :| [])
     forever $ do
         liftIO $ threadDelay ((fromIntegral ivl `max` 1) * 1000 * 1000)
         sendHeartbeat
   where
-    sendHeartbeat = setTime r (heartbeatKey r wid) =<< liftIO getPOSIXTime
+    sendHeartbeat = do
+        now <- liftIO getPOSIXTime
+        run_ r $ zadd (heartbeatActiveKey r) ((realToFrac now, unWorkerId wid) :| [])
 
 -- | This removes the worker from the set which are actively checked via
 -- heartbeats.  If there's active work, then it throws
@@ -62,7 +67,7 @@ deactivateHeartbeats r wid = do
         Right 0 -> return ()
         Right _ -> throwIO (WorkStillInProgress wid)
         _ -> return ()
-    run_ r $ srem (heartbeatActiveKey r) (unWorkerId wid :| [])
+    run_ r $ zrem (heartbeatActiveKey r) (unWorkerId wid :| [])
 
 -- | This is called by a worker when it still functions, despite its
 -- work items being re-enqueued after heartbeat failure.  It should
@@ -79,10 +84,11 @@ recoverFromHeartbeatFailure r wid = run_ r $ del (activeKey r wid :| [])
 checkHeartbeats
     :: MonadConnect m => RedisInfo -> Seconds -> m void
 checkHeartbeats r (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
-    $logDebug "Checking if enough time has elapsed since last heartbeat check."
     startTime <- liftIO getPOSIXTime
     let oldTime = startTime - fromIntegral ivl
-    mlastTime <- getTime r (heartbeatLastCheckKey r)
+    $logDebug $ "Checking if enough time has elapsed since last heartbeat check.  Looking for a time before " ++
+        tshow oldTime
+    mlastTime <- getLastHeartbeatTime r
     -- Do the heartbeat check when enough time has elapsed since the last check,
     -- or when no check has ever happened.
     when (maybe True (< oldTime) mlastTime) $ do
@@ -93,20 +99,14 @@ checkHeartbeats r (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
         gotMutex <- run r $ set (heartbeatMutexKey r) "" [NX, EX expiry]
         when gotMutex $ do
             $logDebug "Acquired heartbeat check mutex."
-            workers <- run r $ smembers (heartbeatActiveKey r)
-            reenqueuedSome <- fmap (any id) $ forM workers $ \widbs -> do
-                let wid = WorkerId widbs
-                mheartbeatTime <- getTime r (heartbeatKey r wid)
-                -- If the heartbeat hasn't been updated within the check
-                -- interval, re-enqueue its requests.
-                if maybe True (< oldTime) mheartbeatTime
-                    then handleWorkerFailure r wid
-                    else return False
+            let ninf = -1 / 0
+            inactive <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac oldTime) False
+            reenqueuedSome <- fmap or $ forM inactive $ handleWorkerFailure r . WorkerId
             when reenqueuedSome $ do
                 $logDebug "Notifying that some requests were re-enqueued"
                 notifyRequestAvailable r
             $logDebug "Setting timestamp for last heartbeat check"
-            setTime r (heartbeatLastCheckKey r) startTime
+            setLastHeartbeatTime r startTime
 
 handleWorkerFailure
     :: (MonadCommand m, MonadLogger m) => RedisInfo -> WorkerId -> m Bool
@@ -128,7 +128,7 @@ handleWorkerFailure r wid = do
     as = [unWorkerId wid]
     ks = [ activeKey r wid
          , unLKey (requestsKey r)
-         , unSKey (heartbeatActiveKey r)
+         , unZKey (heartbeatActiveKey r)
          ]
     -- NOTE: In order to handle moving many requests, this script
     -- should probaly work around the limits of lua 'unpack'. This is
@@ -151,37 +151,42 @@ handleWorkerFailure r wid = do
         , "    end"
         , "    redis.call('del', KEYS[1])"
         , "    redis.call('set', KEYS[1], 'HeartbeatFailure')"
-        , "    redis.pcall('srem', KEYS[3], ARGV[1])"
+        , "    redis.pcall('zrem', KEYS[3], ARGV[1])"
         , "    return len"
         , "end"
         ]
 
+getLastHeartbeatTime :: MonadConnect m => RedisInfo -> m (Maybe POSIXTime)
+getLastHeartbeatTime r = fmap timeFromBS <$> run r (get (heartbeatLastCheckKey r))
+
+setLastHeartbeatTime :: MonadConnect m => RedisInfo -> POSIXTime -> m ()
+setLastHeartbeatTime r x = run_ r $ set (heartbeatLastCheckKey r) (timeToBS x) []
+
 -- * Utilities for reading and writing timestamps
 
--- Rounds time to the nearest millisecond.
+-- NOTE: Rounds time to the nearest millisecond.
 
-setTime :: (MonadCommand m) => RedisInfo -> VKey -> POSIXTime -> m ()
-setTime r k t = run_ r $ set k (BS8.pack (show (floor (t * 1000) :: Int))) []
+timeToBS :: POSIXTime -> ByteString
+timeToBS = BS8.pack . show . timeToInt
 
-getTime :: (MonadCommand m) => RedisInfo -> VKey -> m (Maybe POSIXTime)
-getTime r k = do
-    mbs <- run r $ get k
-    case mbs of
-        Nothing -> return Nothing
-        Just bs ->
-            case readMay (BS8.unpack bs) of
-                Nothing -> fail $ "Failed to decode timestamp in key " ++ show k
-                Just result -> return $ Just (fromInteger result / 1000)
+timeFromBS :: ByteString -> POSIXTime
+timeFromBS (BS8.unpack -> input) =
+    case readMay input of
+        Nothing -> error $ "Failed to decode timestamp " ++ input
+        Just result -> timeFromInt result
+
+timeToInt :: POSIXTime -> Int
+timeToInt x = floor (x * 1000)
+
+timeFromInt :: Int -> POSIXTime
+timeFromInt x = fromIntegral x / 1000
 
 -- * Functions to compute Redis keys
 
--- | Stores the timestamp of the last heartbeat from the given worker.
-heartbeatKey :: RedisInfo -> WorkerId -> VKey
-heartbeatKey r wid = VKey $ Key $ redisKeyPrefix r <> "heartbeat:worker:" <> unWorkerId wid
-
--- | A set of 'WorkerId's that are currently thought to be running.
-heartbeatActiveKey :: RedisInfo -> SKey
-heartbeatActiveKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:active"
+-- | A sorted set of 'WorkerId's that are currently thought to be running. The
+-- score of each is its timestamp.
+heartbeatActiveKey :: RedisInfo -> ZKey
+heartbeatActiveKey r = ZKey $ Key $ redisKeyPrefix r <> "heartbeat:active"
 
 -- | Timestamp for the last time the heartbeat check successfully ran.
 heartbeatLastCheckKey :: RedisInfo -> VKey
