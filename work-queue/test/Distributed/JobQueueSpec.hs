@@ -86,13 +86,13 @@ spec = do
         _ <- forkWorker "redis" 0
         resultVar <- forkDispatcher
         checkResult 5 resultVar 0
-    -- jqit "Preserves data despite slaves being started and killed periodically (all using the same request)" $ do
-    --     resultVars <- replicateM 10 forkDispatcher
-    --     liftIO $ void $
-    --         randomSlaveSpawner "redis" `race`
-    --         randomSlaveSpawner "redis" `race`
-    --         randomSlaveSpawner "redis" `race`
-            -- checkResults 60 resultVars (repeat 0)
+    jqit "Preserves data despite slaves being started and killed periodically (all using the same request)" $ do
+        resultVars <- replicateM 10 forkDispatcher
+        liftIO $ void $
+            randomSlaveSpawner "redis" `race`
+            randomSlaveSpawner "redis" `race`
+            randomSlaveSpawner "redis" `race`
+            checkResults 60 resultVars (repeat 0)
     jqit "Preserves data despite slaves being started and killed periodically (different requests)" $ do
         resultVars <- forM [1..10] (forkDispatcher' . mkRequest)
         liftIO $ void $

@@ -64,28 +64,23 @@ import           FP.Redis
 getRequestId :: ByteString -> RequestId
 getRequestId request = RequestId (Base64.encode (SHA1.hash request))
 
--- | Pushes a request to the compute workers.  If the result has been
--- computed previously, and the result is still cached, then it's
--- returned as a 'Just' value in the 'snd' part of the result.  The
--- 'RequestId' provided in the result can later be used to associate a
--- response with the request (see 'subscribeToResponses' and
--- 'readResponse').
---
--- The request data is given an expiry of 'clientRequestExpiry'.  If
--- the request data expires before being dequeued, then the request is
--- silently dropped.
+-- | Pushes a request to the redis-queue. If the request has already been
+-- stored, then it returns 'False', indicating that the request is already being
+-- worked on.
 pushRequest
     :: MonadCommand m
     => RedisInfo
     -> Seconds
     -> RequestId
     -> ByteString
-    -> m ()
+    -> m Bool
 pushRequest r expiry k request = do
     -- Store the request data as a normal redis value.
-    run_ r $ set (requestDataKey r k) request [EX expiry]
+    added <- run r $ set (requestDataKey r k) request [EX expiry, NX]
     -- Enqueue its ID on the requests list.
-    run_ r $ lpush (requestsKey r) (unRequestId k :| [])
+    when added $
+        run_ r $ lpush (requestsKey r) (unRequestId k :| [])
+    return added
 
 -- | Result value of 'popRequest'.
 data PopRequestResult

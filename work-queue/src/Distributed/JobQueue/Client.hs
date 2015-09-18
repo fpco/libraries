@@ -240,9 +240,9 @@ sendRequestIgnoringCache
 sendRequestIgnoringCache config redis k encoded = do
     let expiry = clientRequestExpiry config
     $logDebugS "sendRequest" $ "Pushing request " <> tshow k
-    pushRequest redis expiry k encoded
+    pushed <- pushRequest redis expiry k encoded
     $logDebugS "sendRequest" $ "Notifying about request " <> tshow k
-    notifyRequestAvailable redis
+    when pushed $ notifyRequestAvailable redis
     $logDebugS "sendRequest" $ "Done notifying about request " <> tshow k
 
 -- | This registers a callback to handle the response to the specified
