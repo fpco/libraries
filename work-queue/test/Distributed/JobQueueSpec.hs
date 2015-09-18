@@ -112,8 +112,8 @@ spec = do
             -- Run job requesters for 10 seconds, then check that all
             -- the responses eventually came back.
             (do void $ timeout (1000 * 1000 * 10) $
-                    randomJobRequester sets 254 `race`
-                    randomJobRequester sets 255
+                    randomJobRequester "job-requester-1" sets 254 `race`
+                    randomJobRequester "job-requester-2" sets 255
                 checkRequestsAnswered (== 0) sets 60)
     {-  Commented out because this is a bit of a weird thing to test
     jqit "Sends requests despite a bunch of other redis connections" $ do
@@ -184,10 +184,10 @@ runDispatcher request resultVar =
 
 sendJobRequest
     :: forall request response. (Sendable request, Sendable response)
-    => RequestSets response -> request -> IO RequestId
-sendJobRequest sets request =
-    runThreadFileLoggingT $ logNest "sendJobRequest" $ withRedis redisTestPrefix localhost $ \redis -> do
         mresult <- timeout (1000 * 1000) $ sendRequest clientConfig redis request
+    => LogTag -> RequestSets response -> request -> IO RequestId
+sendJobRequest tag sets request =
+    runThreadFileLoggingT $ logNest tag $ withRedis redisTestPrefix localhost $ \redis -> do
         let (ri, _) = prepareRequest clientConfig request (Proxy :: Proxy response)
         case mresult of
             Nothing -> do
@@ -255,17 +255,17 @@ randomWaiterSpawner tag sets = runResourceT $ runThreadFileLoggingT $ withLogTag
     $logInfo $ "Cancelling waiter started at " ++ tshow startTime
     liftIO $ cancel tid
 
-randomJobRequester :: Sendable response => RequestSets response -> Int -> IO ()
-randomJobRequester sets cnt = runResourceT $ runThreadFileLoggingT $ withLogTag "randomJobRequester" $ forM_ [0..] $ \(n :: Int) -> do
+randomJobRequester :: Sendable response => Text -> RequestSets response -> Int -> IO ()
+randomJobRequester tag sets cnt = runResourceT $ runThreadFileLoggingT $ withLogTag (LogTag tag) $ forM_ [0..] $ \(n :: Int) -> do
     -- "redis-long" interprets this as a number of ms to delay.
     ms <- liftIO $ randomRIO (0, 200)
     let request :: Vector [Int]
         request = fromList $ map (ms:) $ chunksOf 100 [n..n+cnt]
-    lift $ void $ allocateAsync (sendJobRequest sets request)
+    lift $ void $ allocateAsync (sendJobRequest (LogTag (tag ++ "-" ++ tshow n)) sets request)
     randomDelay 100 200
 
 checkRequestsAnswered :: (MonadIO m, MonadBaseControl IO m, Show response) => (response -> Bool) -> RequestSets response -> Int -> m ()
-checkRequestsAnswered correct sets seconds = do
+checkRequestsAnswered correct sets seconds = runThreadFileLoggingT $ withLogTag "checkRequestsAnswered" $ do
     lastSummaryRef <- newIORef (error "impossible: lastSummaryRef")
     let loop = do
             unwatched <- readIORef (unwatchedRequests sets)
