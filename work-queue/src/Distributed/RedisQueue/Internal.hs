@@ -107,9 +107,7 @@ withRedis redisKeyPrefix ci f =
     withConnection redisConnectInfo $ \redisConnection -> f RedisInfo {..}
   where
     redisConnectInfo = ci
-        { connectRequestsPerBatch = 1
-        , connectMaxPendingResponses = 1
-        , connectRetryPolicy = Just retryPolicy
+        { connectRetryPolicy = Just retryPolicy
         }
     retryPolicy = fromMaybe defaultRetryPolicy (connectRetryPolicy ci)
 
