@@ -190,13 +190,14 @@ sendJobRequest
 sendJobRequest tag sets request =
     runThreadFileLoggingT $ logNest tag $ withRedis redisTestPrefix localhost $ \redis -> do
         mresult <- timeout (1000 * 1000 * 10) $ sendRequest clientConfig redis request
-        let (ri, _) = prepareRequest clientConfig request (Proxy :: Proxy response)
+        let encoded = encodeRequest clientConfig request (Proxy :: Proxy response)
+            k = getRequestId encoded
         case mresult of
             Nothing -> do
-                $logError $ "Timed out waiting for request to be sent: " <> tshow ri
+                $logError $ "Timed out waiting for request to be sent: " <> tshow k
                 fail "sendJobRequest failed"
             Just (_, Just (_ :: response)) -> do
-                $logError $ "Didn't expect to find a cached result: " <> tshow ri
+                $logError $ "Didn't expect to find a cached result: " <> tshow k
                 fail "sendJobRequest failed"
             Just (rid, Nothing) -> do
                 $logDebug $ "Successfully sent job request " ++ tshow rid

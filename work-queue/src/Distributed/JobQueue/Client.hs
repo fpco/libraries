@@ -7,6 +7,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 
 -- | This module provides the API used by job-queue clients.  See
 -- "Distributed.JobQueue" for more info.
@@ -17,15 +18,17 @@ module Distributed.JobQueue.Client
     , ClientVars(..)
     , withJobQueueClient
     , sendRequest
+    , sendRequestWithId
     , registerResponseCallback
       -- * Extra client APIs
     , newClientVars
     , jobQueueClient
     , jobQueueRequest
+    , jobQueueRequestWithId
     , checkForResponse
     , DistributedJobQueueException(..)
     -- * Exposed for the test-suite
-    , prepareRequest
+    , encodeRequest
     , sendRequestIgnoringCache
     )
     where
@@ -167,7 +170,39 @@ jobQueueRequest
     -> request
     -> m response
 jobQueueRequest config cvs redis request = do
-    let (k, encoded) = prepareRequest config request (Proxy :: Proxy response)
+    let encoded = encodeRequest config request (Proxy :: Proxy response)
+        k = getRequestId encoded
+    jobQueueRequestRaw config cvs redis k encoded
+
+-- | Like 'jobQueueRequest', but allows the client to specify a custom
+-- 'RequestId'.
+--
+-- Note that this 'RequestId' should have the property that it isn't
+-- ever re-used for different request data. If it is re-used, then
+-- cached values may be yielded.
+jobQueueRequestWithId
+    :: forall m request response.
+       (MonadCommand m, MonadLogger m, Sendable request, Sendable response)
+    => ClientConfig
+    -> ClientVars m response
+    -> RedisInfo
+    -> RequestId
+    -> request
+    -> m response
+jobQueueRequestWithId config cvs redis k request = do
+    let encoded = encodeRequest config request (Proxy :: Proxy response)
+    jobQueueRequestWithId config cvs redis k encoded
+
+jobQueueRequestRaw
+    :: forall m response.
+       (MonadCommand m, MonadLogger m, Sendable response)
+    => ClientConfig
+    -> ClientVars m response
+    -> RedisInfo
+    -> RequestId
+    -> ByteString
+    -> m response
+jobQueueRequestRaw config cvs redis k encoded = do
     mresponse <- checkForResponse redis k
     case mresponse of
         Just eres ->
@@ -199,34 +234,63 @@ sendRequest
     -> request
     -> m (RequestId, Maybe response)
 sendRequest config redis request = do
-    let (k, encoded) = prepareRequest config request (Proxy :: Proxy response)
+    let encoded = encodeRequest config request (Proxy :: Proxy response)
+        k = getRequestId encoded
+    (k, ) <$> sendRequestRaw config redis k encoded
+
+-- | Like 'sendRequest', but allows the client to specify a custom
+-- 'RequestId'.
+--
+-- Note that this 'RequestId' should have the property that it isn't
+-- ever re-used for different request data. If it is re-used, then
+-- cached values may be yielded.
+sendRequestWithId
+    :: forall m request response.
+       (MonadCommand m, MonadLogger m, Sendable request, Sendable response)
+    => ClientConfig
+    -> RedisInfo
+    -> RequestId
+    -> request
+    -> m (Maybe response)
+sendRequestWithId config redis k request = do
+    let encoded = encodeRequest config request (Proxy :: Proxy response)
+    sendRequestRaw config redis k encoded
+
+sendRequestRaw
+    :: forall m response.
+       (MonadCommand m, MonadLogger m, Sendable response)
+    => ClientConfig
+    -> RedisInfo
+    -> RequestId
+    -> ByteString
+    -> m (Maybe response)
+sendRequestRaw config redis k encoded = do
     $logDebugS "sendRequest" $ "Checking for response for request " <> tshow k
     mresponse <- checkForResponse redis k
     case mresponse of
         Nothing -> do
             $logDebugS "sendRequest" $ "Sending request " <> tshow k
             sendRequestIgnoringCache config redis k encoded
-            return (k, Nothing)
+            return Nothing
         Just (Left err) -> do
             $logDebugS "sendRequest" $ "Cached response to " <> tshow k <> " is an error: " <> tshow err
             $logDebugS "sendRequest" $ "Clearing response cache for " <> tshow k
             clearResponse redis k
             sendRequestIgnoringCache config redis k encoded
-            return (k, Nothing)
+            return Nothing
         Just (Right x) -> do
             $logDebugS "sendRequest" $ "Using cached response for " <> tshow k
-            return (k, Just x)
+            return (Just x)
 
--- Computes the 'RequestId' and encoded bytes for a request.
-prepareRequest
+-- | Computes the encoded ByteString representation of a 'JobRequest'.
+encodeRequest
     :: forall request response. (Sendable response, Sendable request)
     => ClientConfig
     -> request
     -> Proxy response
-    -> (RequestId, ByteString)
-prepareRequest config request _ = (getRequestId encoded, encoded)
-  where
-    encoded = toStrict $ encode JobRequest
+    -> ByteString
+encodeRequest config request _ =
+    toStrict $ encode JobRequest
         { jrRequestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         , jrResponseType = fromTypeRep (typeRep (Proxy :: Proxy response))
         , jrBody = toStrict (encode request)

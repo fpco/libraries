@@ -2,14 +2,15 @@
 
 module Main (main) where
 
-import Criterion.Main
-import Distributed.WorkQueueSpec (forkMasterSlave, redisTestPrefix)
-import Distributed.JobQueue.Client
-import Distributed.RedisQueue.Internal
-import FP.Redis
-import Data.Proxy (Proxy(..))
-import Control.Monad.Logger (runNoLoggingT)
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Logger (runNoLoggingT)
+import Criterion.Main
+import Data.Proxy (Proxy(..))
+import Distributed.JobQueue.Client
+import Distributed.RedisQueue
+import Distributed.RedisQueue.Internal
+import Distributed.WorkQueueSpec (forkMasterSlave, redisTestPrefix)
+import FP.Redis
 
 main :: IO ()
 main =
@@ -27,7 +28,8 @@ main =
           ]
       , bgroup "JobQueue"
           [ bench "sendJobRequest" $ nfIO $ runNoLoggingT $ do
-              let (ri, encoded) = prepareRequest defaultClientConfig ("" :: String) (Proxy :: Proxy Int)
-              sendRequestIgnoringCache defaultClientConfig r ri encoded
+              let encoded = encodeRequest defaultClientConfig ("" :: String) (Proxy :: Proxy Int)
+                  k = getRequestId encoded
+              sendRequestIgnoringCache defaultClientConfig r k encoded
           ]
       ]
