@@ -109,8 +109,8 @@ withSubscription r chan connected f = do
     isDisconnecting <- newIORef False
     let subs = subscribe (chan :| []) :| []
         ci = (redisConnectInfo r) { connectRetryPolicy = Nothing }
-        handler = Handler $ \(fromException -> ex) -> case ex of
-            Just DisconnectedException -> not <$> readIORef isDisconnecting
+        handler = Handler $ \ex -> case ex of
+            DisconnectedException -> not <$> readIORef isDisconnecting
             _ -> return False
     forever $ recoveringWithReset defaultRetryPolicy [\_ -> handler] $ \resetRetries -> do
         $logDebugS "withSubscription" ("Subscribing to " ++ tshow chan)

@@ -131,7 +131,7 @@ handleWorkerFailure r wid = do
          , unZKey (heartbeatActiveKey r)
          ]
     -- NOTE: In order to handle moving many requests, this script
-    -- should probaly work around the limits of lua 'unpack'. This is
+    -- should probably work around the limits of lua 'unpack'. This is
     -- fine for now, because we should only have at most one item in
     -- the active work queue.
     --
