@@ -152,7 +152,6 @@ jobQueueWorker config calc inner = do
 
 -- Parameters for helper functions
 data JQWParams request response payload result =
-   (Sendable request, Sendable response, Sendable payload, Sendable result) =>
    JQWParams
        { config :: WorkerConfig
        , calc :: payload -> IO result
@@ -199,7 +198,11 @@ data MaybeWithSubscription
 -- and so it doesn't matter that we have so many connections to redis
 -- + it needs to notify many workers.
 jobQueueWorkerInternal
-    :: forall m request response payload result. MonadConnect m
+    :: forall m request response payload result.
+       ( MonadConnect m
+       , Sendable request, Sendable response
+       , Sendable payload, Sendable result
+       )
     => JQWParams request response payload result
     -> m ()
 jobQueueWorkerInternal jqwp@JQWParams {..} =
@@ -285,7 +288,10 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
             sendHeartbeats r (workerHeartbeatSendIvl config) wid
 
 becomeSlave
-    :: MonadConnect m
+    :: ( MonadConnect m
+       , Sendable request, Sendable response
+       , Sendable payload, Sendable result
+       )
     => JQWParams request response payload result
     -> MasterConnectInfo
     -> IO ()
@@ -310,7 +316,11 @@ becomeSlave JQWParams {..} mci init = do
             liftIO $ throwIO err
 
 becomeMaster
-    :: forall m request response payload result. MonadConnect m
+    :: forall m request response payload result.
+       ( MonadConnect m
+       , Sendable request, Sendable response
+       , Sendable payload, Sendable result
+       )
     => JQWParams request response payload result
     -> RequestId
     -> ByteString
