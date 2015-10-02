@@ -170,7 +170,7 @@ data MaybeWithSubscription
     -- before blocking, it makes one more attempt at popping work,
     -- because some work may have come in before the subscription was
     -- established.
-    = WithSubscription (MVar ()) (IORef (IO ()))
+    = WithSubscription (MVar ()) (IO ())
     -- | This constructor indicates that 'loop' should just check for
     -- work, without subscribing to 'requestChannel'. When the worker
     -- successfully popped work last time, there's no reason to
@@ -248,8 +248,8 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
                         -- should be subscribed.
                         NoSubscription -> do
                             $logInfoS "JobQueue" "Re-running requests, with subscription"
-                            (notified, dcv) <- subscribeToRequests redis
-                            let mws' = WithSubscription notified dcv
+                            (notified, unsub) <- subscribeToRequests redis
+                            let mws' = WithSubscription notified unsub
                             loop mws' heartbeatThread
                         -- If we are subscribed to 'requestChannel',
                         -- then block waiting for a notification.
@@ -358,36 +358,47 @@ becomeMaster JQWParams {..} k req = do
             $logInfoS "JobQueue" "Done being master"
             return (Right x)
 
+-- | This subscribes to the requests notification channel. The yielded
+-- @MVar ()@ is filled when we receive a notification. The yielded @IO
+-- ()@ action unsubscribes from the channel.
+--
+-- When the connection is lost, at reconnect, the notification MVar is
+-- also filled. This way, things will still work even if we missed a
+-- notification.
 subscribeToRequests
     :: MonadConnect m
     => RedisInfo
-    -> m (MVar (), IORef (IO ()))
+    -> m (MVar (), IO ())
 subscribeToRequests redis = do
+    -- When filled, 'ready' indicates that the subscription has been established.
     ready <- newEmptyMVar
+    -- This is the MVar yielded by the function. It gets filled when a
+    -- message is received on the channel.
     notified <- newEmptyMVar
-    -- This error shouldn't happen because we block on 'ready'
-    -- below.  In order for 'ready' to be set to 'True', this
-    -- IORef will have been set.
+    -- This stores the disconnection action provided by
+    -- 'withSubscription'.
     disconnectVar <- newIORef (error "impossible: disconnectVar not initialized.")
     let handleConnect dc = do
             writeIORef disconnectVar dc
             void $ tryPutMVar notified ()
             void $ tryPutMVar ready ()
-    void $ asyncLifted $ do
-        logNest "subscribeToRequests" $
-            withSubscription redis (requestChannel redis) handleConnect $
-                \_ -> void $ tryPutMVar notified ()
-    -- Wait for the subscription to connect
+    void $ asyncLifted $ logNest "subscribeToRequests" $
+        withSubscription redis (requestChannel redis) handleConnect $ \_ ->
+            void $ tryPutMVar notified ()
+    -- Wait for the subscription to connect before returning.
     takeMVar ready
-    -- Eat the notification that comes from the initial
-    -- connection.
-    void $ tryTakeMVar notified
-    return (notified, disconnectVar)
+    -- 'notified' also gets filled by 'handleConnect', since this is
+    -- needed when a reconnection occurs. We don't want it to be filled
+    -- for the initial connection, though, so we take it.
+    takeMVar notified
+    -- Since we waited for ready to be filled, disconnectVar must no
+    -- longer contains its error value.
+    unsub <- readIORef disconnectVar
+    return (notified, unsub)
 
 unsubscribeToRequests :: MonadConnect m => MaybeWithSubscription -> m ()
 unsubscribeToRequests NoSubscription = return ()
-unsubscribeToRequests (WithSubscription _ disconnectVar) =
-    liftIO =<< readIORef disconnectVar
+unsubscribeToRequests (WithSubscription _ unsub) = liftIO unsub
 
 -- * Slave Requests
 
