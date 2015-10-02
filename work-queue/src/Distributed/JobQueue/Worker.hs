@@ -143,9 +143,7 @@ jobQueueWorker
     -> m ()
 jobQueueWorker config calc inner = do
     wid <- liftIO getWorkerId
-    let name = "worker-" ++ omap replaceChar (tshow (unWorkerId wid))
-        replaceChar c | c `elem` ['\\', '/', '.', '\"'] = '_'
-        replaceChar c = c
+    let name = "worker-" ++ tshow (unWorkerId wid)
     withLogTag (LogTag name) $ withRedis' config $ \redis -> do
         nmSettings <-
             setNMHeartbeat (workerConnectionHeartbeatIvlMicros config)  <$>
