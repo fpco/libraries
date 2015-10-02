@@ -182,6 +182,10 @@ readResponse r k = run r $ get (responseDataKey r k)
 
 -- | Subscribes to the response channel. See the docs for 'withSubscription' for
 -- more info.
+--
+-- Note that this never returns (its return type is @void@). When the
+-- disconnect action @IO ()@ is invoked, or we run out of reconnect
+-- retries, this will throw DisconnectedException.
 subscribeToResponses
     :: MonadConnect m
     => RedisInfo

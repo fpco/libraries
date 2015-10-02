@@ -92,12 +92,20 @@ withRedis redisKeyPrefix ci f =
         }
     retryPolicy = fromMaybe defaultRetryPolicy (connectRetryPolicy ci)
 
--- | It invokes the @IO () -> m ()@ action every time
--- the subscription is re-established, passing it an action which
--- disconnects the subscription.
+-- | This creates a subscription to a redis channel. An @IO () -> m ()@
+-- action is invoked every time the subscription is established
+-- (initially, and on re-connect). The provided @IO ()@ allows you to
+-- deactivate the subscription.
 --
--- See https://github.com/fpco/libraries/issues/54 for why this needs
--- to exist.
+-- The @ByteString -> m ()@ action is run for every message received on
+-- the 'Channel'.
+--
+-- Note that this never returns (its return type is @void@). When the
+-- disconnect action @IO ()@ is invoked, or we run out of reconnect
+-- retries, this will throw DisconnectedException.
+--
+-- See https://github.com/fpco/libraries/issues/54 for why this needs to
+-- exist.
 withSubscription
     :: MonadConnect m
     => RedisInfo
@@ -106,11 +114,11 @@ withSubscription
     -> (ByteString -> m ())
     -> m void
 withSubscription r chan connected f = do
-    isDisconnecting <- newIORef False
+    expectingDisconnect <- newIORef False
     let subs = subscribe (chan :| []) :| []
         ci = (redisConnectInfo r) { connectRetryPolicy = Nothing }
         handler = Handler $ \ex -> case ex of
-            DisconnectedException -> not <$> readIORef isDisconnecting
+            DisconnectedException -> not <$> readIORef expectingDisconnect
             _ -> return False
     forever $ recoveringWithReset defaultRetryPolicy [\_ -> handler] $ \resetRetries -> do
         $logDebugS "withSubscription" ("Subscribing to " ++ tshow chan)
@@ -121,11 +129,14 @@ withSubscription r chan connected f = do
                     $logDebugS "withSubscription" ("Subscribed to " ++ tshow chan)
                     resetRetries
                     connected $ do
-                        writeIORef isDisconnecting True
+                        writeIORef expectingDisconnect True
                         -- Disconnecting can block, so fork a thread.
                         void $ forkIO $ disconnectSub conn
                 Message _ x -> f x
 
+-- | This is the retry policy used for 'withRedis' and 'withSubscription'
+-- reconnects. If it fails 10 reconnects, with 1 second between each,
+-- then it gives up.
 defaultRetryPolicy :: RetryPolicy
 defaultRetryPolicy = limitRetries 10 ++ constantDelay (1000 * 1000)
 
