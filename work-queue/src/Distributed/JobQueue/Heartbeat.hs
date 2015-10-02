@@ -77,10 +77,8 @@ deactivateHeartbeats r wid = do
 recoverFromHeartbeatFailure :: MonadCommand m => RedisInfo -> WorkerId -> m ()
 recoverFromHeartbeatFailure r wid = run_ r $ del (activeKey r wid :| [])
 
--- | Periodically check worker heartbeats.  This uses
--- 'periodicActionWrapped' to share the responsibility of checking the
--- heartbeats amongst multiple client servers.  All invocations of
--- this should use the same time interval.
+-- | Periodically check worker heartbeats. See #78 for a description of
+-- how this works.
 checkHeartbeats
     :: MonadConnect m => RedisInfo -> Seconds -> m void
 checkHeartbeats r (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
