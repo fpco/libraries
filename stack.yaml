@@ -6,3 +6,4 @@ packages:
   - ./redis-fp
   - ./thread-file-logger
   - ./work-queue
+  - ./hpc-manager
