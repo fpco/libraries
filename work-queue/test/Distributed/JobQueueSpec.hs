@@ -6,6 +6,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Distributed.JobQueueSpec
     ( spec
@@ -26,18 +27,15 @@ import           Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import           Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
 import           Data.Binary (encode)
 import           Data.Bits (shiftL)
-import           Data.List (nub)
 import           Data.List.NonEmpty (nonEmpty, NonEmpty(..))
 import           Data.List.Split (chunksOf)
 import           Data.Proxy (Proxy(..))
 import qualified Data.Set as S
 import           Data.Streaming.NetworkMessage (Sendable)
-import           Data.Time
-import           Data.Time.Clock.POSIX
 import           Distributed.JobQueue
-import           Distributed.JobQueue.Heartbeat (heartbeatActiveKey, getLastHeartbeatTime)
+import           Distributed.JobQueue.Status
 import           Distributed.RedisQueue
-import           Distributed.RedisQueue.Internal (run_, run, requestsKey)
+import           Distributed.RedisQueue.Internal (run_)
 import           Distributed.WorkQueueSpec (redisTestPrefix, forkWorker, cancelProcess)
 import           FP.Redis
 import           FP.ThreadFileLogger
@@ -286,23 +284,8 @@ checkRequestsAnswered correct sets seconds = runThreadFileLoggingT $ withLogTag 
                 else threadDelay (1000 * 1000) >> loop
         getSummary = liftIO $ do
             (unwatched, sent, unreceived) <- readIORef lastSummaryRef
-            start <- getCurrentTime
-            (pending, active, mLastTime) <- runThreadFileLoggingT $ withRedis redisTestPrefix localhost $ \r -> do
-                mLastTime <- getLastHeartbeatTime r
-                inactiveRequests <- run r $ lrange (requestsKey r) 0 (-1)
-                let activePrefix = redisTestPrefix <> "active:"
-                activeKeys <- run r $ keys (activePrefix <> "*")
-                results <- forM activeKeys $ \active ->
-                    forM (fmap WorkerId (stripPrefix activePrefix (unKey active))) $ \wid -> do
-                        erequests <- try $ run r $ lrange (LKey active) 0 (-1)
-                        case erequests of
-                            Left (_ :: SomeException) -> return [] -- Indicates heartbeat failure
-                            Right requests -> do
-                                mtime <- run r $ zscore (heartbeatActiveKey r) (unWorkerId wid)
-                                let toResult k = (wid, delta, RequestId k)
-                                    delta = fmap (\time -> start `diffUTCTime` posixSecondsToUTCTime (realToFrac time)) mtime
-                                return $ map toResult requests
-                return (map RequestId inactiveRequests, concat (catMaybes results), mLastTime)
+            JobQueueStatus{..} <- runThreadFileLoggingT $
+                withRedis redisTestPrefix localhost getJobQueueStatus
             -- TODO: May also make sense to check that requests we have received
             -- aren't in the pending / active lists.
             let summary :: String
@@ -315,20 +298,19 @@ checkRequestsAnswered correct sets seconds = runThreadFileLoggingT $ withLogTag 
                 requestsLost =
                     map fst $
                     filter (isNothing . snd) $
-                    map (\x -> (x, find (\(_, _, y) -> x == y) active)) $
-                    filter (`onotElem` pending) (S.toList unreceived)
+                    map (\x -> (x, find (\y -> x `elem` wsRequests y) jqsWorkers)) $
+                    filter (`onotElem` jqsPending) (S.toList unreceived)
                 ivl = fromIntegral (unSeconds heartbeatCheckIvl)
-                oldHeartbeats = nub (filter (\(_, t, _) -> maybe True (> ivl) t) active)
-                timeSinceLastHeartbeat = fmap (diffUTCTime start . posixSecondsToUTCTime) mLastTime
+                oldHeartbeats = filter (maybe True (> ivl) . wsLastHeartbeat) jqsWorkers
             return $
                 "\nsent = " ++ show sent ++
                 "\nunwatched = " ++ show unwatched ++
                 "\nunreceived = " ++ show unreceived ++
-                "\npending = " ++ show pending ++
-                "\nactive = " ++ show active ++
+                "\npending = " ++ show jqsPending ++
+                "\nactive = " ++ show jqsWorkers ++
                 "\noldHeartbeats = " ++ show oldHeartbeats ++
                 "\nrequestsLost = " ++ show requestsLost ++
-                "\ntimeSinceLastHeartbeat = " ++ show timeSinceLastHeartbeat ++
+                "\ntimeSinceLastHeartbeat = " ++ show jqsLastHeartbeat ++
                 "\nsummary = " ++ show summary
     result <- timeout (seconds * 1000 * 1000) loop
     case result of
