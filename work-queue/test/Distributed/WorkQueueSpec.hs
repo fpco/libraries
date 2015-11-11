@@ -244,6 +244,7 @@ runMasterOrSlave RedisConfig {..} = runThreadFileLoggingT $ do
 workerConfig :: WorkerConfig
 workerConfig = (defaultWorkerConfig redisTestPrefix (connectInfo "localhost") "localhost")
     { workerHeartbeatSendIvl = Seconds 1
+    , workerCancellationCheckIvl = Seconds 1
     }
 
 runArgs'

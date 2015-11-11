@@ -150,6 +150,35 @@ spec = do
             Just (partitionEithers -> ([], xs)) -> liftIO $ xs `shouldBe` (replicate requestCount 0 :: [Int])
             Just (partitionEithers -> (errs, _)) -> fail $ "Got errors: " ++ show errs
             _ -> fail "Timed out waiting for values"
+    jqit "Can cancel active requests" $ do
+        resultVar <- forkDispatcher' (fromList [[1000 * 8]] :: Vector [Int])
+        _ <- forkWorker "redis-long" 1
+        threadDelay (1000 * 1000)
+        let withRedis' = runThreadFileLoggingT . withRedis redisTestPrefix localhost
+            getWorkerStatus = do
+                mworker <- listToMaybe . jqsWorkers <$> withRedis' getJobQueueStatus
+                case mworker of
+                    Nothing -> fail "Couldn't find worker"
+                    Just worker -> return worker
+        worker <- getWorkerStatus
+        when (null $ wsRequests worker) $
+            fail "Worker didn't get request"
+        forM_ (wsRequests worker) $ \req -> do
+            success <- withRedis' $ \redis ->
+                cancelRequest (Seconds 60) redis req (Just (wsWorker worker))
+            liftIO $ success `shouldBe` True
+        threadDelay (1000 * 1000)
+        -- Test that the worker is indeed now available.
+        resultVar' <- forkDispatcher' (fromList [[1000]] :: Vector [Int])
+        threadDelay (1000 * 1000 * 3)
+        mresult <- tryTakeMVar resultVar'
+        liftIO $ mresult `shouldBe` Just (Right (0 :: Int))
+        -- And that the other result comes in with a canceled exception.
+        mresult' <- takeMVar resultVar
+        case mresult' of
+            Left (RequestCanceledException {}) -> return ()
+            _ -> fail $ "Instead of canceled exception, got " ++
+                show (mresult' :: Either DistributedJobQueueException Int)
 
 jqit :: String -> ResourceT IO () -> Spec
 jqit name f = it name $ clearRedisKeys >> runResourceT f
@@ -188,7 +217,7 @@ sendJobRequest
 sendJobRequest tag sets request =
     runThreadFileLoggingT $ logNest tag $ withRedis redisTestPrefix localhost $ \redis -> do
         mresult <- timeout (1000 * 1000 * 10) $ sendRequest clientConfig redis request
-        let encoded = encodeRequest clientConfig request (Proxy :: Proxy response)
+        let encoded = encodeRequest request (Proxy :: Proxy response)
             k = getRequestId encoded
         case mresult of
             Nothing -> do

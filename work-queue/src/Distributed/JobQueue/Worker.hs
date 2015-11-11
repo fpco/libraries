@@ -22,7 +22,8 @@ module Distributed.JobQueue.Worker
     ) where
 
 import ClassyPrelude
-import Control.Concurrent.Async (Async, async, withAsync, cancel)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (Async, async, withAsync, cancel, cancelWith, waitEither)
 import Control.Monad.Logger (logErrorS, logInfoS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import Data.Binary (Binary, encode)
@@ -72,6 +73,9 @@ data WorkerConfig = WorkerConfig
     , workerConnectionHeartbeatIvlMicros :: Int
       -- ^ The time interval between heartbeats sent between masters
       -- and slaves.
+    , workerCancellationCheckIvl :: Seconds
+      -- ^ Number of seconds between the worker checking if it's been
+      -- cancelled.
     } deriving (Typeable)
 
 -- | Given a redis key prefix and redis connection information, builds
@@ -110,6 +114,7 @@ defaultWorkerConfig prefix ci hostname = WorkerConfig
     , workerMasterLocalSlaves = 1
     , workerHeartbeatSendIvl = Seconds 15
     , workerConnectionHeartbeatIvlMicros = 1000 * 1000 * 2
+    , workerCancellationCheckIvl = Seconds 10
     }
 
 -- | This runs a job queue worker.  The data that's being sent between
@@ -344,11 +349,12 @@ becomeMaster JQWParams {..} k req = do
                , actualRequestType = jrRequestType
                }
        decoded <- decodeOrThrow "jobQueueWorker" jrBody
-       withMaster (runTCPServer ss) nmSettings () $ \queue ->
-           withLocalSlaves queue (workerMasterLocalSlaves config) calc $ do
-               port <- readMVar boundPort
-               let mci = MasterConnectInfo (workerHostName config) port
-               liftIO $ inner redis mci decoded queue
+       watchForCancel redis k (workerCancellationCheckIvl config) $
+           withMaster (runTCPServer ss) nmSettings () $ \queue ->
+               withLocalSlaves queue (workerMasterLocalSlaves config) calc $ do
+                   port <- readMVar boundPort
+                   let mci = MasterConnectInfo (workerHostName config) port
+                   liftIO $ inner redis mci decoded queue
     case eres of
         Left err -> do
             $logErrorS "JobQueue" $
@@ -357,6 +363,31 @@ becomeMaster JQWParams {..} k req = do
         Right x -> do
             $logInfoS "JobQueue" "Done being master"
             return (Right x)
+
+watchForCancel :: MonadConnect m => RedisInfo -> RequestId -> Seconds -> m a -> m a
+watchForCancel r k ivl f = do
+    -- FIXME: avoid this MVar stuff, once we have good lifted async.
+    resultVar <- newEmptyMVar
+    thread <- asyncLifted $ do
+        result <- f
+        putMVar resultVar result
+    watcher <- asyncLifted $ forever $ do
+        mres <- run r (get (cancelKey r k))
+        liftIO $ case mres of
+            Just res
+                | res == cancelValue ->
+                    cancelWith thread (RequestCanceledException k)
+                | otherwise -> throwIO $ InternalJobQueueException
+                    "Didn't get expected value at cancelKey."
+            Nothing -> threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl))
+    res <- liftIO $ waitEither thread watcher
+    case res of
+        Left () -> do
+            liftIO $ cancel watcher
+            takeMVar resultVar
+        -- FIXME: use 'absurd', once we have a good lifted async.
+        Right () -> liftIO $ throwIO $ InternalJobQueueException
+            "Impossible: the watcher returned"
 
 -- | This subscribes to the requests notification channel. The yielded
 -- @MVar ()@ is filled when we receive a notification. The yielded @IO

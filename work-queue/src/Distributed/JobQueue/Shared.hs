@@ -15,6 +15,8 @@ module Distributed.JobQueue.Shared
     ( JobRequest(..)
     , notifyRequestAvailable
     , requestChannel
+    , cancelKey
+    , cancelValue
     , DistributedJobQueueException(..)
     , wrapException
     ) where
@@ -44,6 +46,18 @@ notifyRequestAvailable r = run_ r $ publish (requestChannel r) ""
 requestChannel :: RedisInfo -> Channel
 requestChannel r = Channel $ redisKeyPrefix r <> "request-channel"
 
+-- | Key which is filled with the value 'cancelValue' when the request gets
+-- canceled.
+--
+-- This is essentially 'requestDataKey' with @:cancel@ added.
+cancelKey :: RedisInfo -> RequestId -> VKey
+cancelKey r k = VKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k <> ":cancel"
+
+-- | This gets placed at 'cancelKey' when things are cancelled. It's
+-- just the string @"cancel"@.
+cancelValue :: ByteString
+cancelValue = "cancel"
+
 -- * Exceptions
 
 -- | Exceptions which are returned to the client by the job-queue.
@@ -68,8 +82,12 @@ data DistributedJobQueueException
         }
     -- ^ Thrown when the client makes a request with the wrong request
     -- / response types.
+    | RequestCanceledException RequestId
+    -- ^ The request has been cancelled.
     | NetworkMessageException NetworkMessageException
     -- ^ Exceptions thrown by "Data.Streaming.NetworkMessage"
+    | InternalJobQueueException Text
+    -- ^ Used for unexpected conditions.
     | OtherException Text Text
     -- ^ This is used to return exceptions to the client, when
     -- exceptions occur while running the job.
@@ -98,8 +116,14 @@ instance Show DistributedJobQueueException where
         "expectedRequestType = " ++ show expectedRequestType ++
         "actualRequestType = " ++ show actualRequestType ++
         " }"
+    show (RequestCanceledException rid) =
+        "RequestCanceledException (" ++
+        show rid ++
+        ")"
     show (NetworkMessageException nme) =
         "NetworkMessageException (" ++ show nme ++ ")"
+    show (InternalJobQueueException txt) =
+        "InternalJobQueueException " ++ show txt
     show (OtherException ty txt) =
         "OtherException " ++ show ty ++ " " ++ show txt
 
