@@ -49,7 +49,7 @@ newtype RequestId = RequestId { unRequestId :: ByteString }
 
 -- * Functions to compute Redis keys
 
--- | List of 'WorkerId'. The client enqueues requests to this list,
+-- | List of 'RequestId'. The client enqueues requests to this list,
 -- and the workers pop them off.
 requestsKey :: RedisInfo -> LKey
 requestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests"
