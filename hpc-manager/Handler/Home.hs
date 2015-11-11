@@ -1,40 +1,63 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 module Handler.Home where
 
+import Control.Monad.Logger
+import Distributed.JobQueue.Status
+import Distributed.RedisQueue
+import FP.Redis
 import Import
-import Yesod.Form.Bootstrap3 (BootstrapFormLayout (..), renderBootstrap3,
-                              withSmallInput)
+import Yesod.Form.Bootstrap3
 
--- This is a handler function for the GET request method on the HomeR
--- resource pattern. All of your resource patterns are defined in
--- config/routes
---
--- The majority of the code you will write in Yesod lives in these handler
--- functions. You can spread them across multiple files if you are so
--- inclined, or create a single monolithic file.
 getHomeR :: Handler Html
 getHomeR = do
-    (formWidget, formEnctype) <- generateFormPost sampleForm
-    let submission = Nothing :: Maybe (FileInfo, Text)
-        handlerName = "getHomeR" :: Text
+    (formWidget, formEncType) <- generateFormGet' configForm
     defaultLayout $ do
-        aDomId <- newIdent
-        setTitle "Welcome To Yesod!"
+        setTitle "Compute Tier Status Connection Setup"
         $(widgetFile "homepage")
 
-postHomeR :: Handler Html
-postHomeR = do
-    ((result, formWidget), formEnctype) <- runFormPost sampleForm
-    let handlerName = "postHomeR" :: Text
-        submission = case result of
-            FormSuccess res -> Just res
-            _ -> Nothing
+data Config = Config
+    { redisHost :: !ByteString
+    , redisPort :: !Int
+    , redisPrefix :: !ByteString
+    } deriving (Show)
 
+configForm :: Form Config
+configForm = renderBootstrap3 BootstrapBasicForm $ Config
+    <$> fmap encodeUtf8 (areq textField (withLargeInput $ bfs ("Redis host" :: Text)) (Just "localhost"))
+    <*> areq intField (withSmallInput $ bfs ("Redis port" :: Text)) (Just 6379)
+    <*> fmap encodeUtf8 (areq textField (withLargeInput $ bfs ("Redis key prefix" :: Text)) (Just "fpco:job-queue-test:"))
+
+getStatusR :: Handler Html
+getStatusR = do
+    ((res, _), _) <- runFormGet configForm
+    case res of
+        FormSuccess config -> do
+            setUltDestCurrent
+            displayStatus config
+        _ -> do
+            setMessageI (pack (show res) :: Text)
+            redirect HomeR
+
+displayStatus :: Config -> Handler Html
+displayStatus Config {..} = do
+    let ci = (connectInfo redisHost) { connectPort = redisPort }
+    jqs <- runStdoutLoggingT $ withRedis redisPrefix ci getJobQueueStatus
+    let pendingCount = length (jqsPending jqs)
+        activeCount = length (filter (not . null . wsRequests) (jqsWorkers jqs))
+        workerCount = length (jqsWorkers jqs)
     defaultLayout $ do
-        aDomId <- newIdent
-        setTitle "Welcome To Yesod!"
-        $(widgetFile "homepage")
+        setTitle "Compute Tier Status"
+        $(widgetFile "status")
 
-sampleForm :: Form (FileInfo, Text)
-sampleForm = renderBootstrap3 BootstrapBasicForm $ (,)
-    <$> fileAFormReq "Choose a file"
-    <*> areq textField (withSmallInput "What's on the file?") Nothing
+postStatusR :: Handler Html
+postStatusR = do
+    (postParams, _) <- runRequestBody
+    let (cmds, others) = partition (\(k, v) -> k `elem` ["cancel"] && v == "true") postParams
+        (reqs, others') = partition (\(k, v) -> v == "jqr") others
+    when (not (null others')) $ invalidArgs (map fst others')
+    cmd <- case map fst cmds of
+        ["cancel"] -> do
+            --TODO: implement
+            setMessageI ("Note: it may take a while for computations to cancel, so they will likely still appear as active work items" :: Text)
+        _ -> invalidArgs (map fst cmds)
+    redirectUltDest HomeR

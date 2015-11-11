@@ -1,0 +1,8 @@
+$(function() {
+    $("#select-all-active").change(function() {
+        $(".select-active").prop("checked", this.checked);
+    });
+    $("#select-all-pending").change(function() {
+        $(".select-pending").prop("checked", this.checked);
+    });
+});

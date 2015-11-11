@@ -1,0 +1,54 @@
+<h1>Compute Tier Status
+
+<h2>Info
+
+<ul>
+  <li>
+    $case jqsLastHeartbeat jqs
+      $of Nothing
+        <b>Heartbeats not yet checked.  This is either a bug, or the wrong redis key prefix has been specified.
+      $of Just lastHeartbeat
+        <b>#{show lastHeartbeat}
+        since last heartbeat check.
+  <li>
+    <b>#{pendingCount}
+    pending requests.
+  <li>
+    <b>#{activeCount}
+    active workers, of
+    <b>#{workerCount}
+    total.
+
+<form method=post>
+  <h2>Actions
+  <p>These are applied to the selected requests below
+  <button .btn .btn-danger type=submit name=cancel value=true>Cancel Selected Computations
+
+  <h2>Workers
+  <table .table .table-hover>
+    <tr>
+      <th>
+        <input type=checkbox #select-all-active>
+      <th>WorkerId
+      <th>RequestID(s)
+    $forall w <- jqsWorkers jqs
+      $with wid <- decodeUtf8 (unWorkerId (wsWorker w))
+        <tr>
+          <td>
+            <input type=checkbox .select-active name=worker:#{wid} value="jqr">
+          <td>#{wid}
+          <td>#{show (wsRequests w)}
+
+  <h2>Pending Work
+
+  <table .table .table-hover>
+    <tr>
+      <th>
+        <input type=checkbox #select-all-pending>
+      <th>RequestId
+    $forall r <- jqsPending jqs
+      $with rid <- show (unRequestId r)
+        <tr>
+          <td>
+            <input type=checkbox .select-pending name=request:#{rid}>
+          <td>#{rid}

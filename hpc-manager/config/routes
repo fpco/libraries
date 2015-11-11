@@ -1,3 +1,4 @@
 /static StaticR Static appStatic
 
-/ HomeR GET POST
+/ HomeR GET
+/status StatusR GET POST

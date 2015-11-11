@@ -12,7 +12,7 @@ Flag library-only
     Default:       False
 
 library
-    hs-source-dirs: ., app
+    hs-source-dirs: .
     exposed-modules: Application
                      Foundation
                      Import
@@ -30,8 +30,6 @@ library
     extensions: TemplateHaskell
                 QuasiQuotes
                 OverloadedStrings
-                NoImplicitPrelude
-                CPP
                 MultiParamTypeClasses
                 TypeFamilies
                 GADTs
