@@ -3,6 +3,7 @@ module Handler.Home where
 
 import Control.Monad.Logger
 import Distributed.JobQueue.Status
+import Distributed.JobQueue.Client (cancelRequest)
 import Distributed.RedisQueue
 import FP.Redis
 import Import
@@ -39,25 +40,56 @@ getStatusR = do
             redirect HomeR
 
 displayStatus :: Config -> Handler Html
-displayStatus Config {..} = do
-    let ci = (connectInfo redisHost) { connectPort = redisPort }
-    jqs <- runStdoutLoggingT $ withRedis redisPrefix ci getJobQueueStatus
-    let pendingCount = length (jqsPending jqs)
-        activeCount = length (filter (not . null . wsRequests) (jqsWorkers jqs))
-        workerCount = length (jqsWorkers jqs)
-    defaultLayout $ do
-        setTitle "Compute Tier Status"
-        $(widgetFile "status")
+displayStatus config = do
+     jqs <- withRedis' config getJobQueueStatus
+     let pendingCount = length (jqsPending jqs)
+         activeCount = length (filter (not . null . wsRequests) (jqsWorkers jqs))
+         workerCount = length (jqsWorkers jqs)
+     defaultLayout $ do
+         setTitle "Compute Tier Status"
+         $(widgetFile "status")
 
 postStatusR :: Handler Html
 postStatusR = do
-    (postParams, _) <- runRequestBody
-    let (cmds, others) = partition (\(k, v) -> k `elem` ["cancel"] && v == "true") postParams
-        (reqs, others') = partition (\(k, v) -> v == "jqr") others
-    when (not (null others')) $ invalidArgs (map fst others')
-    cmd <- case map fst cmds of
-        ["cancel"] -> do
-            --TODO: implement
-            setMessageI ("Note: it may take a while for computations to cancel, so they will likely still appear as active work items" :: Text)
-        _ -> invalidArgs (map fst cmds)
-    redirectUltDest HomeR
+    ((res, _), _) <- runFormGet configForm
+    case res of
+        FormSuccess config -> do
+            (postParams, _) <- runRequestBody
+            let (cmds, others) = partition (\(k, v) -> k `elem` ["cancel"] && v == "true") postParams
+                (reqs', others') = partition (\(k, _) -> "jqr:" `isPrefixOf` k) others
+                reqs = mapMaybe
+                    (\(k, v) ->
+                        (, (WorkerId . encodeUtf8 <$> stripPrefix "wid:" v))
+                        <$> (RequestId . encodeUtf8 <$> stripPrefix "jqr:" k))
+                    reqs'
+            when (not (null others')) $ invalidArgs (map fst others')
+            case map fst cmds of
+                ["cancel"] -> do
+                    (successes, failures) <- fmap (partition snd) $
+                        withRedis' config $ \redis ->
+                        forM reqs $ \(rid, mwid) -> do
+                            success <- cancelRequest (Seconds 60) redis rid mwid
+                            return (rid, success)
+                    let takesAWhile :: Text
+                        takesAWhile = "NOTE: it may take a while for computations to cancel, so they will likely still appear as active work items"
+                        failuresList = pack (show (map (unRequestId . fst) failures))
+                    setMessageI $ case (null successes, null failures) of
+                        (True, True) -> "No cancellations selected."
+                        (False, True) -> "Cancellation request applied.  " <> takesAWhile
+                        (True, False) ->
+                            "Failed to cancel any requests, couldn't find the following: " <>
+                            failuresList <> "\n" <> takesAWhile
+                        (False, False) ->
+                            "Some cancellations applied, couldn't find the following: " <>
+                            failuresList <> "\n" <> takesAWhile
+                _ -> invalidArgs (map fst cmds)
+            redirectUltDest HomeR
+        _ -> do
+          setMessageI (pack (show res) :: Text)
+          redirect HomeR
+
+withRedis' :: (MonadIO m, MonadCatch m, MonadBaseControl IO m)
+           => Config -> (RedisInfo -> LoggingT m a) -> m a
+withRedis' config = runStdoutLoggingT . withRedis (redisPrefix config) ci
+  where
+    ci = (connectInfo (redisHost config)) { connectPort = redisPort config }

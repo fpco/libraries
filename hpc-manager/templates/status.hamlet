@@ -28,16 +28,28 @@
   <table .table .table-hover>
     <tr>
       <th>
-        <input type=checkbox #select-all-active>
+        <input type=checkbox #select-all-workers>
       <th>WorkerId
       <th>RequestID(s)
     $forall w <- jqsWorkers jqs
       $with wid <- decodeUtf8 (unWorkerId (wsWorker w))
         <tr>
-          <td>
-            <input type=checkbox .select-active name=worker:#{wid} value="jqr">
-          <td>#{wid}
-          <td>#{show (wsRequests w)}
+          $case wsRequests w
+            $of [rid']
+              $with rid <- decodeUtf8 (unRequestId rid')
+                <td>
+                  <input type=checkbox .select-workers name=jqr:#{rid} value=wid:#{wid}>
+                <td>#{wid}
+                <td>#{rid}
+            $of _
+              <td>
+              <td>#{wid}
+              <td>
+                <i>
+                  $if wsHeartbeatFailure w
+                    worker failed its heartbeat check and its work was re-enqueued
+                  $else
+                    either idle or slave of another worker
 
   <h2>Pending Work
 
@@ -45,10 +57,10 @@
     <tr>
       <th>
         <input type=checkbox #select-all-pending>
-      <th>RequestId
+      <th>RequestID
     $forall r <- jqsPending jqs
-      $with rid <- show (unRequestId r)
+      $with rid <- decodeUtf8 (unRequestId r)
         <tr>
           <td>
-            <input type=checkbox .select-pending name=request:#{rid}>
+            <input type=checkbox .select-pending name=jqr:#{rid} value=t>
           <td>#{rid}
