@@ -28,7 +28,7 @@ main =
           ]
       , bgroup "JobQueue"
           [ bench "sendJobRequest" $ nfIO $ runNoLoggingT $ do
-              let encoded = encodeRequest defaultClientConfig ("" :: String) (Proxy :: Proxy Int)
+              let encoded = encodeRequest ("" :: String) (Proxy :: Proxy Int)
                   k = getRequestId encoded
               sendRequestIgnoringCache defaultClientConfig r k encoded
           ]

@@ -170,7 +170,7 @@ jobQueueRequest
     -> request
     -> m response
 jobQueueRequest config cvs redis request = do
-    let encoded = encodeRequest config request (Proxy :: Proxy response)
+    let encoded = encodeRequest request (Proxy :: Proxy response)
         k = getRequestId encoded
     jobQueueRequestRaw config cvs redis k encoded
 
@@ -190,7 +190,7 @@ jobQueueRequestWithId
     -> request
     -> m response
 jobQueueRequestWithId config cvs redis k request = do
-    let encoded = encodeRequest config request (Proxy :: Proxy response)
+    let encoded = encodeRequest request (Proxy :: Proxy response)
     jobQueueRequestWithId config cvs redis k encoded
 
 jobQueueRequestRaw
@@ -234,7 +234,7 @@ sendRequest
     -> request
     -> m (RequestId, Maybe response)
 sendRequest config redis request = do
-    let encoded = encodeRequest config request (Proxy :: Proxy response)
+    let encoded = encodeRequest request (Proxy :: Proxy response)
         k = getRequestId encoded
     (k, ) <$> sendRequestRaw config redis k encoded
 
@@ -253,7 +253,7 @@ sendRequestWithId
     -> request
     -> m (Maybe response)
 sendRequestWithId config redis k request = do
-    let encoded = encodeRequest config request (Proxy :: Proxy response)
+    let encoded = encodeRequest request (Proxy :: Proxy response)
     sendRequestRaw config redis k encoded
 
 sendRequestRaw
@@ -285,11 +285,10 @@ sendRequestRaw config redis k encoded = do
 -- | Computes the encoded ByteString representation of a 'JobRequest'.
 encodeRequest
     :: forall request response. (Sendable response, Sendable request)
-    => ClientConfig
-    -> request
+    => request
     -> Proxy response
     -> ByteString
-encodeRequest config request _ =
+encodeRequest request _ =
     toStrict $ encode JobRequest
         { jrRequestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         , jrResponseType = fromTypeRep (typeRep (Proxy :: Proxy response))
