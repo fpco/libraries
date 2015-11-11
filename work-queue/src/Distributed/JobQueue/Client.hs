@@ -392,5 +392,5 @@ cancelRequest expiry redis k mwid = do
                     run_ redis $ set (cancelKey redis k) cancelValue [EX expiry]
                     return True
                 -- Indicates a heartbeat failure.
-                Left (err :: RedisException) -> return False
+                Left (_ :: RedisException) -> return False
         _ -> return False
