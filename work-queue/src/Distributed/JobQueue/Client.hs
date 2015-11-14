@@ -192,7 +192,7 @@ jobQueueRequestWithId
     -> m response
 jobQueueRequestWithId config cvs redis k request = do
     let encoded = encodeRequest request (Proxy :: Proxy response)
-    jobQueueRequestWithId config cvs redis k encoded
+    jobQueueRequestRaw config cvs redis k encoded
 
 jobQueueRequestRaw
     :: forall m response.
