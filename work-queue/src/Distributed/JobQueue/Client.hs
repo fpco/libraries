@@ -137,8 +137,8 @@ jobQueueClient config cvs redis = do
                 Just response -> do
                     $logInfoS "jobQueueClient" $
                         "Found a missed result after reconnect:" ++ tshow rid
-                    decodeOrThrow "jobQueueClient" response >>= handler
                     atomically $ SM.delete rid (clientDispatch cvs)
+                    decodeOrThrow "jobQueueClient" response >>= handler
     handleResponse rid = do
         -- Lookup the handler before fetching / deleting the response,
         -- as the message may get delivered to multiple clients.
@@ -328,18 +328,14 @@ registerResponseCallback
 registerResponseCallback cvs redis k handler = do
     -- We register a callback before checking for responses, because
     -- checking for responses takes time and could potentially block.
-    gotCalledRef <- newIORef False
-    registerResponseCallbackInternal cvs k $ \response -> do
-        writeIORef gotCalledRef True
-        handler response
+    registerResponseCallbackInternal cvs k handler
     -- If the response already came back, and the callback hasn't been
     -- called yet, then invoke it.
     mresponse <- checkForResponse redis k
     forM_ mresponse $ \response -> do
-        alreadyGotCalled <- readIORef gotCalledRef
-        unless alreadyGotCalled $ do
-            atomically $ SM.delete k (clientDispatch cvs)
-            logCallbackExceptions k $ handler response
+        existed <- atomically $
+            SM.focus (\mo -> return (isJust mo, Remove)) k (clientDispatch cvs)
+        when existed $ logCallbackExceptions k $ handler response
 
 -- Like 'registerResponseCallback, but without checking if the result
 -- already exists.
