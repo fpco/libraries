@@ -11,7 +11,7 @@ import Yesod.Form.Bootstrap3
 
 getHomeR :: Handler Html
 getHomeR = do
-    (formWidget, formEncType) <- generateFormGet' configForm
+    (formWidget, formEncType) <- generateFormGet' =<< configForm
     defaultLayout $ do
         setTitle "Compute Tier Status Connection Setup"
         $(widgetFile "homepage")
@@ -22,15 +22,18 @@ data Config = Config
     , redisPrefix :: !ByteString
     } deriving (Show)
 
-configForm :: Form Config
-configForm = renderBootstrap3 BootstrapBasicForm $ Config
-    <$> fmap encodeUtf8 (areq textField (withLargeInput $ bfs ("Redis host" :: Text)) (Just "localhost"))
-    <*> areq intField (withSmallInput $ bfs ("Redis port" :: Text)) (Just 6379)
-    <*> fmap encodeUtf8 (areq textField (withLargeInput $ bfs ("Redis key prefix" :: Text)) (Just "fpco:job-queue-test:"))
+configForm :: Handler (Form Config)
+configForm = do
+    master <- getYesod
+    let AppSettings {..} = appSettings master
+    return $ renderBootstrap3 BootstrapBasicForm $ Config
+        <$> fmap encodeUtf8 (areq textField (withLargeInput $ bfs ("Redis host" :: Text)) (Just appHpcRedisHost))
+        <*> areq intField (withSmallInput $ bfs ("Redis port" :: Text)) (Just appHpcRedisPort)
+        <*> fmap encodeUtf8 (areq textField (withLargeInput $ bfs ("Redis key prefix" :: Text)) (Just appHpcRedisPrefix))
 
 getStatusR :: Handler Html
 getStatusR = do
-    ((res, _), _) <- runFormGet configForm
+    ((res, _), _) <- runFormGet =<< configForm
     case res of
         FormSuccess config -> do
             setUltDestCurrent
@@ -51,7 +54,7 @@ displayStatus config = do
 
 postStatusR :: Handler Html
 postStatusR = do
-    ((res, _), _) <- runFormGet configForm
+    ((res, _), _) <- runFormGet =<< configForm
     case res of
         FormSuccess config -> do
             (postParams, _) <- runRequestBody

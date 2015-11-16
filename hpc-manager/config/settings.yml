@@ -19,3 +19,8 @@ ip-from-header: "_env:IP_FROM_HEADER:false"
 
 copyright: Insert copyright statement here
 #analytics: UA-YOURCODE
+
+# Options specific to hpc-manager
+hpc-redis-host:   "_env:HPC_REDIS_HOST:localhost"
+hpc-redis-port:   "_env:HPC_REDIS_PORT:6379"
+hpc-redis-prefix: "_env:HPC_REDIS_PREFIX:"

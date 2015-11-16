@@ -51,6 +51,12 @@ data AppSettings = AppSettings
     -- ^ Copyright text to appear in the footer of the page
     , appAnalytics              :: Maybe Text
     -- ^ Google Analytics code
+    , appHpcRedisHost           :: Text
+    -- ^ Host of the redis server used by the work-queue library
+    , appHpcRedisPort           :: Int
+    -- ^ Port of the redis server
+    , appHpcRedisPrefix         :: Text
+    -- ^ Prefix used for redis keys
     }
 
 instance FromJSON AppSettings where
@@ -75,6 +81,10 @@ instance FromJSON AppSettings where
 
         appCopyright              <- o .: "copyright"
         appAnalytics              <- o .:? "analytics"
+
+        appHpcRedisHost           <- o .: "hpc-redis-host"
+        appHpcRedisPort           <- o .: "hpc-redis-port"
+        appHpcRedisPrefix         <- o .: "hpc-redis-prefix"
 
         return AppSettings {..}
 
