@@ -7,3 +7,11 @@ packages:
   - ./thread-file-logger
   - ./work-queue
   - ./hpc-manager
+
+image:
+  container:
+    base: "fpco/stack-run"
+    name: "hpc-manager-ui"
+    add:
+      hpc-manager/config/: /usr/local/lib/hpc-manager/config/
+      hpc-manager/static/: /usr/local/lib/hpc-manager/static/
