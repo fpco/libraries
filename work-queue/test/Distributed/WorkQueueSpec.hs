@@ -216,8 +216,8 @@ runMasterOrSlave RedisConfig {..} | isThreadDelay = runThreadFileLoggingT $ do
             threadDelay (x * 1000)
             return 0
         calc _ = return 0
-        inner :: RedisInfo -> MasterConnectInfo -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
-        inner redis mci request queue = do
+        inner :: RedisInfo -> MasterConnectInfo -> RequestId -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
+        inner redis mci _requestId request queue = do
             requestSlave redis mci
             results <- mapQueue queue request
             if results == fmap (\_ -> 0) request
@@ -231,8 +231,8 @@ runMasterOrSlave RedisConfig {..} = runThreadFileLoggingT $ do
     [lslaves] <- liftIO getArgs
     let calc :: [Int] -> IO Int
         calc input =  return $ foldl' xor zeroBits input
-        inner :: RedisInfo -> MasterConnectInfo -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
-        inner redis mci request queue = do
+        inner :: RedisInfo -> MasterConnectInfo -> RequestId -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
+        inner redis mci _requestId request queue = do
             requestSlave redis mci
             subresults <- mapQueue queue request
             liftIO $ calc (otoList (subresults :: Vector Int))

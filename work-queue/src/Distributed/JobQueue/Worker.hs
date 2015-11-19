@@ -135,7 +135,7 @@ jobQueueWorker
     -> (payload -> IO result)
     -- ^ This is the computation function run by slaves. It computes
     -- @result@ from @payload@.
-    -> (RedisInfo -> MasterConnectInfo -> request -> WorkQueue payload result -> IO response)
+    -> (RedisInfo -> MasterConnectInfo -> RequestId -> request -> WorkQueue payload result -> IO response)
     -- ^ This function runs on the master after it's received a
     -- request. It's expected that the master will use this request to
     -- enqueue work items on the provided 'WorkQueue'.  The results of
@@ -160,7 +160,7 @@ data JQWParams request response payload result =
    JQWParams
        { config :: WorkerConfig
        , calc :: payload -> IO result
-       , inner :: RedisInfo -> MasterConnectInfo -> request -> WorkQueue payload result -> IO response
+       , inner :: RedisInfo -> MasterConnectInfo -> RequestId -> request -> WorkQueue payload result -> IO response
        , nmSettings :: NMSettings
        , wid :: WorkerId
        , name :: Text
@@ -354,7 +354,7 @@ becomeMaster JQWParams {..} k req = do
                withLocalSlaves queue (workerMasterLocalSlaves config) calc $ do
                    port <- readMVar boundPort
                    let mci = MasterConnectInfo (workerHostName config) port
-                   liftIO $ inner redis mci decoded queue
+                   liftIO $ inner redis mci k decoded queue
     case eres of
         Left err -> do
             $logErrorS "JobQueue" $

@@ -45,7 +45,7 @@ masterOrSlave =
     calc input = do
         threadDelay (1000 * 1000 * 2)
         return $ foldl' xor zeroBits (input :: [Int])
-    inner redis mci request queue = do
+    inner redis mci _requestId request queue = do
         requestSlave redis mci
         subresults <- mapQueue queue request
         response <- calc (otoList (subresults :: Vector Int))
