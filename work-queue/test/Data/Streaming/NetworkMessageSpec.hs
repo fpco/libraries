@@ -55,8 +55,6 @@ spec = do
         finished `shouldBe` Just 1
     it "successfully transfers a 10MB bytestring both ways" $
         largeSendTest =<< defaultNMSettings
-    it "successfully transfers a 10MB bytestring both ways, even when heartbeat is low" $
-        largeSendTest =<< setNMHeartbeat (1000 * 20) <$> defaultNMSettings
     it "throws MismatchedHandshakes when client -> server types mismatch" $ do
         expectMismatchedHandshakes () True (Just True) ()
     it "throws MismatchedHandshakes when server -> client types mismatch" $ do
