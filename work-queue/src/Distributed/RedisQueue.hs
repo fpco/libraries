@@ -42,6 +42,7 @@ module Distributed.RedisQueue
     -- * Request API used by clients
     , getRequestId
     , pushRequest
+    , requestExists
     , readResponse
     , clearResponse
     , subscribeToResponses
@@ -164,6 +165,16 @@ sendResponse r expiry wid k x = do
             "), likely indicating that a heartbeat failure happened, causing\
             \ it to be erroneously re-enqueued.  This doesn't affect\
             \ correctness, but could mean that redundant work is performed."
+
+-- | Checks if the specified 'RequestId' exists, in the form of request
+-- or response data.
+requestExists
+    :: MonadCommand m
+    => RedisInfo -> RequestId -> m Bool
+requestExists r k = do
+    dataExists <- run r $ exists (unVKey (requestDataKey r k))
+    if dataExists then return True else do
+        run r $ exists (unVKey (responseDataKey r k))
 
 -- | Clears the cached response for the specified 'RequestId'.  This
 -- is useful in cases where a response is expected to be temporary,

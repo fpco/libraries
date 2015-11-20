@@ -9,7 +9,8 @@ module FP.Redis.Command.Generic
     ( del
     , expire
     , ttl
-    , FP.Redis.Command.Generic.keys )
+    , FP.Redis.Command.Generic.keys
+    , exists)
     where
 
 import ClassyPrelude.Conduit
@@ -37,3 +38,8 @@ ttl key = makeCommand "TTL" [encodeArg key]
 -- See <http://redis.io/commands/keys>.
 keys :: ByteString -> CommandRequest [Key]
 keys pattern = makeCommand "KEYS" [encodeArg pattern]
+
+-- | Returns if key exists.
+-- See <http://redis.io/commands/EXISTS>
+exists :: Key -> CommandRequest Bool
+exists key = makeCommand "EXISTS" [encodeArg key]

@@ -319,13 +319,17 @@ sendRequestIgnoringCache config redis k encoded = do
 -- is, then the callback is invoked.
 registerResponseCallback
     :: forall m response.
-       (MonadCommand m, MonadLogger m, Sendable response)
+       (MonadCommand m, MonadThrow m, MonadLogger m, Sendable response)
     => ClientVars m response
     -> RedisInfo
     -> RequestId
     -> (Either DistributedJobQueueException response -> m ())
     -> m ()
 registerResponseCallback cvs redis k handler = do
+    -- First, ensure that the request actually exists.
+    exists <- requestExists redis k
+    when (not exists) $
+        throwM (NoRequestForCallbackRegistration k)
     -- We register a callback before checking for responses, because
     -- checking for responses takes time and could potentially block.
     registerResponseCallbackInternal cvs k handler
@@ -333,9 +337,9 @@ registerResponseCallback cvs redis k handler = do
     -- called yet, then invoke it.
     mresponse <- checkForResponse redis k
     forM_ mresponse $ \response -> do
-        existed <- atomically $
+        dispatchExisted <- atomically $
             SM.focus (\mo -> return (isJust mo, Remove)) k (clientDispatch cvs)
-        when existed $ logCallbackExceptions k $ handler response
+        when dispatchExisted $ logCallbackExceptions k $ handler response
 
 -- Like 'registerResponseCallback, but without checking if the result
 -- already exists.

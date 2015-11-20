@@ -84,6 +84,9 @@ data DistributedJobQueueException
     -- / response types.
     | RequestCanceledException RequestId
     -- ^ The request has been cancelled.
+    | NoRequestForCallbackRegistration RequestId
+    -- ^ Exception thrown when registering a callback for a non-existent
+    -- request.
     | NetworkMessageException NetworkMessageException
     -- ^ Exceptions thrown by "Data.Streaming.NetworkMessage"
     | InternalJobQueueException Text
@@ -118,6 +121,10 @@ instance Show DistributedJobQueueException where
         " }"
     show (RequestCanceledException rid) =
         "RequestCanceledException (" ++
+        show rid ++
+        ")"
+    show (NoRequestForCallbackRegistration rid) =
+        "NoRequestForCallbackRegistration (" ++
         show rid ++
         ")"
     show (NetworkMessageException nme) =
