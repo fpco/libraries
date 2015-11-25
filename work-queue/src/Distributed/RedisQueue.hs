@@ -55,9 +55,9 @@ module Distributed.RedisQueue
 import           ClassyPrelude
 import           Control.Monad.Logger (MonadLogger, logWarnS)
 import qualified Crypto.Hash.SHA1 as SHA1
-import           Data.Binary (encode)
 import qualified Data.ByteString.Base64 as Base64
 import           Data.List.NonEmpty (NonEmpty((:|)))
+import           Data.Time.Clock.POSIX
 import           Distributed.RedisQueue.Internal
 import           FP.Redis
 
@@ -76,11 +76,14 @@ pushRequest
     -> ByteString
     -> m Bool
 pushRequest r expiry k request = do
+    enqueueTime <- liftIO getPOSIXTime
     -- Store the request data as a normal redis value.
     added <- run r $ set (requestDataKey r k) request [EX expiry, NX]
     -- Enqueue its ID on the requests list.
     when added $
         run_ r $ lpush (requestsKey r) (unRequestId k :| [])
+    -- Store request start time.
+    setRedisTime r (requestTimeKey r k) enqueueTime [EX expiry]
     return added
 
 -- | Result value of 'popRequest'.
@@ -165,6 +168,9 @@ sendResponse r expiry wid k x = do
             "), likely indicating that a heartbeat failure happened, causing\
             \ it to be erroneously re-enqueued.  This doesn't affect\
             \ correctness, but could mean that redundant work is performed."
+    -- Store when the response was stored.
+    responseTime <- liftIO getPOSIXTime
+    setRedisTime r (responseTimeKey r k) responseTime [EX expiry]
 
 -- | Checks if the specified 'RequestId' exists, in the form of request
 -- or response data.

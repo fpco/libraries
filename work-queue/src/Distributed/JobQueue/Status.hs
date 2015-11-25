@@ -15,9 +15,9 @@ import Control.Monad.Logger
 import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Time
 import Data.Time.Clock.POSIX
-import Distributed.JobQueue.Heartbeat (heartbeatActiveKey, getLastHeartbeatTime)
+import Distributed.JobQueue.Heartbeat (heartbeatActiveKey, heartbeatLastCheckKey)
 import Distributed.RedisQueue
-import Distributed.RedisQueue.Internal (run, requestsKey)
+import Distributed.RedisQueue.Internal
 import FP.Redis
 
 data JobQueueStatus = JobQueueStatus
@@ -38,7 +38,7 @@ getJobQueueStatus :: (MonadIO m, MonadCatch m, MonadBaseControl IO m, MonadLogge
 getJobQueueStatus r = do
     start <- liftIO getCurrentTime
     let howLongAgo time = start `diffUTCTime` posixSecondsToUTCTime time
-    mLastTime <- getLastHeartbeatTime r
+    mLastTime <- getRedisTime r (heartbeatLastCheckKey r)
     pending <- run r $ lrange (requestsKey r) 0 (-1)
     let activePrefix = redisKeyPrefix r <> "active:"
     activeKeys <- run r $ keys (activePrefix <> "*")

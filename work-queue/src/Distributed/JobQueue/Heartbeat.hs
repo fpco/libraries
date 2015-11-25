@@ -17,7 +17,7 @@ module Distributed.JobQueue.Heartbeat
     , checkHeartbeats
     -- Exported for use by the tests
     , heartbeatActiveKey
-    , getLastHeartbeatTime
+    , heartbeatLastCheckKey
     ) where
 
 import           ClassyPrelude
@@ -86,7 +86,7 @@ checkHeartbeats r (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
     let oldTime = startTime - fromIntegral ivl
     $logDebug $ "Checking if enough time has elapsed since last heartbeat check.  Looking for a time before " ++
         tshow oldTime
-    mlastTime <- getLastHeartbeatTime r
+    mlastTime <- getRedisTime r (heartbeatLastCheckKey r)
     -- Do the heartbeat check when enough time has elapsed since the last check,
     -- or when no check has ever happened.
     when (maybe True (< oldTime) mlastTime) $ do
@@ -104,7 +104,7 @@ checkHeartbeats r (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
                 $logDebug "Notifying that some requests were re-enqueued"
                 notifyRequestAvailable r
             $logDebug "Setting timestamp for last heartbeat check"
-            setLastHeartbeatTime r startTime
+            setRedisTime r (heartbeatLastCheckKey r) startTime []
 
 handleWorkerFailure
     :: (MonadCommand m, MonadLogger m) => RedisInfo -> WorkerId -> m Bool
@@ -153,31 +153,6 @@ handleWorkerFailure r wid = do
         , "    return len"
         , "end"
         ]
-
-getLastHeartbeatTime :: MonadConnect m => RedisInfo -> m (Maybe POSIXTime)
-getLastHeartbeatTime r = fmap timeFromBS <$> run r (get (heartbeatLastCheckKey r))
-
-setLastHeartbeatTime :: MonadConnect m => RedisInfo -> POSIXTime -> m ()
-setLastHeartbeatTime r x = run_ r $ set (heartbeatLastCheckKey r) (timeToBS x) []
-
--- * Utilities for reading and writing timestamps
-
--- NOTE: Rounds time to the nearest millisecond.
-
-timeToBS :: POSIXTime -> ByteString
-timeToBS = BS8.pack . show . timeToInt
-
-timeFromBS :: ByteString -> POSIXTime
-timeFromBS (BS8.unpack -> input) =
-    case readMay input of
-        Nothing -> error $ "Failed to decode timestamp " ++ input
-        Just result -> timeFromInt result
-
-timeToInt :: POSIXTime -> Int
-timeToInt x = floor (x * 1000)
-
-timeFromInt :: Int -> POSIXTime
-timeFromInt x = fromIntegral x / 1000
 
 -- * Functions to compute Redis keys
 

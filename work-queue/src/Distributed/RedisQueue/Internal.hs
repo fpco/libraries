@@ -14,17 +14,18 @@
 -- "Distributed.JobQueue".
 module Distributed.RedisQueue.Internal where
 
-import ClassyPrelude
-import Control.Concurrent (forkIO)
-import Control.Monad.Catch (Handler(Handler))
-import Control.Monad.Logger (logDebugS, logErrorS)
-import Control.Retry (RetryPolicy, limitRetries, constantDelay)
-import Data.Binary (Binary, decodeOrFail)
-import Data.List.NonEmpty (NonEmpty((:|)))
-import Data.Typeable (Proxy(..), typeRep)
-import FP.Redis
-import FP.Redis.Internal (recoveringWithReset)
-import FP.ThreadFileLogger
+import           ClassyPrelude
+import           Control.Concurrent (forkIO)
+import           Control.Monad.Catch (Handler(Handler))
+import           Control.Monad.Logger (logDebugS, logErrorS)
+import           Control.Retry (RetryPolicy, limitRetries, constantDelay)
+import           Data.Binary (Binary, decodeOrFail)
+import qualified Data.ByteString.Char8 as BS8
+import           Data.List.NonEmpty (NonEmpty((:|)))
+import           Data.Time.Clock.POSIX
+import           Data.Typeable (Proxy(..), typeRep)
+import           FP.Redis
+import           FP.Redis.Internal (recoveringWithReset)
 
 -- * Types used in the API
 
@@ -58,6 +59,10 @@ requestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests"
 requestDataKey :: RedisInfo -> RequestId -> VKey
 requestDataKey  r k = VKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k
 
+-- | Given a 'RequestId', stores when the request was enqueued.
+requestTimeKey :: RedisInfo -> RequestId -> VKey
+requestTimeKey r k = VKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k <> ":time"
+
 -- | Given a 'RequestId', computes the key for the response data.
 responseDataKey :: RedisInfo -> RequestId -> VKey
 responseDataKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestId k
@@ -66,6 +71,10 @@ responseDataKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestI
 -- 'Channel' is used to notify clients when responses are available.
 responseChannel :: RedisInfo -> Channel
 responseChannel r = Channel $ redisKeyPrefix r <> "response-channel"
+
+-- | Given a 'RequestId', stores when the request was enqueued.
+responseTimeKey :: RedisInfo -> RequestId -> VKey
+responseTimeKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestId k <> ":time"
 
 -- | Given a 'WorkerId', computes the name of a redis key which usually
 -- contains a list.  This list holds the items the worker is currently
@@ -181,3 +190,28 @@ data DecodeError = DecodeError
     deriving (Show, Typeable)
 
 instance Exception DecodeError
+
+-- * Utilities for reading and writing timestamps
+
+-- NOTE: Rounds time to the nearest millisecond.
+
+timeToBS :: POSIXTime -> ByteString
+timeToBS = BS8.pack . show . timeToInt
+
+timeFromBS :: ByteString -> POSIXTime
+timeFromBS (BS8.unpack -> input) =
+    case readMay input of
+        Nothing -> error $ "Failed to decode timestamp " ++ input
+        Just result -> timeFromInt result
+
+timeToInt :: POSIXTime -> Int
+timeToInt x = floor (x * 1000)
+
+timeFromInt :: Int -> POSIXTime
+timeFromInt x = fromIntegral x / 1000
+
+getRedisTime :: MonadCommand m => RedisInfo -> VKey -> m (Maybe POSIXTime)
+getRedisTime r k = fmap timeFromBS <$> run r (get k)
+
+setRedisTime :: MonadCommand m => RedisInfo -> VKey -> POSIXTime -> [SetOption] -> m ()
+setRedisTime r k x opts = run_ r $ set k (timeToBS x) opts
