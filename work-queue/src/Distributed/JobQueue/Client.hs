@@ -327,8 +327,8 @@ registerResponseCallback
     -> m ()
 registerResponseCallback cvs redis k handler = do
     -- First, ensure that the request actually exists.
-    exists <- requestExists redis k
-    when (not exists) $
+    reqExists <- requestExists redis k
+    when (not reqExists) $
         throwM (NoRequestForCallbackRegistration k)
     -- We register a callback before checking for responses, because
     -- checking for responses takes time and could potentially block.
