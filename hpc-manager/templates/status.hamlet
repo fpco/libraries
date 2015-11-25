@@ -18,6 +18,9 @@
     active workers, of
     <b>#{length workers}
     total.
+  <li>
+    <a href=@{HomeR}?no-redirect=t>Click here
+    to change connection configuration.
 
 <form method=post>
   <h2>Actions

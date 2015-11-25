@@ -13,6 +13,12 @@ import Yesod.Form.Bootstrap3
 
 getHomeR :: Handler Html
 getHomeR = do
+    -- If the settings have been specified by env vars, skip configuration.
+    settings <- appSettings <$> getYesod
+    mnoRedir <- lookupGetParam "no-redirect"
+    when (appHpcRedisPrefix settings /= "" && isNothing mnoRedir) $
+        redirect StatusR
+    -- Otherwise, ask the user to configure the connection.
     (formWidget, formEncType) <- generateFormGet' =<< configForm
     defaultLayout $ do
         setTitle "Compute Tier Status Connection Setup"
@@ -26,8 +32,7 @@ data Config = Config
 
 configForm :: Handler (Form Config)
 configForm = do
-    master <- getYesod
-    let AppSettings {..} = appSettings master
+    AppSettings {..} <- appSettings <$> getYesod
     return $ renderBootstrap3 BootstrapBasicForm $ Config
         <$> fmap encodeUtf8 (areq textField (withLargeInput $ bfs ("Redis host" :: Text)) (Just appHpcRedisHost))
         <*> areq intField (withSmallInput $ bfs ("Redis port" :: Text)) (Just appHpcRedisPort)
@@ -37,15 +42,29 @@ getStatusR :: Handler Html
 getStatusR = do
     ((res, _), _) <- runFormGet =<< configForm
     case res of
-        FormSuccess config -> do
-            setUltDestCurrent
-            displayStatus config
+        FormSuccess config -> displayStatus config
         _ -> do
-            setMessageI (pack (show res) :: Text)
-            redirect HomeR
+            -- When there's a redirect from HomeR due to having a
+            -- configuration, there are no get params.
+            --
+            -- NOTE: ideally we'd have a way to go from a form + value
+            -- to a list of query params, then this would be
+            -- unnecessary.
+            settings <- appSettings <$> getYesod
+            gps <- reqGetParams <$> getRequest
+            if null gps
+                then displayStatus Config
+                    { redisHost = encodeUtf8 (appHpcRedisHost settings)
+                    , redisPort = appHpcRedisPort settings
+                    , redisPrefix = encodeUtf8 (appHpcRedisPrefix settings)
+                    }
+                else do
+                    setMessageI (pack (show res) :: Text)
+                    redirect HomeR
 
 displayStatus :: Config -> Handler Html
 displayStatus config = do
+     setUltDestCurrent
      (jqs, workers, pending) <- withRedis' config $ \r -> do
          jqs <- getJobQueueStatus r
          workers <- forM (jqsWorkers jqs) $ \ws ->
