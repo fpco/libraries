@@ -2,8 +2,10 @@
 module Handler.Home where
 
 import Control.Monad.Logger
-import Distributed.JobQueue.Status
+import Data.Either
+import Data.Time.Clock.POSIX
 import Distributed.JobQueue.Client (cancelRequest)
+import Distributed.JobQueue.Status
 import Distributed.RedisQueue
 import FP.Redis
 import Import
@@ -44,13 +46,29 @@ getStatusR = do
 
 displayStatus :: Config -> Handler Html
 displayStatus config = do
-     jqs <- withRedis' config getJobQueueStatus
-     let pendingCount = length (jqsPending jqs)
-         activeCount = length (filter (not . null . wsRequests) (jqsWorkers jqs))
-         workerCount = length (jqsWorkers jqs)
+     (jqs, workers, pending) <- withRedis' config $ \r -> do
+         jqs <- getJobQueueStatus r
+         workers <- forM (jqsWorkers jqs) $ \ws ->
+             (decodeUtf8 (unWorkerId (wsWorker ws)), ) <$>
+             case wsRequests ws of
+                 [k] -> Left <$> getAndRenderRequest r k
+                 _ | wsHeartbeatFailure ws -> return $ Right "worker failed its heartbeat check and its work was re-enqueued"
+                   | otherwise -> return $ Right ("either idle or slave of another worker" :: Text)
+         pending <- forM (jqsPending jqs) (getAndRenderRequest r)
+         return (jqs, sortBy (comparing snd) workers, sort pending)
      defaultLayout $ do
          setTitle "Compute Tier Status"
          $(widgetFile "status")
+
+getAndRenderRequest :: (MonadIO m, MonadBaseControl IO m) => RedisInfo -> RequestId -> m (Text, Text)
+getAndRenderRequest r k = do
+    rs <- getRequestStatus r k
+    return
+        ( case rsStart rs of
+            Nothing -> "Missing?!"
+            Just t -> tshow (posixSecondsToUTCTime t)
+        , decodeUtf8 (unRequestId (rsId rs))
+        )
 
 postStatusR :: Handler Html
 postStatusR = do

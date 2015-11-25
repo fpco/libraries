@@ -7,7 +7,9 @@
 module Distributed.JobQueue.Status
     ( JobQueueStatus(..)
     , WorkerStatus(..)
+    , RequestStatus(..)
     , getJobQueueStatus
+    , getRequestStatus
     ) where
 
 import ClassyPrelude hiding (keys)
@@ -31,6 +33,11 @@ data WorkerStatus = WorkerStatus
     , wsHeartbeatFailure :: !Bool
     , wsLastHeartbeat :: !(Maybe NominalDiffTime)
     , wsRequests :: ![RequestId]
+    } deriving Show
+
+data RequestStatus = RequestStatus
+    { rsId :: !RequestId
+    , rsStart :: !(Maybe POSIXTime)
     } deriving Show
 
 getJobQueueStatus :: (MonadIO m, MonadCatch m, MonadBaseControl IO m, MonadLogger m)
@@ -69,3 +76,8 @@ getJobQueueStatus r = do
         , jqsPending = map RequestId pending
         , jqsWorkers = catMaybes workers
         }
+
+getRequestStatus :: MonadCommand m => RedisInfo -> RequestId -> m RequestStatus
+getRequestStatus r rid = RequestStatus
+    <$> pure rid
+    <*> getRedisTime r (requestTimeKey r rid)

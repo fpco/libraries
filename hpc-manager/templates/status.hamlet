@@ -11,12 +11,12 @@
         <b>#{show lastHeartbeat}
         since last heartbeat check.
   <li>
-    <b>#{pendingCount}
+    <b>#{length pending}
     pending requests.
   <li>
-    <b>#{activeCount}
+    <b>#{length (filter (isLeft . snd) workers)}
     active workers, of
-    <b>#{workerCount}
+    <b>#{length workers}
     total.
 
 <form method=post>
@@ -29,27 +29,24 @@
     <tr>
       <th>
         <input type=checkbox #select-all-workers>
+      <th>Start time
       <th>WorkerId
       <th>RequestID(s)
-    $forall w <- jqsWorkers jqs
-      $with wid <- decodeUtf8 (unWorkerId (wsWorker w))
-        <tr>
-          $case wsRequests w
-            $of [rid']
-              $with rid <- decodeUtf8 (unRequestId rid')
-                <td>
-                  <input type=checkbox .select-workers name=jqr:#{rid} value=wid:#{wid}>
-                <td>#{wid}
-                <td>#{rid}
-            $of _
-              <td>
-              <td>#{wid}
-              <td>
-                <i>
-                  $if wsHeartbeatFailure w
-                    worker failed its heartbeat check and its work was re-enqueued
-                  $else
-                    either idle or slave of another worker
+    $forall (wid, w) <- workers
+      <tr>
+        $case w
+          $of Left (start, rid)
+            <td>
+              <input type=checkbox .select-workers name=jqr:#{rid} value=wid:#{wid}>
+            <td>#{start}
+            <td>#{wid}
+            <td>#{rid}
+          $of Right msg
+            <td>
+            <td>
+            <td>#{wid}
+            <td>
+              <i>#{msg}
 
   <h2>Pending Work
 
@@ -57,10 +54,11 @@
     <tr>
       <th>
         <input type=checkbox #select-all-pending>
+      <th>Start time
       <th>RequestID
-    $forall r <- jqsPending jqs
-      $with rid <- decodeUtf8 (unRequestId r)
-        <tr>
-          <td>
-            <input type=checkbox .select-pending name=jqr:#{rid} value=t>
-          <td>#{rid}
+    $forall (start, rid) <- pending
+      <tr>
+        <td>
+          <input type=checkbox .select-pending name=jqr:#{rid} value=t>
+        <td>#{start}
+        <td>#{rid}
