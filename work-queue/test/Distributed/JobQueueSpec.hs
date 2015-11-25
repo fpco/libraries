@@ -60,6 +60,7 @@ spec = do
         noResult <- tryTakeMVar resultVar
         liftIO $ do
             isNothing noResult `shouldBe` True
+            putStrLn "Cancelling worker"
             cancelProcess master
         -- One of these will become a master and one will become a
         -- slave.
@@ -70,6 +71,7 @@ spec = do
         _ <- forkWorker "redis" 0
         _ <- forkWorker "redis" 0
         checkResult 10 resultVar 0
+        putStrLn "Successfully received result"
     jqit "Long tasks complete" $ do
         _ <- forkWorker "redis-long" 0
         _ <- forkWorker "redis-long" 0
@@ -227,7 +229,7 @@ sendJobRequest tag sets request =
                 $logError $ "Didn't expect to find a cached result: " <> tshow k
                 fail "sendJobRequest failed"
             Just (rid, Nothing) -> do
-                $logDebug $ "Successfully sent job request " ++ tshow rid
+                $logInfo $ "Sent job request " ++ tshow rid
                 atomicInsert rid (sentRequests sets)
                 atomicInsert rid (unwatchedRequests sets)
                 return rid
@@ -256,7 +258,9 @@ forkResponseWaiter tag sets = allocateAsync responseWaiter
             result <- takeMVar resultVar
             case result of
                 Left ex -> liftIO $ throwIO ex
-                Right x -> atomicInsert (rid, x) (receivedResponses sets)
+                Right x -> do
+                    $logInfo $ "Got result for " <> tshow rid
+                    atomicInsert (rid, x) (receivedResponses sets)
 
 clientConfig :: ClientConfig
 clientConfig = defaultClientConfig

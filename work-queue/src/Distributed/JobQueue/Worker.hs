@@ -24,7 +24,7 @@ module Distributed.JobQueue.Worker
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async, withAsync, cancel, cancelWith, waitEither)
-import Control.Monad.Logger (logErrorS, logInfoS)
+import Control.Monad.Logger (logErrorS, logInfoS, logDebugS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import Data.Binary (Binary, encode)
 import Data.ConcreteTypeRep (fromTypeRep)
@@ -252,16 +252,16 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
                         -- 'requestChannel', then the next iteration
                         -- should be subscribed.
                         NoSubscription -> do
-                            $logInfoS "JobQueue" "Re-running requests, with subscription"
+                            $logDebugS "JobQueue" "Re-running requests, with subscription"
                             (notified, unsub) <- subscribeToRequests redis
                             let mws' = WithSubscription notified unsub
                             loop mws' heartbeatThread
                         -- If we are subscribed to 'requestChannel',
                         -- then block waiting for a notification.
                         WithSubscription notified _ -> do
-                            $logInfoS "JobQueue" "Waiting for request notification"
+                            $logDebugS "JobQueue" "Waiting for request notification"
                             takeMVar notified
-                            $logInfoS "JobQueue" "Got notified of an available request"
+                            $logDebugS "JobQueue" "Got notified of an available request"
                             loop mws heartbeatThread
                     -- Let the client know about missing requests.
                     RequestMissing k -> do
@@ -271,7 +271,7 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
                     -- still functions, but failed to send its
                     -- heartbeat in time.
                     HeartbeatFailure -> do
-                        $logInfoS "JobQueue" "Recovering from heartbeat failure"
+                        $logInfoS "JobQueue" $ tshow wid <> " recovering from heartbeat failure"
                         recoverFromHeartbeatFailure redis wid
                         -- Restart the heartbeat thread, which re-adds
                         -- the worker to the list of active workers.
@@ -331,7 +331,7 @@ becomeMaster
     -> ByteString
     -> m (Either DistributedJobQueueException response)
 becomeMaster JQWParams {..} k req = do
-    $logInfoS "JobQueue" (tshow wid ++ " becoming master")
+    $logInfoS "JobQueue" (tshow wid ++ " becoming master, for " ++ tshow k)
     let requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
     boundPort <- newEmptyMVar
@@ -361,7 +361,7 @@ becomeMaster JQWParams {..} k req = do
                 tshow k <> " failed with " <> tshow err
             return (Left (wrapException err))
         Right x -> do
-            $logInfoS "JobQueue" "Done being master"
+            $logInfoS "JobQueue" (tshow wid ++ " done being master")
             return (Right x)
 
 watchForCancel :: MonadConnect m => RedisInfo -> RequestId -> Seconds -> m a -> m a

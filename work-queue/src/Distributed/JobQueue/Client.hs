@@ -36,7 +36,7 @@ module Distributed.JobQueue.Client
 
 import           ClassyPrelude
 import           Control.Concurrent.Async (race)
-import           Control.Monad.Logger (MonadLogger, logErrorS, logInfoS, logDebugS)
+import           Control.Monad.Logger (MonadLogger, logErrorS, logDebugS)
 import           Control.Monad.Trans.Control (liftBaseWith, restoreM)
 import           Data.Binary (encode)
 import           Data.ConcreteTypeRep (fromTypeRep)
@@ -128,14 +128,14 @@ jobQueueClient config cvs redis = do
     -- When the subscription reconnects, check if any responses came
     -- back in the meantime.
     handleConnect _ = do
-        $logInfoS "jobQueueClient" "Checking for responses after (re)connect"
+        $logDebugS "jobQueueClient" "Checking for responses after (re)connect"
         contents <- atomically $ ListT.toList $ SM.stream (clientDispatch cvs)
         forM_ contents $ \(rid, handler) -> do
             mresponse <- readResponse redis rid
             case mresponse of
                 Nothing -> return ()
                 Just response -> do
-                    $logInfoS "jobQueueClient" $
+                    $logDebugS "jobQueueClient" $
                         "Found a missed result after reconnect:" ++ tshow rid
                     atomically $ SM.delete rid (clientDispatch cvs)
                     decodeOrThrow "jobQueueClient" response >>= handler

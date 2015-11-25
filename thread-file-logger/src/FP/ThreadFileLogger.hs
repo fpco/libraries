@@ -79,9 +79,9 @@ filterThreadLogger _ = id
 logIO :: MonadBase IO m => LoggingT IO a -> m a
 logIO = liftBase . runStdoutLoggingT . defaultFiltering
 
--- Instead of jamming tons of debug info into stdout, just show warnings and errors
+-- Instead of jamming tons of debug info into stdout, just show info, warnings, and errors
 defaultFiltering :: LoggingT m a -> LoggingT m a
-defaultFiltering = filterLogger (\_ l -> l > LevelWarn)
+defaultFiltering = filterLogger (\_ l -> l >= LevelInfo)
 
 #else
 
