@@ -125,7 +125,9 @@ jobQueueWorker
     :: forall m request response payload result.
        ( MonadConnect m
        , Sendable request
+       , Typeable request
        , Sendable response
+       , Typeable response
        , Sendable payload
        , Sendable result
        )
@@ -205,7 +207,7 @@ data MaybeWithSubscription
 jobQueueWorkerInternal
     :: forall m request response payload result.
        ( MonadConnect m
-       , Sendable request, Sendable response
+       , Sendable request, Typeable request, Sendable response, Typeable response
        , Sendable payload, Sendable result
        )
     => JQWParams request response payload result
@@ -323,7 +325,7 @@ becomeSlave JQWParams {..} mci init = do
 becomeMaster
     :: forall m request response payload result.
        ( MonadConnect m
-       , Sendable request, Sendable response
+       , Sendable request, Typeable request, Sendable response, Typeable response
        , Sendable payload, Sendable result
        )
     => JQWParams request response payload result

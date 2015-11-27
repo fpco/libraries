@@ -78,7 +78,7 @@ type NMApp iSend youSend m a = NMAppData iSend youSend -> m a
 
 -- | Constraint synonym for the constraints required to send data from
 -- / to an 'NMApp'.
-type Sendable a = (B.Binary a, Typeable a)
+type Sendable a = (B.Binary a)
 
 -- | Provides an 'NMApp' with a means of communicating with the other side of a
 -- connection. See other functions provided by this module.
@@ -105,20 +105,16 @@ nmRead :: MonadIO m => NMAppData iSend youSend -> m youSend
 nmRead = liftIO . _nmRead
 
 data Handshake = Handshake
-    { hsISend     :: ConcreteTypeRep
-    , hsYouSend   :: ConcreteTypeRep
-    , hsHeartbeat :: Int
+    { hsHeartbeat :: Int
     , hsExeHash   :: Maybe ByteString
     }
     deriving (Generic, Show, Eq, Typeable)
 instance B.Binary Handshake
 
-mkHandshake :: forall iSend youSend m a. (Typeable iSend, Typeable youSend)
-            => NMApp iSend youSend m a -> Int -> Maybe ByteString -> Handshake
+mkHandshake :: forall iSend youSend m a.
+               NMApp iSend youSend m a -> Int -> Maybe ByteString -> Handshake
 mkHandshake _ hb eh = Handshake
-    { hsISend = fromTypeRep (typeRep (Proxy :: Proxy iSend))
-    , hsYouSend = fromTypeRep (typeRep (Proxy :: Proxy youSend))
-    , hsHeartbeat = hb
+    { hsHeartbeat = hb
     , hsExeHash = eh
     }
 
@@ -136,9 +132,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
         mgot <- appGet mempty (appRead ad)
         case mgot of
             Just (yourHS, leftover) -> do
-                when (hsISend myHS /= hsYouSend yourHS ||
-                      hsYouSend myHS /= hsISend yourHS ||
-                      hsExeHash myHS /= hsExeHash yourHS) $ do
+                when (hsExeHash myHS /= hsExeHash yourHS) $ do
                     throwIO $ NMMismatchedHandshakes myHS yourHS
                 return (yourHS, leftover)
             Nothing -> throwIO NMConnectionDropped

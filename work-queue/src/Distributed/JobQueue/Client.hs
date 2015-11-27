@@ -91,7 +91,7 @@ defaultClientConfig = ClientConfig
 -- | This is the preferred way to run 'jobQueueClient'.  It ensures
 -- that the thread gets cleaned up when the inner action completes.
 withJobQueueClient
-    :: forall m response a. (MonadConnect m, Sendable response)
+    :: forall m response a. (MonadConnect m, Sendable response, Typeable response)
     => ClientConfig -> RedisInfo -> (ClientVars m response -> m a) -> m a
 withJobQueueClient config redis f = do
     result <- liftBaseWith $ \restore -> do
@@ -110,7 +110,7 @@ withJobQueueClient config redis f = do
 -- This function should be run in its own thread, as it never returns
 -- (the return type is @void@).
 jobQueueClient
-    :: forall m response void. (MonadConnect m, Sendable response)
+    :: forall m response void. (MonadConnect m, Sendable response, Typeable response)
     => ClientConfig
     -> ClientVars m response
     -> RedisInfo
@@ -164,7 +164,7 @@ jobQueueClient config cvs redis = do
 -- function rethrows it.
 jobQueueRequest
     :: forall m request response.
-       (MonadCommand m, MonadLogger m, Sendable request, Sendable response)
+       (MonadCommand m, MonadLogger m, Sendable request, Typeable request, Sendable response, Typeable response)
     => ClientConfig
     -> ClientVars m response
     -> RedisInfo
@@ -183,7 +183,7 @@ jobQueueRequest config cvs redis request = do
 -- cached values may be yielded.
 jobQueueRequestWithId
     :: forall m request response.
-       (MonadCommand m, MonadLogger m, Sendable request, Sendable response)
+       (MonadCommand m, MonadLogger m, Sendable request, Typeable request, Sendable response, Typeable response)
     => ClientConfig
     -> ClientVars m response
     -> RedisInfo
@@ -196,7 +196,7 @@ jobQueueRequestWithId config cvs redis k request = do
 
 jobQueueRequestRaw
     :: forall m response.
-       (MonadCommand m, MonadLogger m, Sendable response)
+       (MonadCommand m, MonadLogger m, Sendable response, Typeable response)
     => ClientConfig
     -> ClientVars m response
     -> RedisInfo
@@ -229,7 +229,7 @@ jobQueueRequestRaw config cvs redis k encoded = do
 -- assumption is that this exception was a temporary issue.
 sendRequest
     :: forall m request response.
-       (MonadCommand m, MonadLogger m, Sendable request, Sendable response)
+       (MonadCommand m, MonadLogger m, Sendable request, Typeable request, Sendable response, Typeable response)
     => ClientConfig
     -> RedisInfo
     -> request
@@ -247,7 +247,7 @@ sendRequest config redis request = do
 -- cached values may be yielded.
 sendRequestWithId
     :: forall m request response.
-       (MonadCommand m, MonadLogger m, Sendable request, Sendable response)
+       (MonadCommand m, MonadLogger m, Sendable request, Typeable request, Sendable response, Typeable response)
     => ClientConfig
     -> RedisInfo
     -> RequestId
@@ -259,7 +259,7 @@ sendRequestWithId config redis k request = do
 
 sendRequestRaw
     :: forall m response.
-       (MonadCommand m, MonadLogger m, Sendable response)
+       (MonadCommand m, MonadLogger m, Sendable response, Typeable response)
     => ClientConfig
     -> RedisInfo
     -> RequestId
@@ -285,7 +285,7 @@ sendRequestRaw config redis k encoded = do
 
 -- | Computes the encoded ByteString representation of a 'JobRequest'.
 encodeRequest
-    :: forall request response. (Sendable response, Sendable request)
+    :: forall request response. (Sendable response, Typeable request, Sendable request, Typeable response)
     => request
     -> Proxy response
     -> ByteString
@@ -319,7 +319,7 @@ sendRequestIgnoringCache config redis k encoded = do
 -- is, then the callback is invoked.
 registerResponseCallback
     :: forall m response.
-       (MonadCommand m, MonadThrow m, MonadLogger m, Sendable response)
+       (MonadCommand m, MonadThrow m, MonadLogger m, Sendable response, Typeable response)
     => ClientVars m response
     -> RedisInfo
     -> RequestId
@@ -366,7 +366,7 @@ logCallbackExceptions k f =
 
 -- | Check for a response, give a 'RequestId'.
 checkForResponse
-    :: (MonadCommand m, Sendable response)
+    :: (MonadCommand m, Sendable response, Typeable response)
     => RedisInfo
     -> RequestId
     -> m (Maybe (Either DistributedJobQueueException response))
