@@ -37,6 +37,7 @@ library
                        Distributed.JobQueue.Heartbeat
   other-modules:       Distributed.JobQueue.Shared
                        Data.ConcreteTypeRep
+                       Data.Streaming.Network.NoSignal
   build-depends:       base
                      , async
                      , binary
@@ -76,6 +77,8 @@ library
   ghc-options:         -Wall
   if flag(coverage)
       ghc-options:     -fhpc
+  if os(linux)
+      cpp-options:     -DLINUX
 
 executable hpc-example-factorial
   main-is:             factorial.hs

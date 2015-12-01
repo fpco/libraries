@@ -46,7 +46,8 @@ import qualified Data.Binary                 as B
 import qualified Data.Binary.Get             as B
 import           Data.ConcreteTypeRep        (ConcreteTypeRep, fromTypeRep)
 import           Data.Function               (fix)
-import           Data.Streaming.Network      (AppData, appRead, appWrite)
+import           Data.Streaming.Network      (AppData, appRead)
+import           Data.Streaming.Network.NoSignal (appWrite')
 import           Data.Typeable               (Proxy(..), typeRep)
 import           Data.Vector.Binary          () -- commonly needed orphans
 import           Data.Void                   (absurd)
@@ -132,7 +133,7 @@ runNMApp :: forall iSend youSend m a.
 runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
     (yourHS, leftover) <- liftBase $ do
         let myHS = mkHandshake nmApp heartbeat exeHash
-        forM_ (toChunks $ B.encode myHS) (appWrite ad)
+        forM_ (toChunks $ B.encode myHS) (appWrite' ad)
         mgot <- appGet mempty (appRead ad)
         case mgot of
             Just (yourHS, leftover) -> do
@@ -268,13 +269,13 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
         -- function properly.
         if bs == toStrict (B.encode (Complete :: Message iSend))
             then do
-                appWrite ad bs `catch` \ex ->
+                appWrite' ad bs `catch` \ex ->
                     -- Ignore resource vanished if the connection is done.
                     if isResourceVanished ex
                         then return ()
                         else throwIO ex
             else do
-                appWrite ad bs `catch` \ex ->
+                appWrite' ad bs `catch` \ex ->
                     -- ResourceVanished indicates that the connection
                     -- got dropped, so throw that nicer exception
                     -- instead.
