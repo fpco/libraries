@@ -9,6 +9,7 @@ module Data.Streaming.Network.NoSignal (appWrite') where
 
 import Data.Streaming.Network
 import Network.Socket (Socket(..))
+import Network.Socket.Internal (throwSocketErrorWaitWrite)
 import qualified Data.ByteString as B
 import Control.Monad (liftM, when)
 import Data.ByteString (ByteString)
@@ -31,10 +32,10 @@ msgNoSignal = #const MSG_NOSIGNAL
 send :: Socket      -- ^ Connected socket
      -> ByteString  -- ^ Data to send
      -> IO Int      -- ^ Number of bytes sent
-send (MkSocket s _ _ _ _) xs =
+send sock@(MkSocket s _ _ _ _) xs =
     unsafeUseAsCStringLen xs $ \(str, len) ->
     liftM fromIntegral $
-        -- FIXME throwSocketErrorWaitWrite sock "send" $
+        throwSocketErrorWaitWrite sock "send" $
         c_send s str (fromIntegral len) msgNoSignal
 
 -- | Send data to the socket.  The socket must be connected to a
