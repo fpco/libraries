@@ -391,10 +391,10 @@ checkForResponse redis k = do
 -- *not* guarantee that the worker actually manages to cancel its work).
 cancelRequest :: MonadCommand m => Seconds -> RedisInfo -> RequestId -> Maybe WorkerId -> m Bool
 cancelRequest expiry redis k mwid = do
-    let deleteData = run_ redis $ del (unVKey (requestDataKey redis k) :| [])
+    run_ redis $ del (unVKey (requestDataKey redis k) :| [])
     ndel <- run redis (lrem (requestsKey redis) 1 (unRequestId k))
     case (ndel, mwid) of
-        (1, Nothing) -> deleteData >> return True
+        (1, Nothing) -> return True
         (0, Just wid) -> do
             eres <- try $ run redis $
                 lrem (LKey (activeKey redis wid)) 1 (unRequestId k)
@@ -402,7 +402,6 @@ cancelRequest expiry redis k mwid = do
                 Right 0 -> return False
                 Right _ -> do
                     run_ redis $ set (cancelKey redis k) cancelValue [EX expiry]
-                    deleteData
                     return True
                 -- Indicates a heartbeat failure.
                 Left (_ :: RedisException) -> return False
