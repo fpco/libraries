@@ -29,6 +29,9 @@ module Data.Streaming.NetworkMessage
     , nmWrite
     , nmRead
     , nmAppData
+      -- ** General runNMApp
+    , TypeFingerprint
+    , generalRunNMApp
       -- * Settings
     , NMSettings
     , defaultNMSettings
@@ -52,6 +55,8 @@ import           Data.Vector.Binary          () -- commonly needed orphans
 import           Data.Void                   (absurd)
 import           GHC.IO.Exception            (IOException(ioe_type), IOErrorType(ResourceVanished))
 import           System.Executable.Hash      (executableHash)
+import qualified Crypto.Hash.SHA512          as SHA512
+import qualified Data.ByteString             as BS
 
 -- | A network message application.
 --
@@ -104,34 +109,43 @@ nmWrite nm = liftIO . _nmWrite nm
 nmRead :: MonadIO m => NMAppData iSend youSend -> m youSend
 nmRead = liftIO . _nmRead
 
+type TypeFingerprint = BS.ByteString
+
 data Handshake = Handshake
-    { hsISend     :: ConcreteTypeRep
-    , hsYouSend   :: ConcreteTypeRep
+    { hsISend     :: TypeFingerprint
+    , hsYouSend   :: TypeFingerprint
     , hsHeartbeat :: Int
     , hsExeHash   :: Maybe ByteString
     }
     deriving (Generic, Show, Eq, Typeable)
 instance B.Binary Handshake
 
-mkHandshake :: forall iSend youSend m a. (Typeable iSend, Typeable youSend)
-            => NMApp iSend youSend m a -> Int -> Maybe ByteString -> Handshake
-mkHandshake _ hb eh = Handshake
-    { hsISend = fromTypeRep (typeRep (Proxy :: Proxy iSend))
-    , hsYouSend = fromTypeRep (typeRep (Proxy :: Proxy youSend))
+mkHandshake :: forall iSend youSend m a.
+       (Proxy iSend -> TypeFingerprint)
+    -> (Proxy youSend -> TypeFingerprint)
+    -> NMApp iSend youSend m a -> Int -> Maybe ByteString -> Handshake
+mkHandshake fingerprintISend fingerprintYouSend _ hb eh = Handshake
+    { hsISend = fingerprintISend (Proxy :: Proxy iSend)
+    , hsYouSend = fingerprintYouSend (Proxy :: Proxy youSend)
     , hsHeartbeat = hb
     , hsExeHash = eh
     }
 
--- | Convert an 'NMApp' into an "Data.Streaming.Network" application.
-runNMApp :: forall iSend youSend m a.
-            (MonadBaseControl IO m, Sendable iSend, Sendable youSend)
-         => NMSettings
-         -> NMApp iSend youSend m a
-         -> AppData
-         -> m a
-runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
+-- | More general version of 'runNMApp', that removes the 'Typeable' constraint.
+-- The two 'TypeFingerprint' function can be used to provide a way to mark the types
+-- we're sending. 'runNMApp' uses 'Typeable' to do that, but this might not be
+-- convenient or possible if the types involved are not 'Typeable'.
+generalRunNMApp :: forall iSend youSend m a.
+       (MonadBaseControl IO m, B.Binary iSend, B.Binary youSend)
+    => NMSettings
+    -> (Proxy iSend -> TypeFingerprint)
+    -> (Proxy youSend -> TypeFingerprint)
+    -> NMApp iSend youSend m a
+    -> AppData
+    -> m a
+generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSend nmApp ad = do
     (yourHS, leftover) <- liftBase $ do
-        let myHS = mkHandshake nmApp heartbeat exeHash
+        let myHS = mkHandshake fingerprintISend fingerprintYouSend nmApp heartbeat exeHash
         forM_ (toChunks $ B.encode myHS) (appWrite ad)
         mgot <- appGet mempty (appRead ad)
         case mgot of
@@ -284,6 +298,21 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                             throwIO NMConnectionDropped
                         else throwIO ex
                 loop
+
+-- | Convert an 'NMApp' into an "Data.Streaming.Network" application.
+runNMApp :: forall iSend youSend m a.
+       (MonadBaseControl IO m, Sendable iSend, Sendable youSend)
+    => NMSettings
+    -> NMApp iSend youSend m a
+    -> AppData
+    -> m a
+runNMApp nms = generalRunNMApp nms typeableFingerprint typeableFingerprint
+  where
+    typeableFingerprint :: forall b. (Typeable b) => Proxy b -> BS.ByteString
+    typeableFingerprint _proxy = let
+        ty :: ConcreteTypeRep
+        ty = fromTypeRep (typeRep (Proxy :: Proxy iSend))
+        in SHA512.hashlazy $ B.encode ty
 
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and
