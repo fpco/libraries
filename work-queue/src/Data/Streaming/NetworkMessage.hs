@@ -311,7 +311,7 @@ runNMApp nms = generalRunNMApp nms typeableFingerprint typeableFingerprint
     typeableFingerprint :: forall b. (Typeable b) => Proxy b -> BS.ByteString
     typeableFingerprint _proxy = let
         ty :: ConcreteTypeRep
-        ty = fromTypeRep (typeRep (Proxy :: Proxy iSend))
+        ty = fromTypeRep (typeRep (Proxy :: Proxy b))
         in SHA512.hashlazy $ B.encode ty
 
 -- | Streaming decode function.  If the function to get more bytes
