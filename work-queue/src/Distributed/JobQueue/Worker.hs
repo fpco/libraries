@@ -371,23 +371,24 @@ watchForCancel r k ivl f = do
     thread <- asyncLifted $ do
         result <- f
         putMVar resultVar result
-    watcher <- asyncLifted $ forever $ do
-        mres <- run r (get (cancelKey r k))
-        liftIO $ case mres of
-            Just res
-                | res == cancelValue ->
-                    cancelWith thread (RequestCanceledException k)
-                | otherwise -> throwIO $ InternalJobQueueException
-                    "Didn't get expected value at cancelKey."
-            Nothing -> threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl))
+    let loop = do
+            mres <- run r (get (cancelKey r k))
+            case mres of
+                Just res
+                    | res == cancelValue ->
+                        liftIO $ cancelWith thread (RequestCanceledException k)
+                    | otherwise -> liftIO $ throwIO $ InternalJobQueueException
+                        "Didn't get expected value at cancelKey."
+                Nothing -> do
+                    liftIO $ threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl))
+                    loop
+    watcher <- asyncLifted loop
     res <- liftIO $ waitEither thread watcher
     case res of
         Left () -> do
             liftIO $ cancel watcher
             takeMVar resultVar
-        -- FIXME: use 'absurd', once we have a good lifted async.
-        Right () -> liftIO $ throwIO $ InternalJobQueueException
-            "Impossible: the watcher returned"
+        Right () -> liftIO $ throwIO (RequestCanceledException k)
 
 -- | This subscribes to the requests notification channel. The yielded
 -- @MVar ()@ is filled when we receive a notification. The yielded @IO
