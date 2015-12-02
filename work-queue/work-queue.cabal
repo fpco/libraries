@@ -63,6 +63,7 @@ library
                      , cryptohash
                      , optparse-applicative >= 0.11
                      , text-binary
+                     , unix
                      , uuid
                      , ghc-prim
                      , network

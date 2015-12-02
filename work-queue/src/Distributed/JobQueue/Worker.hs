@@ -27,6 +27,7 @@ import Control.Concurrent.Async (Async, async, withAsync, cancel, cancelWith, wa
 import Control.Monad.Logger (logErrorS, logInfoS, logDebugS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import Data.Binary (Binary, encode)
+import Data.Bits (xor)
 import Data.ConcreteTypeRep (fromTypeRep)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Streaming.Network (clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
@@ -44,6 +45,7 @@ import FP.Redis
 import FP.ThreadFileLogger
 import GHC.IO.Exception (IOException(IOError))
 import Network.Socket (socketPort)
+import System.Posix.Process (getProcessID)
 
 -- | Configuration of a 'jobQueueWorker'.
 data WorkerConfig = WorkerConfig
@@ -499,7 +501,11 @@ withRedis' :: MonadConnect m => WorkerConfig -> (RedisInfo -> m a) -> m a
 withRedis' config = withRedis (workerKeyPrefix config) (workerConnectInfo config)
 
 getWorkerId :: IO WorkerId
-getWorkerId = WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom
+getWorkerId = do
+    pid <- getProcessID
+    (w1, w2, w3, w4) <- toWords <$> UUID.nextRandom
+    let w1' = w1 `xor` fromIntegral pid
+    return $ WorkerId $ UUID.toASCIIBytes $ UUID.fromWords w1' w2 w3 w4
 
 asyncLifted :: MonadBaseControl IO m => m () -> m (Async ())
 asyncLifted f = liftBaseWith $ \restore -> async (void (restore f))
