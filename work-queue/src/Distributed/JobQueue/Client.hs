@@ -30,7 +30,7 @@ module Distributed.JobQueue.Client
     , DistributedJobQueueException(..)
     -- * Exposed for the test-suite
     , encodeRequest
-    , sendRequestIgnoringCache
+    , sendRequestInternal'
     )
     where
 
@@ -40,6 +40,7 @@ import           Control.Monad.Logger (MonadLogger, logErrorS, logDebugS)
 import           Control.Monad.Trans.Control (liftBaseWith, restoreM)
 import           Data.Binary (encode)
 import           Data.ConcreteTypeRep (fromTypeRep)
+import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.Typeable (typeRep, Proxy(..))
 import           Data.Void (absurd, Void)
@@ -50,8 +51,8 @@ import           Distributed.RedisQueue.Internal
 import           FP.Redis
 import           FP.ThreadFileLogger
 import           Focus (Decision(Remove, Replace))
-import qualified STMContainers.Map as SM
 import qualified ListT
+import qualified STMContainers.Map as SM
 
 -- | Variables used by 'jobQueueClient' / 'jobQueueRequest'.
 data ClientVars m response = ClientVars
@@ -215,7 +216,7 @@ jobQueueRequestRaw config cvs redis k encoded = do
             -- this highly unlikely)
             resultVar <- newEmptyMVar
             registerResponseCallbackInternal cvs k $ putMVar resultVar
-            sendRequestIgnoringCache config redis k encoded
+            sendRequestInternal config redis k encoded
             eres <- takeMVar resultVar
             either (liftIO . throwIO) return eres
 
@@ -271,13 +272,13 @@ sendRequestRaw config redis k encoded = do
     case mresponse of
         Nothing -> do
             $logDebugS "sendRequest" $ "Sending request " <> tshow k
-            sendRequestIgnoringCache config redis k encoded
+            sendRequestInternal config redis k encoded
             return Nothing
         Just (Left err) -> do
             $logDebugS "sendRequest" $ "Cached response to " <> tshow k <> " is an error: " <> tshow err
             $logDebugS "sendRequest" $ "Clearing response cache for " <> tshow k
             clearResponse redis k
-            sendRequestIgnoringCache config redis k encoded
+            sendRequestInternal config redis k encoded
             return Nothing
         Just (Right x) -> do
             $logDebugS "sendRequest" $ "Using cached response for " <> tshow k
@@ -297,11 +298,21 @@ encodeRequest request _ =
         }
 
 -- Internal function to send a request without checking redis for an
--- existing response.
-sendRequestIgnoringCache
+-- existing response. It does check for an existing request, though, and
+-- does nothing if found.
+sendRequestInternal
     :: (MonadCommand m, MonadLogger m)
     => ClientConfig -> RedisInfo -> RequestId -> ByteString -> m ()
-sendRequestIgnoringCache config redis k encoded = do
+sendRequestInternal config redis k encoded = do
+    exists <- requestExists redis k
+    unless exists $ sendRequestInternal' config redis k encoded
+
+-- Internal function to send a request without checking redis for an
+-- existing response.
+sendRequestInternal'
+    :: (MonadCommand m, MonadLogger m)
+    => ClientConfig -> RedisInfo -> RequestId -> ByteString -> m ()
+sendRequestInternal' config redis k encoded = do
     let expiry = clientRequestExpiry config
     $logDebugS "sendRequest" $ "Pushing request " <> tshow k
     pushed <- pushRequest redis expiry k encoded
@@ -380,9 +391,10 @@ checkForResponse redis k = do
 -- *not* guarantee that the worker actually manages to cancel its work).
 cancelRequest :: MonadCommand m => Seconds -> RedisInfo -> RequestId -> Maybe WorkerId -> m Bool
 cancelRequest expiry redis k mwid = do
+    let deleteData = run_ redis $ del (unVKey (requestDataKey redis k) :| [])
     ndel <- run redis (lrem (requestsKey redis) 1 (unRequestId k))
     case (ndel, mwid) of
-        (1, Nothing) -> return True
+        (1, Nothing) -> deleteData >> return True
         (0, Just wid) -> do
             eres <- try $ run redis $
                 lrem (LKey (activeKey redis wid)) 1 (unRequestId k)
@@ -390,6 +402,7 @@ cancelRequest expiry redis k mwid = do
                 Right 0 -> return False
                 Right _ -> do
                     run_ redis $ set (cancelKey redis k) cancelValue [EX expiry]
+                    deleteData
                     return True
                 -- Indicates a heartbeat failure.
                 Left (_ :: RedisException) -> return False

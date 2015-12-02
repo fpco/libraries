@@ -30,6 +30,6 @@ main =
           [ bench "sendJobRequest" $ nfIO $ runNoLoggingT $ do
               let encoded = encodeRequest ("" :: String) (Proxy :: Proxy Int)
                   k = getRequestId encoded
-              sendRequestIgnoringCache defaultClientConfig r k encoded
+              sendRequestInternal' defaultClientConfig r k encoded
           ]
       ]
