@@ -6,6 +6,7 @@
 {-# LANGUAGE ConstraintKinds  #-}
 {-# LANGUAGE TemplateHaskell  #-}
 {-# LANGUAGE TypeFamilies     #-}
+{-# LANGUAGE RankNTypes #-}
 -- | Distribute a "Data.WorkQueue" queue over a network via
 -- "Data.Streaming.NetworkMessage".
 --
@@ -25,7 +26,6 @@ module Distributed.WorkQueue
 
       -- * General interface
     , ToSlave
-    , RunNMApp
     , generalWithMaster
     , generalRunSlave
     ) where
@@ -164,18 +164,18 @@ withMaster
        , Sendable payload
        , Sendable result
        )
-    => ((AppData -> IO ()) -> IO ()) -- ^ run the network application
+    => (forall a. (AppData -> IO ()) -> IO a)
+    -- ^ run the network server
     -> NMSettings
     -> initialData
     -> (WorkQueue payload result -> m final)
     -> m final
 withMaster runApp nmSettings = generalWithMaster (runApp . runNMApp nmSettings)
 
-type RunNMApp iSend youSend a = NMApp iSend youSend IO a -> IO a
-
 generalWithMaster
     :: (MonadBaseControl IO m)
-    => RunNMApp (ToSlave initialData payload) result ()
+    => (forall a. NMApp (ToSlave initialData payload) result IO () -> IO a)
+    -- ^ Function to run the server.
     -> initialData
     -> (WorkQueue payload result -> m final)
     -> m final
@@ -216,7 +216,8 @@ runSlave cs nm = generalRunSlave (runTCPClient cs . runNMApp nm)
 
 generalRunSlave
     :: (MonadIO m)
-    => RunNMApp result (ToSlave initialData payload) (Either SomeException ())
+    => (forall a. NMApp result (ToSlave initialData payload) IO a -> IO a)
+    -- ^ Function to run the slave client.
     -> (initialData -> IO ())
     -> (initialData -> payload -> IO result)
     -> m (Either SomeException ())
@@ -272,8 +273,8 @@ runArgsNoTypeable getInitialData calc inner = liftIO $ do
   where
     runNMAppNoTypeable nms = generalRunNMApp nms (const "") (const "")
 
-    withMasterNoTypeable runApp nmSettings =
-        generalWithMaster (runApp . runNMAppNoTypeable nmSettings)
+    withMasterNoTypeable ss nmSettings =
+        generalWithMaster (runTCPServer ss . runNMAppNoTypeable nmSettings)
     runSlaveNoTypeable cs nm =
         generalRunSlave (runTCPClient cs . runNMAppNoTypeable nm)
 
@@ -285,7 +286,7 @@ runArgsNoTypeable getInitialData calc inner = liftIO $ do
     master lslaves port = do
         initialData <- getInitialData
         nmSettings <- defaultNMSettings
-        withMasterNoTypeable (runTCPServer ss) nmSettings initialData $ \queue ->
+        withMasterNoTypeable ss nmSettings initialData $ \queue ->
             withLocalSlaves
                 queue
                 lslaves
