@@ -40,7 +40,7 @@ import Control.Concurrent.STM      (STM, STM, TMVar, TVar, atomically, check,
                                     readTMVar, readTVar, retry, tryPutTMVar,
                                     writeTVar)
 import Control.Exception           (SomeException, catch, finally, throwIO, mask)
-import Control.Exception.Lifted    (bracket)
+import Control.Exception.Lifted    (bracket, bracket_)
 import Control.Monad               (forever, join, void, when)
 import Control.Monad.Base          (liftBase)
 import Control.Monad.IO.Class
@@ -56,18 +56,24 @@ import Prelude                     hiding (foldr, sequence)
 -- | A queue of work items to be performed, where each work item is of type
 -- @payload@ and whose computation gives a result of type @result@.
 data WorkQueue payload result = WorkQueue
-    (TVar [(payload, result -> IO ())])
-    (TVar Int) -- active workers
-    (TMVar ()) -- filled when the work queue is closed
+    { wqQueue :: TVar [(payload, result -> IO ())]
+    , wqActiveCount :: TVar Int
+      -- ^ active workers
+    , wqClosedBaton :: TMVar ()
+      -- ^ filled when the work queue is closed
+    , wqTotalWorkers :: TVar Int
+      -- ^ Total number of available workers, both active and inactive. This is
+      -- provided for diagnostic purposes.
+    }
     deriving (Typeable)
 
 -- | Create a new, empty, open work queue.
 newWorkQueue :: STM (WorkQueue payload result)
-newWorkQueue = WorkQueue <$> newTVar [] <*> newTVar 0 <*> newEmptyTMVar
+newWorkQueue = WorkQueue <$> newTVar [] <*> newTVar 0 <*> newEmptyTMVar <*> newTVar 0
 
 -- | Close a work queue, so that all workers will exit.
 closeWorkQueue :: WorkQueue payload result -> STM ()
-closeWorkQueue (WorkQueue _ _ var) = void $ tryPutTMVar var ()
+closeWorkQueue wq = void $ tryPutTMVar (wqClosedBaton wq) ()
 
 -- | Convenient wrapper for creating a work queue, bracketting, performing some
 -- action, and closing it.
@@ -84,7 +90,7 @@ queueItem :: WorkQueue payload result
           -> payload -- ^ payload to be computed
           -> (result -> IO ()) -- ^ action to be performed with its result
           -> STM ()
-queueItem (WorkQueue var _ _) p f = modifyTVar' var ((p, f):)
+queueItem wq p f = modifyTVar' (wqQueue wq) ((p, f):)
 
 -- | Queue multiple work items. This is only provided for convenience
 -- and performance vs 'queueItem'; it gives identical atomicity
@@ -99,14 +105,14 @@ queueItems :: Foldable f
            => WorkQueue payload result
            -> f (payload, result -> IO ())
            -> STM ()
-queueItems (WorkQueue var _ _) items = modifyTVar' var (\orig -> foldr (:) orig items)
+queueItems wq items = modifyTVar' (wqQueue wq) (\orig -> foldr (:) orig items)
 
 -- | Block until the work queue is empty. That is, until there are no work
 -- items in the queue, and no work items checked out by a worker.
 checkEmptyWorkQueue :: WorkQueue payload result -> STM ()
-checkEmptyWorkQueue (WorkQueue work active _) = do
-    readTVar work >>= (check . null)
-    readTVar active >>= (check . (== 0))
+checkEmptyWorkQueue wq = do
+    readTVar (wqQueue wq) >>= (check . null)
+    readTVar (wqActiveCount wq) >>= (check . (== 0))
 
 -- | Provide a worker to perform computations. This function will repeatedly
 -- request payloads from the @WorkQueue@, and for each payload perform the
@@ -124,8 +130,11 @@ checkEmptyWorkQueue (WorkQueue work active _) = do
 -- leveraged to send payloads to remote machines. This is what the
 -- "Distributed.WorkQueue" module provides.
 provideWorker :: WorkQueue payload result -> (payload -> IO result) -> IO ()
-provideWorker (WorkQueue work active final) onPayload =
-    loop
+provideWorker (WorkQueue work active final total) onPayload =
+    bracket_
+        (atomically $ modifyTVar' total (+ 1))
+        (atomically $ modifyTVar' total (subtract 1))
+        loop
   where
     loop = join $ mask $ \restore -> do
         mwork <- atomically $ (Just <$> getWork) <|> (Nothing <$ getFinal)
@@ -228,4 +237,4 @@ mapQueue_ queue t = liftIO $ do
 -- | Gets the number of active workers for the given queue. Useful for debugging
 -- and diagnostics.
 getWorkerCount :: WorkQueue payload result -> STM Int
-getWorkerCount (WorkQueue _ workers _) = readTVar workers
+getWorkerCount = readTVar . wqTotalWorkers
