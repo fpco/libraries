@@ -6,6 +6,7 @@
 {-# LANGUAGE ConstraintKinds  #-}
 {-# LANGUAGE TemplateHaskell  #-}
 {-# LANGUAGE TypeFamilies     #-}
+{-# LANGUAGE RankNTypes #-}
 -- | Distribute a "Data.WorkQueue" queue over a network via
 -- "Data.Streaming.NetworkMessage".
 --
@@ -18,7 +19,14 @@ module Distributed.WorkQueue
     , runModeParser
     , runArgs
     , DistributedWorkQueueException (..)
+
+      -- * Re-exports
     , module Data.WorkQueue
+
+      -- * General interface
+    , ToSlave
+    , generalWithMaster
+    , generalRunSlave
     ) where
 
 import ClassyPrelude                 hiding ((<>))
@@ -155,12 +163,22 @@ withMaster
        , Sendable payload
        , Sendable result
        )
-    => ((AppData -> IO ()) -> IO ()) -- ^ run the network application
+    => (forall a. (AppData -> IO ()) -> IO a)
+    -- ^ run the network server
     -> NMSettings
     -> initialData
     -> (WorkQueue payload result -> m final)
     -> m final
-withMaster runApp nmSettings initial inner =
+withMaster runApp nmSettings = generalWithMaster (runApp . runNMApp nmSettings)
+
+generalWithMaster
+    :: (MonadBaseControl IO m)
+    => (forall a. NMApp (ToSlave initialData payload) result IO () -> IO a)
+    -- ^ Function to run the server.
+    -> initialData
+    -> (WorkQueue payload result -> m final)
+    -> m final
+generalWithMaster runNm initial inner =
     control $ \runInBase -> withWorkQueue
             $ \queue -> withAsync (server queue)
             $ const $ runInBase $ inner queue
@@ -169,7 +187,7 @@ withMaster runApp nmSettings initial inner =
     -- connection to a slave runs 'provideWorker' to run a local
     -- worker on the master that delegates the payloads it receives to
     -- the slave.
-    server queue = logExceptions "server" $ runApp $ runNMApp nmSettings $ \nm -> do
+    server queue = logExceptions "server" $ runNm $ \nm -> do
         let socket = tshow (appSockAddr (nmAppData nm))
         $logIODebugS "withMaster" $ "Master initializing slave on " ++ socket
         nmWrite nm $ TSInit initial
@@ -193,8 +211,17 @@ runSlave
     -> (initialData -> IO ())
     -> (initialData -> payload -> IO result)
     -> m (Either SomeException ())
-runSlave cs nmSettings init calc =
-    liftIO $ runTCPClient cs $ runNMApp nmSettings nmapp
+runSlave cs nm = generalRunSlave (runTCPClient cs . runNMApp nm)
+
+generalRunSlave
+    :: (MonadIO m)
+    => (forall a. NMApp result (ToSlave initialData payload) IO a -> IO a)
+    -- ^ Function to run the slave client.
+    -> (initialData -> IO ())
+    -> (initialData -> payload -> IO result)
+    -> m (Either SomeException ())
+generalRunSlave runNm init calc =
+    liftIO $ runNm nmapp
   where
     nmapp nm = tryAny $ do
         let socket = tshow (appSockAddr (nmAppData nm))
