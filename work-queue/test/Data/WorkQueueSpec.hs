@@ -6,7 +6,7 @@ module Data.WorkQueueSpec (spec) where
 import           Control.Concurrent
 import           Control.Exception (try, SomeException)
 import           Control.Monad (forM_)
-import           Control.Monad.STM (atomically)
+import           Control.Monad.STM (atomically, check)
 import           Data.IORef
 import           Data.List (sort)
 import qualified Data.Vector.Unboxed.Mutable as V
@@ -123,6 +123,24 @@ spec = do
         case mres of
             Nothing -> fail "mapQueue_ timed out"
             Just () -> return ()
+
+    it "getWorkerCount" $ do
+        withWorkQueue $ \queue -> do
+            let checkCount name expected = do
+                    -- Give the threads time to spin up/down
+                    _ <- timeout 1000000 $ atomically $ do
+                        actual <- getWorkerCount queue
+                        check $ actual == expected
+
+                    actual <- atomically $ getWorkerCount queue
+                    (name :: String, actual) `shouldBe` (name, expected)
+
+            checkCount "before slaves" 0
+            withLocalSlaves queue 2 (\() -> return ()) $ do
+                checkCount "add 2" 2
+                withLocalSlaves queue 3 return $ checkCount "add 3 more" 5
+                checkCount "remove 3" 2
+            checkCount "remove 2" 0
 
 randomTinyDelay :: IO ()
 randomTinyDelay = threadDelay =<< randomRIO (0, 2000)
