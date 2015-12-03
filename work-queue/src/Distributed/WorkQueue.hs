@@ -18,7 +18,6 @@ module Distributed.WorkQueue
     , RunMode (..)
     , runModeParser
     , runArgs
-    , runArgsNoTypeable
     , DistributedWorkQueueException (..)
 
       -- * Re-exports
@@ -252,52 +251,3 @@ data DistributedWorkQueueException
     | UnexpectedTSDone
     deriving (Show, Typeable)
 instance Exception DistributedWorkQueueException
-
--- | A version of 'runArgs' without the 'Typeable' constraint.
-runArgsNoTypeable
-    :: ( MonadIO m
-       , Binary initialData
-       , Binary payload
-       , Binary result
-       )
-    => IO initialData -- ^ will not be run in slave mode
-    -> (initialData -> payload -> IO result) -- ^ perform a single calculation
-    -> (initialData -> WorkQueue payload result -> IO ())
-    -> m ()
-runArgsNoTypeable getInitialData calc inner = liftIO $ do
-    runMode <- execParser $ info (helper <*> runModeParser) fullDesc
-    case runMode of
-        DevMode slaves -> dev slaves
-        MasterMode lslaves port -> master lslaves port
-        SlaveMode host port -> slave host port
-  where
-    runNMAppNoTypeable nms = generalRunNMApp nms (const "") (const "")
-
-    withMasterNoTypeable ss nmSettings =
-        generalWithMaster (runTCPServer ss . runNMAppNoTypeable nmSettings)
-    runSlaveNoTypeable cs nm =
-        generalRunSlave (runTCPClient cs . runNMAppNoTypeable nm)
-
-    dev slaves | slaves < 1 = error "Must use at least one slave"
-    dev slaves = withWorkQueue $ \queue -> do
-        initialData <- getInitialData
-        withLocalSlaves queue slaves (calc initialData) (inner initialData queue)
-
-    master lslaves port = do
-        initialData <- getInitialData
-        nmSettings <- defaultNMSettings
-        withMasterNoTypeable ss nmSettings initialData $ \queue ->
-            withLocalSlaves
-                queue
-                lslaves
-                (calc initialData)
-                (inner initialData queue)
-      where
-        ss = setAfterBind (const $ putStrLn $ "Listening on " ++ tshow port)
-                          (serverSettingsTCP port "*")
-
-    slave host port = do
-        nmSettings <- defaultNMSettings
-        void $ runSlaveNoTypeable cs nmSettings (\_ -> return ()) calc
-      where
-        cs = clientSettingsTCP port $ fromString $ unpack host
