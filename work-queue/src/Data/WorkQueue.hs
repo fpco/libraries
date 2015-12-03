@@ -28,6 +28,7 @@ module Data.WorkQueue
     , withLocalSlaves
     , mapQueue
     , mapQueue_
+    , getWorkerCount
     ) where
 
 import Control.Applicative         ((<$), (<$>), (<*>), (<|>))
@@ -223,3 +224,8 @@ mapQueue_ queue t = liftIO $ do
             when (cnt == 0) $ putMVar done ()
     oforM_ t $ \a -> atomically $ queueItem queue a (const decrement)
     takeMVar done
+
+-- | Gets the number of active workers for the given queue. Useful for debugging
+-- and diagnostics.
+getWorkerCount :: WorkQueue payload result -> STM Int
+getWorkerCount (WorkQueue _ workers _) = readTVar workers
