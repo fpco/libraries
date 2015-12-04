@@ -72,6 +72,7 @@ library
                      , list-t
                      , time
                      , base64-bytestring
+                     , clock
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall

@@ -37,6 +37,8 @@ module Data.Streaming.NetworkMessage
     , defaultNMSettings
     , setNMHeartbeat
     , getNMHeartbeat
+
+    , sendRecvTime
     ) where
 
 import           ClassyPrelude
@@ -57,6 +59,28 @@ import           GHC.IO.Exception            (IOException(ioe_type), IOErrorType
 import           System.Executable.Hash      (executableHash)
 import qualified Crypto.Hash.SHA512          as SHA512
 import qualified Data.ByteString             as BS
+
+import qualified System.Clock as Clock
+import           System.IO.Unsafe (unsafePerformIO)
+
+{-# NOINLINE sendRecvTime #-}
+sendRecvTimeRef :: IORef Double
+sendRecvTimeRef = unsafePerformIO (newIORef 0)
+
+sendRecvTime :: IO Double
+sendRecvTime = readIORef sendRecvTimeRef
+
+clockTimeSpecToSeconds :: Clock.TimeSpec -> Double
+clockTimeSpecToSeconds (Clock.TimeSpec secs nanosecs) = fromIntegral secs + 1e-9 * fromIntegral nanosecs
+
+timeIt :: IO a -> IO a
+timeIt m = do
+  t0 <- Clock.getTime Clock.Monotonic
+  x <- m
+  t1 <- Clock.getTime Clock.Monotonic
+  let dt = clockTimeSpecToSeconds t1 - clockTimeSpecToSeconds t0
+  atomicModifyIORef' sendRecvTimeRef $ \secs -> (secs+dt, ())
+  return x
 
 -- | A network message application.
 --
@@ -203,7 +227,7 @@ generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSe
                             throwIO err
                 }
             send :: Message iSend -> IO ()
-            send x = writeChan outgoing $! toStrict (B.encode x)
+            send x = timeIt $ writeChan outgoing $! toStrict (B.encode x)
         -- Ping / heartbeat are managed by withAsync, so that they're
         -- interrupted once the other threads have exited.
         A.withAsync (sendPing send yourHS `A.race`
@@ -321,7 +345,7 @@ appGet :: B.Binary a
        => ByteString -- ^ leftover bytes from previous parse.
        -> IO ByteString -- ^ function to get more bytes
        -> IO (Maybe (a, ByteString)) -- ^ result and leftovers
-appGet bs0 readChunk =
+appGet bs0 readChunk = timeIt $
     loop (B.runGetIncremental B.get `B.pushChunk` bs0)
   where
     loop (B.Fail _ _ str) = throwIO (NMDecodeFailure str)
