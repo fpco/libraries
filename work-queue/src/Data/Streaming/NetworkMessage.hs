@@ -8,6 +8,7 @@
 {-# LANGUAGE ConstraintKinds            #-}
 {-# LANGUAGE TemplateHaskell            #-}
 {-# LANGUAGE ViewPatterns               #-}
+{-# LANGUAGE RankNTypes                 #-}
 -- | Pass well-typed messages across a network connection, including heartbeats.
 --
 -- Built on top of "Data.Streaming.Network". This module handles all heartbeat
@@ -31,7 +32,7 @@ module Data.Streaming.NetworkMessage
     , nmAppData
       -- ** STM interface
     , nmWriteSTM
-    , nmTryReadSTM
+    , nmReadSTM
       -- ** General runNMApp
     , TypeFingerprint
     , generalRunNMApp
@@ -94,7 +95,7 @@ type Sendable a = (B.Binary a, Typeable a)
 data NMAppData iSend youSend = NMAppData
     { _nmAppData :: AppData
     , _nmWrite :: iSend -> STM ()
-    , _nmTryRead :: STM (Maybe (Either NetworkMessageException youSend))
+    , _nmRead :: forall a. (youSend -> Maybe a) -> STM (Maybe (Either NetworkMessageException a))
     } deriving (Typeable)
 
 -- | Get the raw @AppData@. This is useful, for example, to get the @SockAddr@ for
@@ -113,7 +114,7 @@ nmWrite nm = liftIO . atomically . nmWriteSTM nm
 nmRead :: MonadIO m => NMAppData iSend youSend -> m youSend
 nmRead nm = liftIO $ do
     resultOrErr <- atomically $ do
-        mbRes <- nmTryReadSTM nm
+        mbRes <- nmReadSTM nm Just
         case mbRes of
             Nothing -> retry
             Just res -> return res
@@ -124,8 +125,11 @@ nmRead nm = liftIO $ do
 nmWriteSTM :: NMAppData iSend youSend -> iSend -> STM ()
 nmWriteSTM nm = _nmWrite nm
 
-nmTryReadSTM :: NMAppData iSend youSend -> STM (Maybe (Either NetworkMessageException youSend))
-nmTryReadSTM nm = _nmTryRead nm
+nmReadSTM ::
+     NMAppData iSend youSend
+  -> (youSend -> Maybe a)
+  -> STM (Maybe (Either NetworkMessageException a))
+nmReadSTM nm = _nmRead nm
 
 type TypeFingerprint = BS.ByteString
 
@@ -209,9 +213,11 @@ generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSe
         let nad = NMAppData
                 { _nmAppData = ad
                 , _nmWrite = sendSTM . Payload
-                , _nmTryRead = do
-                    mbRes <- tryReadTChan incoming
-                    case mbRes of
+                , _nmRead = \select -> do
+                    resOrErr <- mailboxReadTChan incoming $ \resOrErr -> case resOrErr of
+                        Left err -> Just (Left err)
+                        Right res -> Right <$> select res
+                    case resOrErr of
                         Nothing -> return Nothing
                         Just (Right res) -> return (Just (Right res))
                         Just (Left err) -> do
@@ -227,8 +233,7 @@ generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSe
             send = atomically . sendSTM
         -- Ping / heartbeat are managed by withAsync, so that they're
         -- interrupted once the other threads have exited.
-        A.withAsync (sendPing send yourHS `A.race`
-                     checkHeartbeat lastPing active blocked) $ \pingThread -> do
+        A.withAsync (sendPing send yourHS `A.race` checkHeartbeat lastPing active blocked) $ \pingThread -> do
             linkNoThreadKilled pingThread $
                 A.runConcurrently $
                     A.Concurrently (recvWorker incoming lastPing active blocked leftover) *>
@@ -320,6 +325,21 @@ generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSe
                             throwIO NMConnectionDropped
                         else throwIO ex
                 loop
+
+mailboxReadTChan :: forall a b. TChan a -> (a -> Maybe b) -> STM (Maybe b)
+mailboxReadTChan chan select = go []
+  where
+    go :: [a] -> STM (Maybe b)
+    go discarded = do
+        mbRes <- tryReadTChan chan
+        let finish x = do
+                forM_ (reverse discarded) (writeTChan chan)
+                return x
+        case mbRes of
+            Nothing -> finish Nothing
+            Just x -> case select x of
+                Nothing -> go (x : discarded)
+                Just y -> finish (Just y)
 
 -- | Convert an 'NMApp' into an "Data.Streaming.Network" application.
 runNMApp :: forall iSend youSend m a.
