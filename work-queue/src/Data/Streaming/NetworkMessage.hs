@@ -29,6 +29,9 @@ module Data.Streaming.NetworkMessage
     , nmWrite
     , nmRead
     , nmAppData
+      -- ** STM interface
+    , nmWriteSTM
+    , nmTryReadSTM
       -- ** General runNMApp
     , TypeFingerprint
     , generalRunNMApp
@@ -42,6 +45,7 @@ module Data.Streaming.NetworkMessage
 import           ClassyPrelude
 import           Control.Concurrent          (threadDelay, myThreadId, throwTo)
 import qualified Control.Concurrent.Async    as A
+import           Control.Concurrent.STM      (retry)
 import           Control.Exception           (AsyncException(ThreadKilled))
 import           Control.Monad.Base          (liftBase)
 import           Control.Monad.Trans.Control (MonadBaseControl, control)
@@ -89,8 +93,8 @@ type Sendable a = (B.Binary a, Typeable a)
 -- connection. See other functions provided by this module.
 data NMAppData iSend youSend = NMAppData
     { _nmAppData :: AppData
-    , _nmWrite   :: iSend -> IO ()
-    , _nmRead    :: IO youSend
+    , _nmWrite :: iSend -> STM ()
+    , _nmTryRead :: STM (Maybe (Either NetworkMessageException youSend))
     } deriving (Typeable)
 
 -- | Get the raw @AppData@. This is useful, for example, to get the @SockAddr@ for
@@ -102,12 +106,26 @@ nmAppData = _nmAppData
 
 -- | Send a message to the other side of the connection.
 nmWrite :: MonadIO m => NMAppData iSend youSend -> iSend -> m ()
-nmWrite nm = liftIO . _nmWrite nm
+nmWrite nm = liftIO . atomically . nmWriteSTM nm
 
 -- | Receive a message from the other side of the connection. Blocks until data
 -- is available.
 nmRead :: MonadIO m => NMAppData iSend youSend -> m youSend
-nmRead = liftIO . _nmRead
+nmRead nm = liftIO $ do
+    resultOrErr <- atomically $ do
+        mbRes <- nmTryReadSTM nm
+        case mbRes of
+            Nothing -> retry
+            Just res -> return res
+    case resultOrErr of
+        Right x -> return x
+        Left err -> throwIO err
+
+nmWriteSTM :: NMAppData iSend youSend -> iSend -> STM ()
+nmWriteSTM nm = _nmWrite nm
+
+nmTryReadSTM :: NMAppData iSend youSend -> STM (Maybe (Either NetworkMessageException youSend))
+nmTryReadSTM nm = _nmTryRead nm
 
 type TypeFingerprint = BS.ByteString
 
@@ -161,8 +179,8 @@ generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSe
         -- configuration in NMSettings.) Since any data sent will
         -- count as a ping, this would not interfere with the
         -- heartbeat.
-        outgoing <- newChan :: IO (Chan ByteString)
-        incoming <- newChan :: IO (Chan (Either NetworkMessageException youSend))
+        outgoing <- newTChanIO :: IO (TChan ByteString)
+        incoming <- newTChanIO :: IO (TChan (Either NetworkMessageException youSend))
 
         -- Our heartbeat logic involves two threads: the recvWorker thread
         -- increments lastPing every time it reads a chunk of data, and the
@@ -190,20 +208,23 @@ generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSe
 
         let nad = NMAppData
                 { _nmAppData = ad
-                , _nmWrite = send . Payload
-                , _nmRead = do
-                    eres <- readChan incoming
-                    case eres of
-                        Right res -> return res
-                        Left err -> do
+                , _nmWrite = sendSTM . Payload
+                , _nmTryRead = do
+                    mbRes <- tryReadTChan incoming
+                    case mbRes of
+                        Nothing -> return Nothing
+                        Just (Right res) -> return (Just (Right res))
+                        Just (Left err) -> do
                             -- Put it back on the channel so that
                             -- subsequent requests get the same
                             -- message.
-                            writeChan incoming (Left err)
-                            throwIO err
+                            writeTChan incoming (Left err)
+                            return (Just (Left err))
                 }
+            sendSTM :: Message iSend -> STM ()
+            sendSTM x = writeTChan outgoing $! toStrict (B.encode x)
             send :: Message iSend -> IO ()
-            send x = writeChan outgoing $! toStrict (B.encode x)
+            send = atomically . sendSTM
         -- Ping / heartbeat are managed by withAsync, so that they're
         -- interrupted once the other threads have exited.
         A.withAsync (sendPing send yourHS `A.race`
@@ -261,8 +282,9 @@ generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSe
         case mgot of
             Just (Ping, leftover') ->
                 loop leftover'
-            Just (Payload p, leftover') ->
-                writeChan incoming (Right p) >> loop leftover'
+            Just (Payload p, leftover') -> do
+                atomically (writeTChan incoming (Right p))
+                loop leftover'
             -- We're done when the "Complete" message is received
             -- or the connection is closed
             Just (Complete, _) -> finished incoming active NMConnectionClosed
@@ -272,10 +294,10 @@ generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSe
 
     finished incoming active ex = do
         atomicWriteIORef active False
-        writeChan incoming (Left ex)
+        atomically (writeTChan incoming (Left ex))
 
     sendWorker outgoing incoming active = fix $ \loop -> do
-        bs <- readChan outgoing
+        bs <- atomically (readTChan outgoing)
         -- NOTE: even though bs could be quite large, appRead will
         -- receive small chunks of it.  This means that 'appRead'
         -- won't block for very long, and the heartbeat code will
