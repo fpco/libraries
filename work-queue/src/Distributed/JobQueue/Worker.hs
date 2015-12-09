@@ -15,8 +15,14 @@ module Distributed.JobQueue.Worker
     ( WorkerConfig(..)
     , MasterConnectInfo(..)
     , defaultWorkerConfig
-    , jobQueueWorker
     , requestSlave
+    -- * Job-queue worker based on work-queue
+    , jobQueueWorker
+    -- * General job-queue node
+    , jobQueueNode
+    , MasterFunc
+    , SlaveFunc
+    , WorkerParams(..)
     -- * For internal usage by tests
     , slaveRequestsKey
     ) where
@@ -30,7 +36,7 @@ import Data.Binary (Binary, encode)
 import Data.Bits (xor)
 import Data.ConcreteTypeRep (fromTypeRep)
 import Data.List.NonEmpty (NonEmpty((:|)))
-import Data.Streaming.Network (clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
+import Data.Streaming.Network (ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
 import Data.Streaming.NetworkMessage (NMSettings, Sendable, defaultNMSettings, setNMHeartbeat)
 import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
@@ -119,9 +125,9 @@ defaultWorkerConfig prefix ci hostname = WorkerConfig
     , workerCancellationCheckIvl = Seconds 10
     }
 
--- | This runs a job queue worker.  The data that's being sent between
--- the servers all need to be 'Sendable' so that they can be
--- serialized, and so that agreement on types can be checked at
+-- | This runs a job queue worker based on 'WorkQueue'. The data that's
+-- being sent between the servers all need to be 'Sendable' so that they
+-- can be serialized, and so that agreement on types can be checked at
 -- runtime.
 jobQueueWorker
     :: forall m request response payload result.
@@ -132,8 +138,6 @@ jobQueueWorker
        , Sendable result
        )
     => WorkerConfig
-    -- ^ This is run once per worker, if it ever becomes a master
-    -- server.  The data is then sent to the slaves.
     -> (payload -> IO result)
     -- ^ This is the computation function run by slaves. It computes
     -- @result@ from @payload@.
@@ -148,26 +152,69 @@ jobQueueWorker
     -- 'mapQueue', or related functions to enqueue work which is
     -- dispatched to the slaves.
     -> m ()
-jobQueueWorker config calc inner = do
-    wid <- liftIO getWorkerId
-    let name = "worker-" ++ tshow (unWorkerId wid)
-    withLogTag (LogTag name) $ withRedis' config $ \redis -> do
-        nmSettings <-
-            setNMHeartbeat (workerConnectionHeartbeatIvlMicros config)  <$>
-            liftIO defaultNMSettings
-        jobQueueWorkerInternal JQWParams {..}
+jobQueueWorker config calc distribute =
+    jobQueueNode config slave' master'
+  where
+    slave' WorkerParams{..} mci init = do
+        $logInfoS "JobQueue" (tshow wpId ++ " becoming slave of " ++ tshow mci)
+        let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
+        eres <- try $ runSlave settings wpNMSettings (\() -> init) (\() -> calc)
+        case eres of
+            -- This indicates that the slave couldn't connect.
+            Left err@(IOError {}) ->
+                $logInfoS "JobQueue" $
+                    "Failed to connect to master, with " <>
+                    tshow mci <>
+                    ".  This probably isn't an issue - the master likely " <>
+                    "already finished or died.  Here's the exception: " <>
+                    tshow err
+            Right (Right ()) ->
+                $logInfoS "JobQueue" (tshow wpId ++ " done being slave of " ++ tshow mci)
+            Right (Left err) -> do
+                $logErrorS "JobQueue" $ "Slave threw exception: " ++ tshow err
+                liftIO $ throwIO err
+    master' WorkerParams{..} ss k req getMci = do
+        withMaster (runTCPServer ss) wpNMSettings () $ \queue -> do
+            mci <- getMci
+            withLocalSlaves queue (workerMasterLocalSlaves wpConfig) calc $
+                liftIO $ distribute wpRedis mci k req queue
 
--- Parameters for helper functions
-data JQWParams request response payload result =
-   JQWParams
-       { config :: WorkerConfig
-       , calc :: payload -> IO result
-       , inner :: RedisInfo -> MasterConnectInfo -> RequestId -> request -> WorkQueue payload result -> IO response
-       , nmSettings :: NMSettings
-       , wid :: WorkerId
-       , name :: Text
-       , redis :: RedisInfo
-       }
+-- | Runs a job-queue worker where it's up to the invoker to handle
+-- communication amongst the workers.
+jobQueueNode
+    :: forall m request response.
+       (MonadConnect m, Sendable request, Sendable response)
+    => WorkerConfig -> SlaveFunc m -> MasterFunc m request response -> m ()
+jobQueueNode wpConfig slave master = do
+    wpId <- liftIO getWorkerId
+    let wpName = "worker-" ++ tshow (unWorkerId wpId)
+    withLogTag (LogTag wpName) $ withRedis' wpConfig $ \wpRedis -> do
+        wpNMSettings <-
+            setNMHeartbeat (workerConnectionHeartbeatIvlMicros wpConfig )  <$>
+            liftIO defaultNMSettings
+        jobQueueWorkerInternal WorkerParams {..} slave master
+
+data WorkerParams = WorkerParams
+    { wpConfig :: WorkerConfig
+    , wpNMSettings :: NMSettings
+    , wpId :: WorkerId
+    , wpName :: Text
+    , wpRedis :: RedisInfo
+    }
+
+type SlaveFunc m
+    = WorkerParams
+    -> MasterConnectInfo
+    -> IO ()
+    -> m ()
+
+type MasterFunc m request response
+    = WorkerParams
+    -> ServerSettings
+    -> RequestId
+    -> request
+    -> m MasterConnectInfo
+    -> m response
 
 -- datatype used by 'jobQueueWorkerInternal'.
 data MaybeWithSubscription
@@ -193,7 +240,7 @@ data MaybeWithSubscription
 -- the specified master and starts working.
 --
 -- 3) If there is a 'JobRequest', then it becomes a master and runs
--- @inner@.
+-- the @master@.
 --
 -- 4) If there are neither, then it queries for requests once again,
 -- this time with a subscription to the 'requestsChannel'.
@@ -205,22 +252,18 @@ data MaybeWithSubscription
 -- and so it doesn't matter that we have so many connections to redis
 -- + it needs to notify many workers.
 jobQueueWorkerInternal
-    :: forall m request response payload result.
-       ( MonadConnect m
-       , Sendable request, Sendable response
-       , Sendable payload, Sendable result
-       )
-    => JQWParams request response payload result
-    -> m ()
-jobQueueWorkerInternal jqwp@JQWParams {..} =
-    withLogTag (LogTag name) $ withHeartbeats $ loop NoSubscription
+    :: forall m request response.
+       (MonadConnect m, Sendable request, Sendable response)
+    => WorkerParams -> SlaveFunc m -> MasterFunc m request response -> m ()
+jobQueueWorkerInternal params@WorkerParams{..} slave master =
+    withLogTag (LogTag wpName) $ withHeartbeats $ loop NoSubscription
   where
     loop :: MaybeWithSubscription -> Async () -> m ()
     loop mws heartbeatThread = do
         -- If there's slave work to be done, then do it.
-        mslave <- popSlaveRequest redis
+        mslave <- popSlaveRequest wpRedis
         case mslave of
-            Just slave -> liftBaseWith $ \restore -> do
+            Just mci -> liftBaseWith $ \restore -> do
                 initCalledRef <- newIORef False
                 let init = void $ restore $ do
                         liftIO $ writeIORef initCalledRef True
@@ -228,10 +271,10 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
                         -- Now that we're a slave, doing a heartbeat check is
                         -- no longer necessary, so deactivate the check, and
                         -- kill the heartbeat thread.
-                        deactivateHeartbeats redis wid
+                        deactivateHeartbeats wpRedis wpId
                         liftIO $ cancel heartbeatThread
                 void $ restore $ do
-                    becomeSlave jqwp slave init
+                    slave params mci init
                     -- Restart the heartbeats thread before re-entering
                     -- the loop, if it was stopped.
                     initCalled <- readIORef initCalledRef
@@ -243,11 +286,11 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
                 -- there's a job request, and become a master if there
                 -- is one.  If our server dies, then the heartbeat
                 -- code will re-enqueue the request.
-                prr <- popRequest redis wid
+                prr <- popRequest wpRedis wpId
                 case prr of
                     RequestAvailable k req -> do
                         unsubscribeToRequests mws
-                        send k =<< becomeMaster jqwp k req
+                        send k =<< becomeMaster params k req master
                         loop NoSubscription heartbeatThread
                     NoRequestAvailable -> case mws of
                         -- If we weren't subscribed to
@@ -255,7 +298,7 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
                         -- should be subscribed.
                         NoSubscription -> do
                             $logDebugS "JobQueue" "Re-running requests, with subscription"
-                            (notified, unsub) <- subscribeToRequests redis
+                            (notified, unsub) <- subscribeToRequests wpRedis
                             let mws' = WithSubscription notified unsub
                             loop mws' heartbeatThread
                         -- If we are subscribed to 'requestChannel',
@@ -273,8 +316,8 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
                     -- still functions, but failed to send its
                     -- heartbeat in time.
                     HeartbeatFailure -> do
-                        $logInfoS "JobQueue" $ tshow wid <> " recovering from heartbeat failure"
-                        recoverFromHeartbeatFailure redis wid
+                        $logInfoS "JobQueue" $ tshow wpId <> " recovering from heartbeat failure"
+                        recoverFromHeartbeatFailure wpRedis wpId
                         -- Restart the heartbeat thread, which re-adds
                         -- the worker to the list of active workers.
                         liftIO $ cancel heartbeatThread
@@ -282,66 +325,32 @@ jobQueueWorkerInternal jqwp@JQWParams {..} =
     send :: RequestId
          -> Either DistributedJobQueueException response
          -> m ()
-    send k result = sendResponse redis expiry wid k encoded
+    send k result = sendResponse wpRedis expiry wpId k encoded
       where
-        expiry = workerResponseDataExpiry config
+        expiry = workerResponseDataExpiry wpConfig
         encoded = toStrict (encode result)
     -- Heartbeats get their own redis connection, as this way it's
     -- less likely that they'll fail due to the main redis connection
     -- transferring lots of data.
     withHeartbeats = do
-        let logTag = LogTag (name <> "-heartbeat")
-        withAsyncLifted $ withLogTag logTag $ withRedis' config $ \r ->
-            sendHeartbeats r (workerHeartbeatSendIvl config) wid
-
-becomeSlave
-    :: ( MonadConnect m
-       , Sendable request, Sendable response
-       , Sendable payload, Sendable result
-       )
-    => JQWParams request response payload result
-    -> MasterConnectInfo
-    -> IO ()
-    -> m ()
-becomeSlave JQWParams {..} mci init = do
-    $logInfoS "JobQueue" (tshow wid ++ " becoming slave of " ++ tshow mci)
-    let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
-    eres <- try $ runSlave settings nmSettings (\() -> init) (\() -> calc)
-    case eres of
-        -- This indicates that the slave couldn't connect.
-        Left err@(IOError {}) ->
-            $logInfoS "JobQueue" $
-                "Failed to connect to master, with " <>
-                tshow mci <>
-                ".  This probably isn't an issue - the master likely " <>
-                "already finished or died.  Here's the exception: " <>
-                tshow err
-        Right (Right ()) ->
-            $logInfoS "JobQueue" (tshow wid ++ " done being slave of " ++ tshow mci)
-        Right (Left err) -> do
-            $logErrorS "JobQueue" $ "Slave threw exception: " ++ tshow err
-            liftIO $ throwIO err
+        let logTag = LogTag (wpName <> "-heartbeat")
+        withAsyncLifted $ withLogTag logTag $ withRedis' wpConfig $ \r ->
+            sendHeartbeats r (workerHeartbeatSendIvl wpConfig) wpId
 
 becomeMaster
-    :: forall m request response payload result.
-       ( MonadConnect m
-       , Sendable request, Sendable response
-       , Sendable payload, Sendable result
-       )
-    => JQWParams request response payload result
+    :: forall m request response.
+       (MonadConnect m, Sendable request, Sendable response)
+    => WorkerParams
     -> RequestId
     -> ByteString
+    -> MasterFunc m request response
     -> m (Either DistributedJobQueueException response)
-becomeMaster JQWParams {..} k req = do
-    $logInfoS "JobQueue" (tshow wid ++ " becoming master, for " ++ tshow k)
-    let requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
-        responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
-    boundPort <- newEmptyMVar
-    let ss = setAfterBind
-            (putMVar boundPort . fromIntegral <=< socketPort)
-            (serverSettingsTCP (workerPort config) "*")
+becomeMaster params@WorkerParams{..} k req master = do
+    $logInfoS "JobQueue" (tshow wpId ++ " becoming master, for " ++ tshow k)
     eres <- tryAny $ do
-       JobRequest {..} <- decodeOrThrow "jobQueueWorker" req
+       let requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
+           responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
+       JobRequest{..} <- decodeOrThrow "jobQueueWorker" req
        when (jrRequestType /= requestType ||
              jrResponseType /= responseType) $ do
            liftIO $ throwIO TypeMismatch
@@ -351,19 +360,22 @@ becomeMaster JQWParams {..} k req = do
                , actualRequestType = jrRequestType
                }
        decoded <- decodeOrThrow "jobQueueWorker" jrBody
-       watchForCancel redis k (workerCancellationCheckIvl config) $
-           withMaster (runTCPServer ss) nmSettings () $ \queue ->
-               withLocalSlaves queue (workerMasterLocalSlaves config) calc $ do
-                   port <- readMVar boundPort
-                   let mci = MasterConnectInfo (workerHostName config) port
-                   liftIO $ inner redis mci k decoded queue
+       let WorkerConfig{..} = wpConfig
+       watchForCancel wpRedis k workerCancellationCheckIvl $ do
+           boundPort <- newEmptyMVar
+           let ss = setAfterBind
+                   (putMVar boundPort . fromIntegral <=< socketPort)
+                   (serverSettingsTCP workerPort "*")
+           master params ss k decoded $ do
+               port <- readMVar boundPort
+               return $ MasterConnectInfo workerHostName port
     case eres of
         Left err -> do
             $logErrorS "JobQueue" $
                 tshow k <> " failed with " <> tshow err
             return (Left (wrapException err))
         Right x -> do
-            $logInfoS "JobQueue" (tshow wid ++ " done being master")
+            $logInfoS "JobQueue" (tshow wpId ++ " done being master")
             return (Right x)
 
 watchForCancel :: MonadConnect m => RedisInfo -> RequestId -> Seconds -> m a -> m a
