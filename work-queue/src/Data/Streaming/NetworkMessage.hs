@@ -29,10 +29,8 @@ module Data.Streaming.NetworkMessage
     , runNMApp
     , nmWrite
     , nmRead
+    , nmReadSelect
     , nmAppData
-      -- ** STM interface
-    , nmWriteSTM
-    , nmReadSTM
       -- ** General runNMApp
     , TypeFingerprint
     , generalRunNMApp
@@ -107,29 +105,26 @@ nmAppData = _nmAppData
 
 -- | Send a message to the other side of the connection.
 nmWrite :: MonadIO m => NMAppData iSend youSend -> iSend -> m ()
-nmWrite nm = liftIO . atomically . nmWriteSTM nm
+nmWrite nm = liftIO . atomically . _nmWrite nm
 
 -- | Receive a message from the other side of the connection. Blocks until data
 -- is available.
 nmRead :: MonadIO m => NMAppData iSend youSend -> m youSend
-nmRead nm = liftIO $ do
+nmRead nm = nmReadSelect nm Just
+
+-- | Receive a message from the other side of the connection. Blocks until data
+-- is available. Unlike 'nmRead', this function lets you select the received
+-- message in a Erlang mailbox fashion.
+nmReadSelect :: MonadIO m => NMAppData iSend youSend -> (youSend -> Maybe a) -> m a
+nmReadSelect nm select = liftIO $ do
     resultOrErr <- atomically $ do
-        mbRes <- nmReadSTM nm Just
+        mbRes <- _nmRead nm select
         case mbRes of
             Nothing -> retry
             Just res -> return res
     case resultOrErr of
         Right x -> return x
         Left err -> throwIO err
-
-nmWriteSTM :: NMAppData iSend youSend -> iSend -> STM ()
-nmWriteSTM nm = _nmWrite nm
-
-nmReadSTM ::
-     NMAppData iSend youSend
-  -> (youSend -> Maybe a)
-  -> STM (Maybe (Either NetworkMessageException a))
-nmReadSTM nm = _nmRead nm
 
 type TypeFingerprint = BS.ByteString
 
