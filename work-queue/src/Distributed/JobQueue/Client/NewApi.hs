@@ -5,28 +5,24 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Distributed.JobQueue.Client.NewApi
-    ( JobClientMonad
-    , JobClientConfig(..)
+    ( JobClientConfig(..)
     , defaultJobClientConfig
     , JobClient
     , newJobClient
     , submitRequest
+    , LogFunc
     ) where
 
 import ClassyPrelude
-import Control.Concurrent.Lifted
-import Control.Concurrent.STM hiding (atomically)
+import Control.Concurrent (forkIO)
 import Control.Monad.Logger
 import Control.Monad.Trans.Control (MonadBaseControl)
 import Control.Retry (RetryPolicy)
 import Data.Streaming.NetworkMessage (Sendable)
 import Data.Void (absurd)
 import Distributed.JobQueue.Client
-import Distributed.JobQueue.Shared
 import Distributed.RedisQueue.Internal
 import FP.Redis
-
-type JobClientMonad m = (MonadIO m, MonadLogger m, MonadBaseControl IO m, MonadCatch m)
 
 data JobClientConfig = JobClientConfig
     { jccRedisHost :: ByteString
@@ -67,14 +63,17 @@ defaultJobClientConfig = JobClientConfig
     , jccRequestExpiry = Seconds 3600
     }
 
+type LogFunc = Loc -> LogSource -> LogLevel -> LogStr -> IO ()
+
 -- | Start a new job queue client, which will run forever.  For most usecases,
 -- this should only be invoked once for the process, usually on
 -- initialization.
 newJobClient
-    :: (JobClientMonad m, Sendable response)
-    => JobClientConfig
-    -> m (JobClient m response)
-newJobClient JobClientConfig{..} = do
+    :: (MonadIO m, Sendable response)
+    => LogFunc
+    -> JobClientConfig
+    -> m (JobClient response)
+newJobClient logFunc JobClientConfig{..} = liftIO $ do
     let config = ClientConfig
             { clientHeartbeatCheckIvl = jccHeartbeatCheckIvl
             , clientRequestExpiry = jccRequestExpiry
@@ -83,25 +82,27 @@ newJobClient JobClientConfig{..} = do
             { connectPort = jccRedisPort
             , connectRetryPolicy = Just jccRedisRetryPolicy
             }
-    cvs <- liftIO newClientVars
-    _ <- fork $ forever $ do
+    cvs <- newClientVars
+    _ <- forkIO $ forever $ flip runLoggingT logFunc $ do
         eres <- tryAny $ withRedis jccRedisPrefix ci $ jobQueueClient config cvs
         case eres of
             Right x -> absurd x
             Left err -> do
                 $logErrorS "JobClient" (pack (show err))
                 $logInfoS "JobClient" "Restarting job client after exception."
-    conn <- connect ci
+    conn <- runLoggingT (connect ci) logFunc
     return JobClient
         { jcConfig = config
         , jcClientVars = cvs
         , jcRedis = RedisInfo conn ci jccRedisPrefix
+        , jcLogFunc = logFunc
         }
 
-data JobClient m response = JobClient
+data JobClient response = JobClient
     { jcConfig :: ClientConfig
-    , jcClientVars :: ClientVars m response
+    , jcClientVars :: ClientVars (LoggingT IO) response
     , jcRedis :: RedisInfo
+    , jcLogFunc :: LogFunc
     }
 
 -- | Submit a new request to the queue to be processed. This returns an 'STM'
@@ -116,17 +117,19 @@ data JobClient m response = JobClient
 -- the request or response values expire, of course, new work will be necessary
 -- and enqueued.
 submitRequest
-    :: (JobClientMonad m, Sendable response, Sendable request)
-    => JobClient m response
+    :: (MonadIO m, Sendable response, Sendable request)
+    => JobClient response
     -> RequestId
     -> request
     -> m (STM (Maybe (Either DistributedJobQueueException response)))
-submitRequest JobClient{..} rid req = do
+submitRequest JobClient{..} rid req = liftIO $ do
     -- FIXME: Avoid this re-wrapping of MVar as a TMVar.  Also avoid re-
     -- Either-ifying the exception.
-    responseVar <- liftIO (newTVarIO Nothing)
-    _ <- fork $ do
-        response <- try $ jobQueueRequestWithId jcConfig jcClientVars jcRedis rid req
+    responseVar <- newTVarIO Nothing
+    _ <- forkIO $ do
+        response <- try $ runLoggingT
+            (jobQueueRequestWithId jcConfig jcClientVars jcRedis rid req)
+            jcLogFunc
         atomically $ writeTVar responseVar (Just response)
     return (readTVar responseVar)
 
