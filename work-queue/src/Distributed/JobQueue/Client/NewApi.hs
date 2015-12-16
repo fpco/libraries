@@ -104,6 +104,17 @@ data JobClient m response = JobClient
     , jcRedis :: RedisInfo
     }
 
+-- | Submit a new request to the queue to be processed. This returns an 'STM'
+-- action to get the response when it's available. By ignoring that action, you
+-- can submit a request without checking its response. The STM action can be
+-- used to either poll for a response, or by using @retry@, you can block until
+-- a response is available.
+--
+-- Note that calling this function twice with the same @RequestId@ will not
+-- submit two requests: the second call will see the existance of the request
+-- in the queue (or a waiting response) and not enqueue additional work. Once
+-- the request or response values expire, of course, new work will be necessary
+-- and enqueued.
 submitRequest
     :: (JobClientMonad m, Sendable response, Sendable request)
     => JobClient m response
