@@ -81,8 +81,6 @@ data ClientConfig = ClientConfig
 -- * Heartbeats are checked every 30 seconds
 --
 -- * Request bodies expire in redis after 1 hour
---
--- * Notifications responses use 'defaultBackchannel'
 defaultClientConfig :: ClientConfig
 defaultClientConfig = ClientConfig
     { clientHeartbeatCheckIvl = Seconds 30
