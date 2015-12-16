@@ -109,15 +109,15 @@ submitRequest
     => JobClient m response
     -> RequestId
     -> request
-    -> m (STM (Either DistributedJobQueueException response))
+    -> m (STM (Maybe (Either DistributedJobQueueException response)))
 submitRequest JobClient{..} rid req = do
     -- FIXME: Avoid this re-wrapping of MVar as a TMVar.  Also avoid re-
     -- Either-ifying the exception.
-    responseVar <- liftIO newEmptyTMVarIO
+    responseVar <- liftIO (newTVarIO Nothing)
     _ <- fork $ do
         response <- try $ jobQueueRequestWithId jcConfig jcClientVars jcRedis rid req
-        atomically $ putTMVar responseVar response
-    return (takeTMVar responseVar)
+        atomically $ writeTVar responseVar (Just response)
+    return (readTVar responseVar)
 
 {- TODO: implement something like this?  Then we won't get as much of a
 guarantee that having a 'JobClient' means the job client threads are
