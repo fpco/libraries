@@ -26,6 +26,7 @@ library
                        Data.Streaming.NetworkMessage
                        Distributed.JobQueue
                        Distributed.JobQueue.Client
+                       Distributed.JobQueue.Client.NewApi
                        Distributed.JobQueue.Status
                        Distributed.JobQueue.Worker
                        Distributed.RedisQueue
