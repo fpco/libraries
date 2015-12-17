@@ -89,22 +89,28 @@ checkHeartbeats r (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
     mlastTime <- getRedisTime r (heartbeatLastCheckKey r)
     -- Do the heartbeat check when enough time has elapsed since the last check,
     -- or when no check has ever happened.
-    when (maybe True (< oldTime) mlastTime) $ do
-        -- Blocks other checkers from starting, for the first half of the
-        -- heartbeat interval.
-        $logDebug "Trying to acquire heartbeat check mutex."
-        let expiry = Seconds (max 1 (ivl `div` 2))
-        gotMutex <- run r $ set (heartbeatMutexKey r) "" [NX, EX expiry]
-        when gotMutex $ do
-            $logDebug "Acquired heartbeat check mutex."
-            let ninf = -1 / 0
-            inactive <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac oldTime) False
-            reenqueuedSome <- fmap or $ forM inactive $ handleWorkerFailure r . WorkerId
-            when reenqueuedSome $ do
-                $logDebug "Notifying that some requests were re-enqueued"
-                notifyRequestAvailable r
-            $logDebug "Setting timestamp for last heartbeat check"
-            setRedisTime r (heartbeatLastCheckKey r) startTime []
+    case mlastTime of
+        Just lastTime | lastTime >= oldTime -> do
+            let usecs = (ceiling (lastTime - oldTime) `max` 1) * 1000000
+            $logDebug $ "Heartbeat check: Not enough time has elapsed since the last check, delaying by: " ++
+                        tshow usecs
+            liftIO $ threadDelay usecs
+        _ -> do
+            -- Blocks other checkers from starting, for the first half of the
+            -- heartbeat interval.
+            $logDebug "Trying to acquire heartbeat check mutex."
+            let expiry = Seconds (max 1 (ivl `div` 2))
+            gotMutex <- run r $ set (heartbeatMutexKey r) "" [NX, EX expiry]
+            when gotMutex $ do
+                $logDebug "Acquired heartbeat check mutex."
+                let ninf = -1 / 0
+                inactive <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac oldTime) False
+                reenqueuedSome <- fmap or $ forM inactive $ handleWorkerFailure r . WorkerId
+                when reenqueuedSome $ do
+                    $logDebug "Notifying that some requests were re-enqueued"
+                    notifyRequestAvailable r
+                $logDebug "Setting timestamp for last heartbeat check"
+                setRedisTime r (heartbeatLastCheckKey r) startTime []
 
 handleWorkerFailure
     :: (MonadCommand m, MonadLogger m) => RedisInfo -> WorkerId -> m Bool
