@@ -113,12 +113,12 @@ instance Show DistributedJobQueueException where
         show rid ++
         ") {- This likely means that the response body expired in redis. -}"
     show (TypeMismatch {..}) =
-        "TypeMismatch { " ++
-        "expectedResponseType = " ++ show expectedResponseType ++
-        "actualResponseType = " ++ show actualResponseType ++
-        "expectedRequestType = " ++ show expectedRequestType ++
-        "actualRequestType = " ++ show actualRequestType ++
-        " }"
+        "TypeMismatch " ++
+        "{ expectedResponseType = " ++ show expectedResponseType ++
+        ", actualResponseType = " ++ show actualResponseType ++
+        ", expectedRequestType = " ++ show expectedRequestType ++
+        ", actualRequestType = " ++ show actualRequestType ++
+        "}"
     show (RequestCanceledException rid) =
         "RequestCanceledException (" ++
         show rid ++
