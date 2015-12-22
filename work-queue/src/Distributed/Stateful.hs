@@ -232,7 +232,9 @@ master MasterArgs{..} cont0 = do
     let statesIds = take numStates (map StateId [0..])
     stateIdsCountRef <- newIORef numStates
     let numStatesPerSlave = getNumStatesPerSlave numSlaves numStates
-    let slavesStates = HMS.fromList (zip slavesIds (map HS.fromList (chunksOf numStatesPerSlave statesIds)))
+        slavesStates = HMS.fromList $ zip slavesIds $ map HS.fromList $
+          -- Note that some slaves might be initially empty. That's fine and inevitable.
+          chunksOf numStatesPerSlave statesIds ++ repeat []
     slavesStatesRef <- newIORef slavesStates
     let states :: HMS.HashMap StateId state
         states = HMS.fromList (zip statesIds (V.toList maInitialStates))
