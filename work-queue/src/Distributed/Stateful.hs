@@ -287,12 +287,11 @@ update MasterHandle{..} context inputs = do
   slavesStates <- readIORef mhSlavesStatesRef
   -- FIXME: Should check that all of the inputs are used.
   let statesAndInputs =
-        filter (not . null . snd) $
         map (\(slaveId, states) ->
               (slaveId, mapMaybe (\k -> (k,) <$> HMS.lookup k inputs) (HS.toList states)))
             (HMS.toList slavesStates)
-  forM_ statesAndInputs $ \(slaveId, _) -> do
-    NM.nmWrite (mhSlaves HMS.! slaveId) (SReqSetContext context)
+  forM_ (HMS.keys mhSlaves) $ \slaveId -> do
+    NM.nmWrite (mhSlaves ! slaveId) (SReqSetContext context)
   case mhMaxBatchSize of
     Nothing -> do
       forM_ statesAndInputs $ \(slaveId, inputs) -> do
