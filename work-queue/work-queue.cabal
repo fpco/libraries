@@ -152,6 +152,7 @@ test-suite test
                      , classy-prelude
                      , conduit-extra
                      , containers
+                     , deepseq
                      , directory
                      , enclosed-exceptions
                      , executable-path
@@ -160,7 +161,8 @@ test-suite test
                      , monad-control
                      , monad-logger
                      , network
-                     , process , random
+                     , process
+                     , random
                      , redis-fp
                      , resourcet
                      , semigroups

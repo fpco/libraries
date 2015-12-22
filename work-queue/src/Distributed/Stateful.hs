@@ -11,6 +11,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE ImplicitParams #-}
 module Distributed.Stateful
   ( -- * Master
     MasterArgs(..)
@@ -42,6 +43,7 @@ import           Data.List.Split (chunksOf)
 import qualified Data.Streaming.NetworkMessage as NM
 import qualified Data.Vector as V
 import           Text.Printf (printf, PrintfArg(..))
+import           GHC.Stack (CallStack, getCallStack)
 
 data SlaveArgs state context input output = SlaveArgs
   { saUpdate :: !(context -> input -> StateId -> state -> (output, HMS.HashMap StateId state))
@@ -127,7 +129,7 @@ slave SlaveArgs{..} = CN.runGeneralTCPServer saServerSettings $
             let states = getStates "SReqRemoveStates"
             let states' = foldl' (flip HMS.delete) states stateIdsToDelete
             let statesToSend = HMS.fromList
-                  [(stateId, states HMS.! stateId) | stateId <- HS.toList stateIdsToDelete]
+                  [(stateId, states ! stateId) | stateId <- HS.toList stateIdsToDelete]
             send (SRespRemoveStates slaveRequesting statesToSend)
             loop ss { ssStates = Just states' }
           SReqSetContext context -> do
@@ -242,7 +244,8 @@ master MasterArgs{..} cont0 = do
     forM_ (HMS.toList slavesStates) $ \(slaveId, stateIds) -> do
       let slaveStates = HMS.intersection states
             (HMS.fromList (zip (HS.toList stateIds) (repeat ())))
-      NM.nmWrite (slaves HMS.! slaveId) (SReqResetState slaveStates)
+          slaveConn = slaves ! slaveId
+      NM.nmWrite slaveConn (SReqResetState slaveStates)
     forM_ slaves $ \slave_ -> do
       NM.nmReadSelect slave_ $ \case
         SRespResetState -> Just ()
@@ -293,9 +296,9 @@ update MasterHandle{..} context inputs = do
   case mhMaxBatchSize of
     Nothing -> do
       forM_ statesAndInputs $ \(slaveId, inputs) -> do
-        NM.nmWrite (mhSlaves HMS.! slaveId) (SReqUpdate (HMS.fromList inputs))
+        NM.nmWrite (mhSlaves ! slaveId) (SReqUpdate (HMS.fromList inputs))
       fmap mconcat $ forM statesAndInputs $ \(slaveId, inputs) -> do
-        outputs <- NM.nmReadSelect (mhSlaves HMS.! slaveId) $ \case
+        outputs <- NM.nmReadSelect (mhSlaves ! slaveId) $ \case
           SRespUpdate outputs -> Just outputs
           _ -> Nothing
         updateStates slaveId (HMS.fromList inputs) outputs
@@ -310,11 +313,12 @@ update MasterHandle{..} context inputs = do
       -> MVar (HMS.HashMap SlaveId [(StateId, input)]) -- ^ 'MVar's holding the remaining states for each slave
       -> IO (HMS.HashMap StateId (output, HS.HashSet StateId))
     slaveThread maxBatchSize thisSlaveId remainingStatesVar = do
-      let thisSlave = mhSlaves HMS.! thisSlaveId
+      let thisSlave = mhSlaves ! thisSlaveId
       let go :: IO (HMS.HashMap StateId (output, HS.HashSet StateId))
           go = do
             status <- modifyMVar remainingStatesVar $ \slaveStates0 -> do
-              let thisRemainingStates = slaveStates0 HMS.! thisSlaveId
+              let thisRemainingStates =
+                    slaveStates0 ! thisSlaveId
               if null thisRemainingStates -- TODO do something smarter here
                 then do
                   mbRequested <- stealStatesForSlave maxBatchSize thisSlaveId slaveStates0
@@ -365,7 +369,7 @@ update MasterHandle{..} context inputs = do
       -- ^ If we could find some slave to transfer from, return its id, and the states we
       -- requested.
     stealStatesForSlave batchSize thisSlaveId remainingStates = do
-      let thisSlaveStates = remainingStates HMS.! thisSlaveId
+      let thisSlaveStates = remainingStates ! thisSlaveId
       when (not (null thisSlaveStates)) $
         fail "broadcast.stealStatesForSlave: Expecting no states in thisSlaveId"
       let goodCandidate (slaveId, slaveRemainingStates) = do
@@ -436,3 +440,7 @@ hashMapKeySet = HS.fromList . HMS.keys
 
 setToHashMap :: (Eq k, Hashable k) => HS.HashSet k -> HMS.HashMap k ()
 setToHashMap = HMS.fromList . map (,()) . HS.toList
+
+(!) :: (Eq k, Hashable k, ?stk :: CallStack) => HMS.HashMap k a -> k -> a
+(!) mp k =
+   fromMaybe (error ("key not found. Context: " ++ show (getCallStack ?stk))) (HMS.lookup k mp)
