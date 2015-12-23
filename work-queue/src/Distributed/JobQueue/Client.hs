@@ -318,6 +318,7 @@ sendRequestInternal' config redis k encoded = do
     $logDebugS "sendRequest" $ "Notifying about request " <> tshow k
     when pushed $ notifyRequestAvailable redis
     $logDebugS "sendRequest" $ "Done notifying about request " <> tshow k
+    addRequestEnqueuedEvent redis k expiry
 
 -- | This registers a callback to handle the response to the specified
 -- 'RequestId'.  Note that synchronous exceptions thrown by the
@@ -382,7 +383,10 @@ checkForResponse
     -> m (Maybe (Either DistributedJobQueueException response))
 checkForResponse redis k = do
     mresponse <- readResponse redis k
-    forM mresponse $ decodeOrThrow "checkForResponse"
+    forM mresponse $ \bs -> do
+        result <- decodeOrThrow "checkForResponse" bs
+        addRequestEvent redis k RequestResponseRead
+        return result
 
 -- | Cancel a request. Note that if the request is currently being worked
 -- on, then you must also pass the 'WorkerId'. Returns 'True' if it

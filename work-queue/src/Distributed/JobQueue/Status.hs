@@ -3,28 +3,36 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Distributed.JobQueue.Status
     ( JobQueueStatus(..)
     , WorkerStatus(..)
     , RequestStatus(..)
     , getJobQueueStatus
-    , getRequestStatus
+    -- * Stats
+    , RequestStats(..)
+    , getRequestStats
+    , getAllRequestStats
+    , getAllRequests
+    -- * Re-exports from Shared
+    , RequestEvent(..)
+    , getRequestEvents
     ) where
 
 import ClassyPrelude hiding (keys)
-import Control.Monad.Logger
-import Control.Monad.Trans.Control (MonadBaseControl)
+import qualified Data.ByteString.Char8 as S8
+import Data.Char (isAlphaNum)
 import Data.Time
 import Data.Time.Clock.POSIX
 import Distributed.JobQueue.Heartbeat (heartbeatActiveKey, heartbeatLastCheckKey)
-import Distributed.JobQueue.Shared (checkRedisSchemaVersion)
+import Distributed.JobQueue.Shared
 import Distributed.RedisQueue
 import Distributed.RedisQueue.Internal
 import FP.Redis
 
 data JobQueueStatus = JobQueueStatus
-    { jqsLastHeartbeat :: !(Maybe NominalDiffTime)
+    { jqsLastHeartbeat :: !(Maybe UTCTime)
     , jqsPending :: ![RequestId]
     , jqsWorkers :: ![WorkerStatus]
     } deriving Show
@@ -32,7 +40,7 @@ data JobQueueStatus = JobQueueStatus
 data WorkerStatus = WorkerStatus
     { wsWorker :: !WorkerId
     , wsHeartbeatFailure :: !Bool
-    , wsLastHeartbeat :: !(Maybe NominalDiffTime)
+    , wsLastHeartbeat :: !(Maybe UTCTime)
     , wsRequests :: ![RequestId]
     } deriving Show
 
@@ -41,19 +49,16 @@ data RequestStatus = RequestStatus
     , rsStart :: !(Maybe POSIXTime)
     } deriving Show
 
-getJobQueueStatus :: (MonadIO m, MonadCatch m, MonadBaseControl IO m, MonadLogger m)
-                  => RedisInfo -> m JobQueueStatus
+getJobQueueStatus :: MonadCommand m => RedisInfo -> m JobQueueStatus
 getJobQueueStatus r = do
     checkRedisSchemaVersion r
-    start <- liftIO getCurrentTime
-    let howLongAgo time = start `diffUTCTime` posixSecondsToUTCTime time
     mLastTime <- getRedisTime r (heartbeatLastCheckKey r)
     pending <- run r $ lrange (requestsKey r) 0 (-1)
     let activePrefix = redisKeyPrefix r <> "active:"
     activeKeys <- run r $ keys (activePrefix <> "*")
     workers <- forM activeKeys $ \active ->
         forM (fmap WorkerId (stripPrefix activePrefix (unKey active))) $ \wid -> do
-            mtime <- fmap (fmap (howLongAgo . realToFrac)) $
+            mtime <- fmap (fmap (posixSecondsToUTCTime . realToFrac)) <$>
                 run r $ zscore (heartbeatActiveKey r) (unWorkerId wid)
             erequests <- try $ run r $ lrange (LKey active) 0 (-1)
             case erequests of
@@ -65,7 +70,7 @@ getJobQueueStatus r = do
                         , wsLastHeartbeat = mtime
                         , wsRequests = []
                         }
-                Left ex -> throwM ex
+                Left ex -> liftIO $ throwIO ex
                 Right requests -> do
                     return WorkerStatus
                         { wsWorker = wid
@@ -74,12 +79,44 @@ getJobQueueStatus r = do
                         , wsRequests = map RequestId requests
                         }
     return JobQueueStatus
-        { jqsLastHeartbeat = fmap howLongAgo mLastTime
+        { jqsLastHeartbeat = fmap posixSecondsToUTCTime mLastTime
         , jqsPending = map RequestId pending
         , jqsWorkers = catMaybes workers
         }
 
-getRequestStatus :: MonadCommand m => RedisInfo -> RequestId -> m RequestStatus
-getRequestStatus r rid = RequestStatus
-    <$> pure rid
-    <*> getRedisTime r (requestTimeKey r rid)
+data RequestStats = RequestStats
+    { rsEnqueueTime :: UTCTime
+    , rsReenqueueCount :: Int
+    , rsComputeStartTime :: Maybe UTCTime
+    , rsComputeFinishTime :: Maybe UTCTime
+    , rsComputeTime :: Maybe NominalDiffTime
+    , rsTotalTime :: Maybe NominalDiffTime
+    , rsFetchCount :: Int
+    }
+
+getRequestStats :: MonadCommand m => RedisInfo -> RequestId -> m (Maybe RequestStats)
+getRequestStats r k = do
+    evs <- getRequestEvents r k
+    case lastMay [x | (x, RequestEnqueued) <- evs] of
+        Nothing | null evs -> return Nothing
+                | otherwise -> fail $ "Invariant violated: No RequestEnqueued event for " ++ show k
+        Just rsEnqueueTime -> return $ Just RequestStats {..}
+          where
+            rsReenqueueCount = length [() | (_, RequestReenqueued) <- evs]
+            rsComputeStartTime = lastMay [x | (x, RequestWorkStarted _) <- evs]
+            rsComputeFinishTime = lastMay [x | (x, RequestWorkFinished _) <- evs]
+            rsComputeTime = diffUTCTime <$> rsComputeFinishTime <*> rsComputeStartTime
+            rsTotalTime = (`diffUTCTime` rsEnqueueTime) <$> rsComputeFinishTime
+            rsFetchCount = length [() | (_, RequestResponseRead) <- evs]
+
+getAllRequests :: MonadCommand m => RedisInfo -> m [RequestId]
+getAllRequests r =
+    fmap (mapMaybe (fmap RequestId . (stripSuffix ":events" =<<) . stripPrefix requestPrefix . unKey)) $
+    run r (keys (requestPrefix <> "*"))
+  where
+    requestPrefix = redisKeyPrefix r <> "request:"
+    isBase64 c = isAlphaNum c || c `elem` ['+','/']
+
+getAllRequestStats :: MonadCommand m => RedisInfo -> m [(RequestId, RequestStats)]
+getAllRequestStats r =
+    fmap catMaybes . mapM (\k -> fmap (k,) <$> getRequestStats r k) =<< getAllRequests r

@@ -32,16 +32,18 @@
     <tr>
       <th>
         <input type=checkbox #select-all-workers>
-      <th>Start time
+      <th>Run time
+      <th>Re-enqueue count
       <th>WorkerId
       <th>RequestID(s)
     $forall (wid, w) <- workers
       <tr>
         $case w
-          $of Left (start, rid)
+          $of Left (start, reenq, rid)
             <td>
               <input type=checkbox .select-workers name=jqr:#{rid} value=wid:#{wid}>
             <td>#{start}
+            <td>#{reenq}
             <td>#{wid}
             <td>#{rid}
           $of Right msg
@@ -57,11 +59,13 @@
     <tr>
       <th>
         <input type=checkbox #select-all-pending>
-      <th>Start time
+      <th>Run time
+      <th>Re-enqueue count
       <th>RequestID
-    $forall (start, rid) <- pending
+    $forall (start, reenq, rid) <- pending
       <tr>
         <td>
           <input type=checkbox .select-pending name=jqr:#{rid} value=t>
         <td>#{start}
         <td>#{rid}
+        <td>#{reenq}

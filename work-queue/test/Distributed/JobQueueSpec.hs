@@ -32,6 +32,7 @@ import           Data.List.Split (chunksOf)
 import           Data.Proxy (Proxy(..))
 import qualified Data.Set as S
 import           Data.Streaming.NetworkMessage (Sendable)
+import           Data.Time.Clock (diffUTCTime)
 import           Distributed.JobQueue
 import           Distributed.JobQueue.Status
 import           Distributed.RedisQueue
@@ -321,6 +322,7 @@ checkRequestsAnswered correct sets seconds = runThreadFileLoggingT $ withLogTag 
                 withRedis redisTestPrefix localhost getJobQueueStatus
             -- TODO: May also make sense to check that requests we have received
             -- aren't in the pending / active lists.
+            start <- getCurrentTime
             let summary :: String
                 summary =
                     if not (null unwatched) then "Some requests weren't watched" else
@@ -334,7 +336,7 @@ checkRequestsAnswered correct sets seconds = runThreadFileLoggingT $ withLogTag 
                     map (\x -> (x, find (\y -> x `elem` wsRequests y) jqsWorkers)) $
                     filter (`onotElem` jqsPending) (S.toList unreceived)
                 ivl = fromIntegral (unSeconds heartbeatCheckIvl)
-                oldHeartbeats = filter (maybe True (> ivl) . wsLastHeartbeat) jqsWorkers
+                oldHeartbeats = filter (maybe True (> ivl) . fmap (start `diffUTCTime`) . wsLastHeartbeat) jqsWorkers
             return $
                 "\nsent = " ++ show sent ++
                 "\nunwatched = " ++ show unwatched ++

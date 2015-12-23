@@ -2,3 +2,4 @@
 
 / HomeR GET
 /status StatusR GET POST
+/requests RequestsR GET

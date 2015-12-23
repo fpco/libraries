@@ -1,0 +1,20 @@
+<table .table>
+  <tr>
+    <th>Request ID
+    <th>Enqueue time
+    <th>Re-enqueue count
+    <th>Most recent compute start
+    <th>Most recent compute finish
+    <th>Compute time
+    <th>Total time
+    <th>Fetch count
+  $forall (k, r) <- requests
+    <tr>
+      <td>#{decodeUtf8 (unRequestId k)}
+      <td>#{show (rsEnqueueTime r)}
+      <td>#{show (rsReenqueueCount r)}
+      <td>#{show (rsComputeStartTime r)}
+      <td>#{show (rsComputeFinishTime r)}
+      <td>#{show (rsComputeTime r)}
+      <td>#{show (rsTotalTime r)}
+      <td>#{show (rsFetchCount r)}

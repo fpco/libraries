@@ -82,8 +82,6 @@ pushRequest r expiry k request = do
     -- Enqueue its ID on the requests list.
     when added $
         run_ r $ lpush (requestsKey r) (unRequestId k :| [])
-    -- Store request start time.
-    setRedisTime r (requestTimeKey r k) enqueueTime [EX expiry]
     return added
 
 -- | Result value of 'popRequest'.

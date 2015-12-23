@@ -1,8 +1,10 @@
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE OverloadedStrings #-}
 module Handler.Home where
 
 import Control.Monad.Logger
 import Data.Either
+import Data.Time.Clock
 import Data.Time.Clock.POSIX
 import Distributed.JobQueue.Client (cancelRequest)
 import Distributed.JobQueue.Status
@@ -28,7 +30,7 @@ data Config = Config
     { redisHost :: !ByteString
     , redisPort :: !Int
     , redisPrefix :: !ByteString
-    } deriving (Show)
+    } deriving (Show, Read)
 
 configForm :: Handler (Form Config)
 configForm = do
@@ -38,11 +40,11 @@ configForm = do
         <*> areq intField (withSmallInput $ bfs ("Redis port" :: Text)) (Just appHpcRedisPort)
         <*> fmap encodeUtf8 (areq textField (withLargeInput $ bfs ("Redis key prefix" :: Text)) (Just appHpcRedisPrefix))
 
-getStatusR :: Handler Html
-getStatusR = do
+ensureConfig :: Handler Config
+ensureConfig = do
     ((res, _), _) <- runFormGet =<< configForm
     case res of
-        FormSuccess config -> displayStatus config
+        FormSuccess config -> return config
         _ -> do
             -- When there's a redirect from HomeR due to having a
             -- configuration, there are no get params.
@@ -53,7 +55,7 @@ getStatusR = do
             settings <- appSettings <$> getYesod
             gps <- reqGetParams <$> getRequest
             if null gps
-                then displayStatus Config
+                then return Config
                     { redisHost = encodeUtf8 (appHpcRedisHost settings)
                     , redisPort = appHpcRedisPort settings
                     , redisPrefix = encodeUtf8 (appHpcRedisPrefix settings)
@@ -62,32 +64,37 @@ getStatusR = do
                     setMessageI (pack (show res) :: Text)
                     redirect HomeR
 
-displayStatus :: Config -> Handler Html
-displayStatus config = do
-     setUltDestCurrent
-     (jqs, workers, pending) <- withRedis' config $ \r -> do
-         jqs <- getJobQueueStatus r
-         workers <- forM (jqsWorkers jqs) $ \ws ->
-             (decodeUtf8 (unWorkerId (wsWorker ws)), ) <$>
-             case wsRequests ws of
-                 [k] -> Left <$> getAndRenderRequest r k
-                 _ | wsHeartbeatFailure ws -> return $ Right "worker failed its heartbeat check and its work was re-enqueued"
-                   | otherwise -> return $ Right ("either idle or slave of another worker" :: Text)
-         pending <- forM (jqsPending jqs) (getAndRenderRequest r)
-         return (jqs, sortBy (comparing snd) workers, sort pending)
-     defaultLayout $ do
-         setTitle "Compute Tier Status"
-         $(widgetFile "status")
+getStatusR :: Handler Html
+getStatusR = do
+    config <- ensureConfig
+    setUltDestCurrent
+    start <- liftIO getCurrentTime
+    (jqs, workers, pending) <- withRedis' config $ \r -> do
+        jqs <- getJobQueueStatus r
+        workers <- forM (jqsWorkers jqs) $ \ws ->
+            (decodeUtf8 (unWorkerId (wsWorker ws)), ) <$>
+            case wsRequests ws of
+                [k] -> Left <$> getAndRenderRequest start r k
+                _ | wsHeartbeatFailure ws -> return $ Right "worker failed its heartbeat check and its work was re-enqueued"
+                  | otherwise -> return $ Right ("either idle or slave of another worker" :: Text)
+        pending <- forM (jqsPending jqs) (getAndRenderRequest start r)
+        return (jqs, sortBy (comparing snd) workers, sort pending)
+    defaultLayout $ do
+        setTitle "Compute Tier Status"
+        $(widgetFile "status")
 
-getAndRenderRequest :: (MonadIO m, MonadBaseControl IO m) => RedisInfo -> RequestId -> m (Text, Text)
-getAndRenderRequest r k = do
-    rs <- getRequestStatus r k
-    return
-        ( case rsStart rs of
-            Nothing -> "Missing?!"
-            Just t -> tshow (posixSecondsToUTCTime t)
-        , decodeUtf8 (unRequestId (rsId rs))
-        )
+getAndRenderRequest :: (MonadIO m, MonadBaseControl IO m) =>
+    UTCTime -> RedisInfo -> RequestId -> m (Text, Text, Text)
+getAndRenderRequest start r k = do
+    mrs <- getRequestStats r k
+    let shownId = decodeUtf8 (unRequestId k)
+    case mrs of
+        Nothing -> return ("?", "?", shownId)
+        Just rs -> return
+            ( tshow (start `diffUTCTime` rsEnqueueTime rs)
+            , tshow (rsReenqueueCount rs)
+            , shownId
+            )
 
 postStatusR :: Handler Html
 postStatusR = do
@@ -127,6 +134,16 @@ postStatusR = do
         _ -> do
           setMessageI (pack (show res) :: Text)
           redirect HomeR
+
+getRequestsR :: Handler Html
+getRequestsR = do
+    config <- ensureConfig
+    rs <- withRedis' config getAllRequests
+    $logInfo (tshow rs)
+    requests <- withRedis' config getAllRequestStats
+    defaultLayout $ do
+        setTitle "Compute Tier Requests"
+        $(widgetFile "requests")
 
 withRedis' :: (MonadIO m, MonadCatch m, MonadBaseControl IO m)
            => Config -> (RedisInfo -> LoggingT m a) -> m a

@@ -12,27 +12,38 @@
 -- | This module contains definitions used by
 -- "Distributed.JobQueue.Worker" and "Distributed.JobQueue.Client"
 module Distributed.JobQueue.Shared
-    ( JobRequest(..)
+    ( -- * Requests
+      JobRequest(..)
     , notifyRequestAvailable
     , requestChannel
     , cancelKey
     , cancelValue
+    -- * Request events
+    , RequestEvent(..)
+    , addRequestEvent
+    , addRequestEnqueuedEvent
+    , getRequestEvents
+    -- * Schema version
     , setOrCheckRedisSchemaVersion
     , checkRedisSchemaVersion
+    -- * Exceptions
     , DistributedJobQueueException(..)
     , wrapException
     ) where
 
 import ClassyPrelude
-import Data.Binary (Binary)
+import Data.Binary (Binary, encode)
+import Data.Binary.Orphans ()
 import Data.ConcreteTypeRep (ConcreteTypeRep)
+import Data.List.NonEmpty
 import Data.Streaming.NetworkMessage (NetworkMessageException)
 import Data.Text.Binary ()
-import Data.Time
 import Data.Typeable (typeOf)
 import Distributed.RedisQueue
-import Distributed.RedisQueue.Internal (run, run_)
+import Distributed.RedisQueue.Internal
 import FP.Redis
+
+-- * Requests
 
 data JobRequest = JobRequest
     { jrRequestType, jrResponseType :: ConcreteTypeRep
@@ -61,6 +72,43 @@ cancelKey r k = VKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k <> 
 cancelValue :: ByteString
 cancelValue = "cancel"
 
+-- * Request Events
+
+data RequestEvent
+    = RequestEnqueued
+    | RequestWorkStarted WorkerId
+    | RequestReenqueued
+    | RequestWorkFinished WorkerId
+    | RequestResponseRead
+    deriving (Generic, Show, Typeable)
+
+instance Binary RequestEvent
+
+-- | Stores list of encoded '(UTCTime, RequestEvent)'.
+requestEventsKey :: RedisInfo -> RequestId -> LKey
+requestEventsKey r k = LKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k <> ":events"
+
+-- | Adds a 'RequestEvent', with the timestamp set to the current time.
+addRequestEvent :: MonadCommand m => RedisInfo -> RequestId -> RequestEvent -> m ()
+addRequestEvent r k x = do
+    now <- liftIO getCurrentTime
+    run_ r $ rpush (requestEventsKey r k) (toStrict (encode (now, x)) :| [])
+
+-- | Adds 'RequestEnqueued' event and sets expiry on the events list.
+addRequestEnqueuedEvent :: MonadCommand m => RedisInfo -> RequestId -> Seconds -> m ()
+addRequestEnqueuedEvent r k expiry = do
+    addRequestEvent r k RequestEnqueued
+    expirySet <- run r $ expire (unLKey (requestEventsKey r k)) expiry
+    unless expirySet $ liftIO $ throwIO (InternalJobQueueException "Failed to set request events expiry")
+
+-- | Gets all of the events which have been added for the specified request.
+getRequestEvents :: MonadCommand m => RedisInfo -> RequestId -> m [(UTCTime, RequestEvent)]
+getRequestEvents r k =
+    run r (lrange (requestEventsKey r k) 0 (-1)) >>=
+    mapM (decodeOrThrow "getRequestEvents")
+
+-- * Schema version
+
 redisSchemaVersion :: ByteString
 redisSchemaVersion = "1"
 
@@ -69,21 +117,21 @@ redisSchemaKey r = VKey $ Key $ redisKeyPrefix r <> "version"
 
 -- | Checks if the redis schema version is correct.  If not present, then the
 -- key gets set.
-setOrCheckRedisSchemaVersion :: MonadConnect m => RedisInfo -> m ()
+setOrCheckRedisSchemaVersion :: MonadCommand m => RedisInfo -> m ()
 setOrCheckRedisSchemaVersion r = do
     mv <- run r $ get (redisSchemaKey r)
     case mv of
         Nothing -> run_ r $ set (redisSchemaKey r) redisSchemaVersion []
-        Just v -> when (v /= redisSchemaVersion) $ throwM MismatchedRedisSchemaVersion
+        Just v -> when (v /= redisSchemaVersion) $ liftIO $ throwIO MismatchedRedisSchemaVersion
             { actualRedisSchemaVersion = v
             , expectedRedisSchemaVersion = redisSchemaVersion
             }
 
 -- | Throws 'MismatchedRedisSchemaVersion' if it's wrong or unset.
-checkRedisSchemaVersion :: MonadConnect m => RedisInfo -> m ()
+checkRedisSchemaVersion :: MonadCommand m => RedisInfo -> m ()
 checkRedisSchemaVersion r = do
     v <- fmap (fromMaybe "") $ run r $ get (redisSchemaKey r)
-    when (v /= redisSchemaVersion) $ throwM MismatchedRedisSchemaVersion
+    when (v /= redisSchemaVersion) $ liftIO $ throwIO MismatchedRedisSchemaVersion
         { actualRedisSchemaVersion = v
         , expectedRedisSchemaVersion = redisSchemaVersion
         }

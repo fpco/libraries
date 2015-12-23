@@ -328,7 +328,9 @@ jobQueueWorkerInternal params@WorkerParams{..} slave master = do
     send :: RequestId
          -> Either DistributedJobQueueException response
          -> m ()
-    send k result = sendResponse wpRedis expiry wpId k encoded
+    send k result = do
+        sendResponse wpRedis expiry wpId k encoded
+        addRequestEvent wpRedis k (RequestWorkFinished wpId)
       where
         expiry = workerResponseDataExpiry wpConfig
         encoded = toStrict (encode result)
@@ -351,6 +353,7 @@ becomeMaster
 becomeMaster params@WorkerParams{..} k req master = do
     $logInfoS "JobQueue" (tshow wpId ++ " becoming master, for " ++ tshow k)
     eres <- tryAny $ do
+        addRequestEvent wpRedis k (RequestWorkStarted wpId)
         let requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
             responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
         JobRequest{..} <- decodeOrThrow "jobQueueWorker" req

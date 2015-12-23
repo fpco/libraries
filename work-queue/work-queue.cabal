@@ -41,6 +41,7 @@ library
   build-depends:       base
                      , async
                      , binary
+                     , binary-orphans
                      , classy-prelude
                      , hashable
                      , lifted-base
