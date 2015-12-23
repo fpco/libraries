@@ -1,6 +1,8 @@
 resolver: lts-3.0
 extra-deps:
   - hybrid-vectors-0.2
+  - binary-orphans-0.1.2.0
+
 packages:
   - ./json-conduit
   - ./redis-fp
