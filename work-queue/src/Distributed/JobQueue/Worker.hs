@@ -23,6 +23,8 @@ module Distributed.JobQueue.Worker
     , MasterFunc
     , SlaveFunc
     , WorkerParams(..)
+    -- * Exceptions
+    , DistributedJobQueueException(..)
     -- * For internal usage by tests
     , slaveRequestsKey
     ) where
