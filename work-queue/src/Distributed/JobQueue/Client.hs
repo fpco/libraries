@@ -115,6 +115,7 @@ jobQueueClient
     -> RedisInfo
     -> m void
 jobQueueClient config cvs redis = do
+    setOrCheckRedisSchemaVersion redis
     result <- liftBaseWith $ \restore ->
         race (restore (checker :: m Void)) (restore (subscriber :: m Void))
     case result of

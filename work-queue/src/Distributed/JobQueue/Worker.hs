@@ -255,7 +255,8 @@ jobQueueWorkerInternal
     :: forall m request response.
        (MonadConnect m, Sendable request, Sendable response)
     => WorkerParams -> SlaveFunc m -> MasterFunc m request response -> m ()
-jobQueueWorkerInternal params@WorkerParams{..} slave master =
+jobQueueWorkerInternal params@WorkerParams{..} slave master = do
+    setOrCheckRedisSchemaVersion wpRedis
     withLogTag (LogTag wpName) $ withHeartbeats $ loop NoSubscription
   where
     loop :: MaybeWithSubscription -> Async () -> m ()

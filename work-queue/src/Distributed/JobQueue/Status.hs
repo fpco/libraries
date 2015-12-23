@@ -18,6 +18,7 @@ import Control.Monad.Trans.Control (MonadBaseControl)
 import Data.Time
 import Data.Time.Clock.POSIX
 import Distributed.JobQueue.Heartbeat (heartbeatActiveKey, heartbeatLastCheckKey)
+import Distributed.JobQueue.Shared (checkRedisSchemaVersion)
 import Distributed.RedisQueue
 import Distributed.RedisQueue.Internal
 import FP.Redis
@@ -43,6 +44,7 @@ data RequestStatus = RequestStatus
 getJobQueueStatus :: (MonadIO m, MonadCatch m, MonadBaseControl IO m, MonadLogger m)
                   => RedisInfo -> m JobQueueStatus
 getJobQueueStatus r = do
+    checkRedisSchemaVersion r
     start <- liftIO getCurrentTime
     let howLongAgo time = start `diffUTCTime` posixSecondsToUTCTime time
     mLastTime <- getRedisTime r (heartbeatLastCheckKey r)
