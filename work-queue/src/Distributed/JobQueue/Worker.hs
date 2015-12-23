@@ -351,27 +351,27 @@ becomeMaster
 becomeMaster params@WorkerParams{..} k req master = do
     $logInfoS "JobQueue" (tshow wpId ++ " becoming master, for " ++ tshow k)
     eres <- tryAny $ do
-       let requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
-           responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
-       JobRequest{..} <- decodeOrThrow "jobQueueWorker" req
-       when (jrRequestType /= requestType ||
-             jrResponseType /= responseType) $ do
-           liftIO $ throwIO TypeMismatch
-               { expectedResponseType = responseType
-               , actualResponseType = jrResponseType
-               , expectedRequestType = requestType
-               , actualRequestType = jrRequestType
-               }
-       decoded <- decodeOrThrow "jobQueueWorker" jrBody
-       let WorkerConfig{..} = wpConfig
-       watchForCancel wpRedis k workerCancellationCheckIvl $ do
-           boundPort <- newEmptyMVar
-           let ss = setAfterBind
-                   (putMVar boundPort . fromIntegral <=< socketPort)
-                   (serverSettingsTCP workerPort "*")
-           master params ss k decoded $ do
-               port <- readMVar boundPort
-               return $ MasterConnectInfo workerHostName port
+        let requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
+            responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
+        JobRequest{..} <- decodeOrThrow "jobQueueWorker" req
+        when (jrRequestType /= requestType ||
+              jrResponseType /= responseType) $ do
+            liftIO $ throwIO TypeMismatch
+                { expectedResponseType = responseType
+                , actualResponseType = jrResponseType
+                , expectedRequestType = requestType
+                , actualRequestType = jrRequestType
+                }
+        decoded <- decodeOrThrow "jobQueueWorker" jrBody
+        let WorkerConfig{..} = wpConfig
+        watchForCancel wpRedis k workerCancellationCheckIvl $ do
+            boundPort <- newEmptyMVar
+            let ss = setAfterBind
+                    (putMVar boundPort . fromIntegral <=< socketPort)
+                    (serverSettingsTCP workerPort "*")
+            master params ss k decoded $ do
+                port <- readMVar boundPort
+                return $ MasterConnectInfo workerHostName port
     case eres of
         Left err -> do
             $logErrorS "JobQueue" $

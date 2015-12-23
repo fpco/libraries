@@ -371,8 +371,8 @@ registerResponseCallbackInternal cvs k handler = do
 -- the callback handlers.
 logCallbackExceptions :: (MonadCommand m, MonadLogger m) => RequestId -> m () -> m ()
 logCallbackExceptions k f =
-     catchAny f $ \ex ->
-         $logErrorS "JobQueue" ("Exception thrown in job-queue client callback for request " ++ tshow k ++ ": " ++ tshow ex)
+    catchAny f $ \ex ->
+        $logErrorS "JobQueue" ("Exception thrown in job-queue client callback for request " ++ tshow k ++ ": " ++ tshow ex)
 
 -- | Check for a response, give a 'RequestId'.
 checkForResponse
@@ -381,8 +381,8 @@ checkForResponse
     -> RequestId
     -> m (Maybe (Either DistributedJobQueueException response))
 checkForResponse redis k = do
-     mresponse <- readResponse redis k
-     forM mresponse $ decodeOrThrow "checkForResponse"
+    mresponse <- readResponse redis k
+    forM mresponse $ decodeOrThrow "checkForResponse"
 
 -- | Cancel a request. Note that if the request is currently being worked
 -- on, then you must also pass the 'WorkerId'. Returns 'True' if it
