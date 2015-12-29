@@ -24,7 +24,6 @@
 
 <form method=post>
   <h2>Actions
-  <p>These are applied to the selected requests below
   <button .btn .btn-danger type=submit name=cancel value=true>Cancel Selected Computations
   <button .btn .btn-danger type=submit name=clear-heartbeats value=true>Clear Heartbeat Failures
 
