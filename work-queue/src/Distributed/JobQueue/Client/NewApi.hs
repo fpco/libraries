@@ -37,6 +37,13 @@ data JobClientConfig = JobClientConfig
       -- ^ How often to send heartbeat requests to the workers, and
       -- check for responses.  This value should be the same for all
       -- clients.
+    , jccHeartbeatFailureExpiry :: Seconds
+      -- ^ How long a heartbeat failure should stick around.  This should be a
+      -- quite large amount of time, as the worker might eventually reconnect,
+      -- and it should know that it has been heartbeat-failure collected.
+      -- Garbage collecting them to save resources doesn't matter very much.
+      -- The main reason it matters is so that the UI doesn't end up with tons
+      -- of heartbeat failure records.
     , jccRequestExpiry :: Seconds
       -- ^ The expiry time of the request data stored in redis.
     }
@@ -52,6 +59,8 @@ data JobClientConfig = JobClientConfig
 --
 -- * Heartbeats are checked every 30 seconds
 --
+-- * Heartbeat failures expire after 1 day.
+--
 -- * Request bodies expire in redis after 1 hour
 defaultJobClientConfig :: JobClientConfig
 defaultJobClientConfig = JobClientConfig
@@ -60,6 +69,7 @@ defaultJobClientConfig = JobClientConfig
     , jccRedisPrefix = "job-queue:"
     , jccRedisRetryPolicy = defaultRetryPolicy
     , jccHeartbeatCheckIvl = Seconds 30
+    , jccHeartbeatFailureExpiry = Seconds (24 * 3600)
     , jccRequestExpiry = Seconds 3600
     }
 
@@ -76,6 +86,7 @@ newJobClient
 newJobClient logFunc JobClientConfig{..} = liftIO $ do
     let config = ClientConfig
             { clientHeartbeatCheckIvl = jccHeartbeatCheckIvl
+            , clientHeartbeatFailureExpiry = jccHeartbeatFailureExpiry
             , clientRequestExpiry = jccRequestExpiry
             }
         ci = (connectInfo jccRedisHost)

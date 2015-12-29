@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Distributed.JobQueue.Status
     ( JobQueueStatus(..)
@@ -15,6 +16,9 @@ module Distributed.JobQueue.Status
     , getRequestStats
     , getAllRequestStats
     , getAllRequests
+    , getActiveWorkers
+    -- * Utilities for hpc-manager
+    , clearHeartbeatFailure
     -- * Re-exports from Shared
     , RequestEvent(..)
     , getRequestEvents
@@ -23,6 +27,7 @@ module Distributed.JobQueue.Status
 import ClassyPrelude hiding (keys)
 import qualified Data.ByteString.Char8 as S8
 import Data.Char (isAlphaNum)
+import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Time
 import Data.Time.Clock.POSIX
 import Distributed.JobQueue.Heartbeat (heartbeatActiveKey, heartbeatLastCheckKey)
@@ -54,35 +59,49 @@ getJobQueueStatus r = do
     checkRedisSchemaVersion r
     mLastTime <- getRedisTime r (heartbeatLastCheckKey r)
     pending <- run r $ lrange (requestsKey r) 0 (-1)
-    let activePrefix = redisKeyPrefix r <> "active:"
-    activeKeys <- run r $ keys (activePrefix <> "*")
-    workers <- forM activeKeys $ \active ->
-        forM (fmap WorkerId (stripPrefix activePrefix (unKey active))) $ \wid -> do
-            mtime <- fmap (fmap (posixSecondsToUTCTime . realToFrac)) <$>
-                run r $ zscore (heartbeatActiveKey r) (unWorkerId wid)
-            erequests <- try $ run r $ lrange (LKey active) 0 (-1)
-            case erequests of
-                -- Indicates heartbeat failure
-                Left (CommandException (isPrefixOf "WRONGTYPE" -> True)) ->
-                    return WorkerStatus
-                        { wsWorker = wid
-                        , wsHeartbeatFailure = True
-                        , wsLastHeartbeat = mtime
-                        , wsRequests = []
-                        }
-                Left ex -> liftIO $ throwIO ex
-                Right requests -> do
-                    return WorkerStatus
-                        { wsWorker = wid
-                        , wsHeartbeatFailure = False
-                        , wsLastHeartbeat = mtime
-                        , wsRequests = map RequestId requests
-                        }
+    wids <- getActiveWorkers r
+    workers <- forM wids $ \wid -> do
+        mtime <- fmap (fmap (posixSecondsToUTCTime . realToFrac)) <$>
+            run r $ zscore (heartbeatActiveKey r) (unWorkerId wid)
+        erequests <- try $ run r $ lrange (LKey (activeKey r wid)) 0 (-1)
+        case erequests of
+            -- Indicates heartbeat failure
+            Left (CommandException (isPrefixOf "WRONGTYPE" -> True)) ->
+                return WorkerStatus
+                    { wsWorker = wid
+                    , wsHeartbeatFailure = True
+                    , wsLastHeartbeat = mtime
+                    , wsRequests = []
+                    }
+            Left ex -> liftIO $ throwIO ex
+            Right requests -> do
+                return WorkerStatus
+                    { wsWorker = wid
+                    , wsHeartbeatFailure = False
+                    , wsLastHeartbeat = mtime
+                    , wsRequests = map RequestId requests
+                    }
     return JobQueueStatus
         { jqsLastHeartbeat = fmap posixSecondsToUTCTime mLastTime
         , jqsPending = map RequestId pending
-        , jqsWorkers = catMaybes workers
+        , jqsWorkers = workers
         }
+
+clearHeartbeatFailure :: MonadCommand m => RedisInfo -> WorkerId -> m ()
+clearHeartbeatFailure r wid = do
+     let k = activeKey r wid
+     eres <- try $ run r $ get (VKey k)
+     case eres of
+         Left CommandException{}  -> return ()
+         Left ex -> liftIO $ throwIO ex
+         -- Indicates heartbeat failure
+         Right _ -> void $ run r $ del (k :| [])
+
+getActiveWorkers :: MonadCommand m => RedisInfo -> m [WorkerId]
+getActiveWorkers r = do
+    let activePrefix = redisKeyPrefix r <> "active:"
+    activeKeys <- run r $ keys (activePrefix <> "*")
+    return $ mapMaybe (fmap WorkerId . stripPrefix activePrefix . unKey) activeKeys
 
 data RequestStats = RequestStats
     { rsEnqueueTime :: Maybe UTCTime -- ^ FIXME: figure out why this can be Nothing 0_0

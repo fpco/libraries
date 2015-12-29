@@ -101,7 +101,7 @@ postStatusR = do
     case res of
         FormSuccess config -> do
             (postParams, _) <- runRequestBody
-            let (cmds, others) = partition (\(k, v) -> k `elem` ["cancel"] && v == "true") postParams
+            let (cmds, others) = partition (\(k, v) -> k `elem` ["cancel", "clear-heartbeats"] && v == "true") postParams
                 (reqs', others') = partition (\(k, _) -> "jqr:" `isPrefixOf` k) others
                 reqs = mapMaybe
                     (\(k, v) ->
@@ -128,6 +128,8 @@ postStatusR = do
                         (False, False) ->
                             "Some cancellations applied, couldn't find the following: " <>
                             failuresList <> "\n" <> takesAWhile
+                ["clear-heartbeats"] -> withRedis' config $ \redis ->
+                    mapM_ (clearHeartbeatFailure redis) =<< getActiveWorkers redis
                 _ -> invalidArgs (map fst cmds)
             redirectUltDest HomeR
         _ -> do
