@@ -11,10 +11,20 @@
   $forall (k, r) <- requests
     <tr>
       <td>#{decodeUtf8 (unRequestId k)}
-      <td>#{show (rsEnqueueTime r)}
+      <td>
+        $maybe x <- rsEnqueueTime r
+          #{show x}
       <td>#{show (rsReenqueueCount r)}
-      <td>#{show (rsComputeStartTime r)}
-      <td>#{show (rsComputeFinishTime r)}
-      <td>#{show (rsComputeTime r)}
-      <td>#{show (rsTotalTime r)}
+      <td>
+        $maybe x <- rsComputeStartTime r
+          #{show x}
+      <td>
+        $maybe x <- rsComputeFinishTime r
+          #{show x}
+      <td>
+        $maybe x <- rsComputeTime r
+          #{show x}
+      <td>
+        $maybe x <- rsTotalTime r
+          #{show x}
       <td>#{show (rsFetchCount r)}

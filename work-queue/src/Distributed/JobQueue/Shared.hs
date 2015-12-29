@@ -77,7 +77,6 @@ cancelValue = "cancel"
 data RequestEvent
     = RequestEnqueued
     | RequestWorkStarted WorkerId
-    | RequestReenqueued
     | RequestWorkFinished WorkerId
     | RequestResponseRead
     deriving (Generic, Show, Typeable)

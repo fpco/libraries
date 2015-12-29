@@ -5,7 +5,6 @@ module Handler.Home where
 import Control.Monad.Logger
 import Data.Either
 import Data.Time.Clock
-import Data.Time.Clock.POSIX
 import Distributed.JobQueue.Client (cancelRequest)
 import Distributed.JobQueue.Status
 import Distributed.RedisQueue
@@ -91,7 +90,7 @@ getAndRenderRequest start r k = do
     case mrs of
         Nothing -> return ("?", "?", shownId)
         Just rs -> return
-            ( tshow (start `diffUTCTime` rsEnqueueTime rs)
+            ( fromMaybe "Missing?!?" (fmap (tshow . (start `diffUTCTime`)) (rsEnqueueTime rs))
             , tshow (rsReenqueueCount rs)
             , shownId
             )

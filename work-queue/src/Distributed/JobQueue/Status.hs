@@ -85,7 +85,7 @@ getJobQueueStatus r = do
         }
 
 data RequestStats = RequestStats
-    { rsEnqueueTime :: UTCTime
+    { rsEnqueueTime :: Maybe UTCTime -- ^ FIXME: figure out why this can be Nothing 0_0
     , rsReenqueueCount :: Int
     , rsComputeStartTime :: Maybe UTCTime
     , rsComputeFinishTime :: Maybe UTCTime
@@ -97,16 +97,16 @@ data RequestStats = RequestStats
 getRequestStats :: MonadCommand m => RedisInfo -> RequestId -> m (Maybe RequestStats)
 getRequestStats r k = do
     evs <- getRequestEvents r k
-    case lastMay [x | (x, RequestEnqueued) <- evs] of
-        Nothing | null evs -> return Nothing
-                | otherwise -> fail $ "Invariant violated: No RequestEnqueued event for " ++ show k
-        Just rsEnqueueTime -> return $ Just RequestStats {..}
+    case evs of
+        [] -> return Nothing
+        _ -> return $ Just RequestStats {..}
           where
-            rsReenqueueCount = length [() | (_, RequestReenqueued) <- evs]
+            rsEnqueueTime = lastMay [x | (x, RequestEnqueued) <- evs]
+            rsReenqueueCount = max 0 (length [() | (_, RequestWorkStarted _) <- evs] - 1)
             rsComputeStartTime = lastMay [x | (x, RequestWorkStarted _) <- evs]
             rsComputeFinishTime = lastMay [x | (x, RequestWorkFinished _) <- evs]
             rsComputeTime = diffUTCTime <$> rsComputeFinishTime <*> rsComputeStartTime
-            rsTotalTime = (`diffUTCTime` rsEnqueueTime) <$> rsComputeFinishTime
+            rsTotalTime = diffUTCTime <$> rsComputeFinishTime <*> rsEnqueueTime
             rsFetchCount = length [() | (_, RequestResponseRead) <- evs]
 
 getAllRequests :: MonadCommand m => RedisInfo -> m [RequestId]
