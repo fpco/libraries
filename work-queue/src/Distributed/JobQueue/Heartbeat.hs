@@ -80,8 +80,8 @@ recoverFromHeartbeatFailure r wid = run_ r $ del (activeKey r wid :| [])
 -- | Periodically check worker heartbeats. See #78 for a description of
 -- how this works.
 checkHeartbeats
-    :: MonadConnect m => RedisInfo -> Seconds -> m void
-checkHeartbeats r (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
+    :: MonadConnect m => RedisInfo -> Seconds -> Seconds -> m void
+checkHeartbeats r expiry (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
     startTime <- liftIO getPOSIXTime
     let oldTime = startTime - fromIntegral ivl
     $logDebug $ "Checking if enough time has elapsed since last heartbeat check.  Looking for a time before " ++
@@ -105,7 +105,7 @@ checkHeartbeats r (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
                 $logDebug "Acquired heartbeat check mutex."
                 let ninf = -1 / 0
                 inactive <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac oldTime) False
-                reenqueuedSome <- fmap or $ forM inactive $ handleWorkerFailure r . WorkerId
+                reenqueuedSome <- fmap or $ forM inactive $ handleWorkerFailure r expiry . WorkerId
                 when reenqueuedSome $ do
                     $logDebug "Notifying that some requests were re-enqueued"
                     notifyRequestAvailable r
@@ -113,8 +113,8 @@ checkHeartbeats r (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
                 setRedisTime r (heartbeatLastCheckKey r) startTime []
 
 handleWorkerFailure
-    :: (MonadCommand m, MonadLogger m) => RedisInfo -> WorkerId -> m Bool
-handleWorkerFailure r wid = do
+    :: (MonadCommand m, MonadLogger m) => RedisInfo -> Seconds -> WorkerId -> m Bool
+handleWorkerFailure r (Seconds expiry) wid = do
     moved <- run r $ (eval script ks as :: CommandRequest Int64)
     case moved of
         0 -> $logWarnS "JobQueue" $ tshow wid <>
@@ -129,7 +129,9 @@ handleWorkerFailure r wid = do
             ]
     return (moved > 0)
   where
-    as = [unWorkerId wid]
+    as = [ unWorkerId wid
+         , BS8.pack (show expiry)
+         ]
     ks = [ activeKey r wid
          , unLKey (requestsKey r)
          , unZKey (heartbeatActiveKey r)
@@ -154,7 +156,7 @@ handleWorkerFailure r wid = do
         , "        redis.call('rpush', KEYS[2], unpack(xs))"
         , "    end"
         , "    redis.call('del', KEYS[1])"
-        , "    redis.call('set', KEYS[1], 'HeartbeatFailure')"
+        , "    redis.call('setex', KEYS[1], ARGV[2], 'HeartbeatFailure')"
         , "    redis.pcall('zrem', KEYS[3], ARGV[1])"
         , "    return len"
         , "end"

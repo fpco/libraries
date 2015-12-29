@@ -72,6 +72,13 @@ data ClientConfig = ClientConfig
       -- ^ How often to send heartbeat requests to the workers, and
       -- check for responses.  This value should be the same for all
       -- clients.
+    , clientHeartbeatFailureExpiry :: Seconds
+      -- ^ How long a heartbeat failure should stick around.  This should be a
+      -- quite large amount of time, as the worker might eventually reconnect,
+      -- and it should know that it has been heartbeat-failure collected.
+      -- Garbage collecting them to save resources doesn't matter very much.
+      -- The main reason it matters is so that the UI doesn't end up with tons
+      -- of heartbeat failure records.
     , clientRequestExpiry :: Seconds
       -- ^ The expiry time of the request data stored in redis.
     } deriving (Typeable)
@@ -80,10 +87,13 @@ data ClientConfig = ClientConfig
 --
 -- * Heartbeats are checked every 30 seconds
 --
+-- * Heartbeat failures expire after 1 day.
+--
 -- * Request bodies expire in redis after 1 hour
 defaultClientConfig :: ClientConfig
 defaultClientConfig = ClientConfig
     { clientHeartbeatCheckIvl = Seconds 30
+    , clientHeartbeatFailureExpiry = Seconds (24 * 3600)
     , clientRequestExpiry = Seconds 3600
     }
 
@@ -122,7 +132,9 @@ jobQueueClient config cvs redis = do
         Left v -> absurd =<< restoreM v
         Right v -> absurd =<< restoreM v
   where
-    checker = checkHeartbeats redis (clientHeartbeatCheckIvl config)
+    checker = checkHeartbeats redis
+        (clientHeartbeatFailureExpiry config)
+        (clientHeartbeatCheckIvl config)
     subscriber = withLogTag (LogTag "jobQueueClient") $
         subscribeToResponses redis handleConnect handleResponse
     -- When the subscription reconnects, check if any responses came
