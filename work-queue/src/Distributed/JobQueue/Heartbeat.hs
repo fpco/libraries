@@ -156,7 +156,7 @@ handleWorkerFailure r (Seconds expiry) wid = do
         , "        redis.call('rpush', KEYS[2], unpack(xs))"
         , "    end"
         , "    redis.call('del', KEYS[1])"
-        , "    redis.call('setex', KEYS[1], ARGV[2], 'HeartbeatFailure')"
+        , "    redis.call('set', KEYS[1], 'HeartbeatFailure')"
         , "    redis.pcall('zrem', KEYS[3], ARGV[1])"
         , "    return len"
         , "end"
