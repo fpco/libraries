@@ -31,7 +31,7 @@ module Data.WorkQueue
     , getWorkerCount
     ) where
 
-import Control.Applicative         ((<$), (<$>), (<*>), (<|>))
+import Control.Applicative         ((<|>))
 import Control.Concurrent          (threadDelay)
 import Control.Concurrent.Async    (race)
 import Control.Concurrent.MVar
@@ -46,7 +46,7 @@ import Control.Monad.Base          (liftBase)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Control (MonadBaseControl, control)
 import Data.IORef
-import Data.Foldable               (Foldable, foldr)
+import Data.Foldable               (foldr)
 import Data.MonoTraversable
 import Data.Traversable
 import Data.Typeable               (Typeable)

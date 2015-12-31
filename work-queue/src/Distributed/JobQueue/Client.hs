@@ -315,8 +315,8 @@ sendRequestInternal
     :: (MonadCommand m, MonadLogger m)
     => ClientConfig -> RedisInfo -> RequestId -> ByteString -> m ()
 sendRequestInternal config redis k encoded = do
-    exists <- requestExists redis k
-    unless exists $ sendRequestInternal' config redis k encoded
+    alreadyExists <- requestExists redis k
+    unless alreadyExists $ sendRequestInternal' config redis k encoded
 
 -- Internal function to send a request without checking redis for an
 -- existing response.

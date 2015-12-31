@@ -81,7 +81,7 @@ recoverFromHeartbeatFailure r wid = run_ r $ del (activeKey r wid :| [])
 -- how this works.
 checkHeartbeats
     :: MonadConnect m => RedisInfo -> Seconds -> Seconds -> m void
-checkHeartbeats r expiry (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
+checkHeartbeats r heartbeatExpiry (Seconds ivl) = logNest "checkHeartbeats" $ forever $ do
     startTime <- liftIO getPOSIXTime
     let oldTime = startTime - fromIntegral ivl
     $logDebug $ "Checking if enough time has elapsed since last heartbeat check.  Looking for a time before " ++
@@ -99,13 +99,13 @@ checkHeartbeats r expiry (Seconds ivl) = logNest "checkHeartbeats" $ forever $ d
             -- Blocks other checkers from starting, for the first half of the
             -- heartbeat interval.
             $logDebug "Trying to acquire heartbeat check mutex."
-            let expiry = Seconds (max 1 (ivl `div` 2))
-            gotMutex <- run r $ set (heartbeatMutexKey r) "" [NX, EX expiry]
+            let mutexExpiry = Seconds (max 1 (ivl `div` 2))
+            gotMutex <- run r $ set (heartbeatMutexKey r) "" [NX, EX mutexExpiry]
             when gotMutex $ do
                 $logDebug "Acquired heartbeat check mutex."
                 let ninf = -1 / 0
                 inactive <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac oldTime) False
-                reenqueuedSome <- fmap or $ forM inactive $ handleWorkerFailure r expiry . WorkerId
+                reenqueuedSome <- fmap or $ forM inactive $ handleWorkerFailure r heartbeatExpiry . WorkerId
                 when reenqueuedSome $ do
                     $logDebug "Notifying that some requests were re-enqueued"
                     notifyRequestAvailable r

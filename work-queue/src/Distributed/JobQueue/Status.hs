@@ -25,8 +25,6 @@ module Distributed.JobQueue.Status
     ) where
 
 import ClassyPrelude hiding (keys)
-import qualified Data.ByteString.Char8 as S8
-import Data.Char (isAlphaNum)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Time
 import Data.Time.Clock.POSIX
@@ -134,7 +132,6 @@ getAllRequests r =
     run r (keys (requestPrefix <> "*"))
   where
     requestPrefix = redisKeyPrefix r <> "request:"
-    isBase64 c = isAlphaNum c || c `elem` ['+','/']
 
 getAllRequestStats :: MonadCommand m => RedisInfo -> m [(RequestId, RequestStats)]
 getAllRequestStats r =

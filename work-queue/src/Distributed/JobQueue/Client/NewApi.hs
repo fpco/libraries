@@ -16,7 +16,6 @@ module Distributed.JobQueue.Client.NewApi
 import ClassyPrelude
 import Control.Concurrent (forkIO)
 import Control.Monad.Logger
-import Control.Monad.Trans.Control (MonadBaseControl)
 import Control.Retry (RetryPolicy)
 import Data.Streaming.NetworkMessage (Sendable)
 import Data.Void (absurd)

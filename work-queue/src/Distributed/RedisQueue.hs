@@ -76,7 +76,6 @@ pushRequest
     -> ByteString
     -> m Bool
 pushRequest r expiry k request = do
-    enqueueTime <- liftIO getPOSIXTime
     -- Store the request data as a normal redis value.
     added <- run r $ set (requestDataKey r k) request [EX expiry, NX]
     -- Enqueue its ID on the requests list.
