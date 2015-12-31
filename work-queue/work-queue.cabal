@@ -39,6 +39,7 @@ library
   other-modules:       Distributed.JobQueue.Shared
                        Data.ConcreteTypeRep
   build-depends:       base
+                     , aeson
                      , async
                      , binary
                      , binary-orphans

@@ -32,8 +32,11 @@ module Distributed.JobQueue.Shared
     ) where
 
 import ClassyPrelude
+import Control.Monad.Logger (MonadLogger, logInfo)
+import qualified Data.Aeson as Aeson
 import Data.Binary (Binary, encode)
 import Data.Binary.Orphans ()
+import qualified Data.ByteString.Lazy as LBS
 import Data.ConcreteTypeRep (ConcreteTypeRep)
 import Data.List.NonEmpty
 import Data.Streaming.NetworkMessage (NetworkMessageException)
@@ -82,19 +85,34 @@ data RequestEvent
     deriving (Generic, Show, Typeable)
 
 instance Binary RequestEvent
+instance Aeson.ToJSON RequestEvent
+
+data EventLogMessage
+    = EventLogMessage
+    { logTime :: String
+    , logRequest :: RequestId
+    , logEvent :: RequestEvent
+    } deriving (Generic, Show, Typeable)
+
+instance Aeson.ToJSON EventLogMessage
 
 -- | Stores list of encoded '(UTCTime, RequestEvent)'.
 requestEventsKey :: RedisInfo -> RequestId -> LKey
 requestEventsKey r k = LKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k <> ":events"
 
 -- | Adds a 'RequestEvent', with the timestamp set to the current time.
-addRequestEvent :: MonadCommand m => RedisInfo -> RequestId -> RequestEvent -> m ()
+addRequestEvent :: (MonadCommand m, MonadLogger m) => RedisInfo -> RequestId -> RequestEvent -> m ()
 addRequestEvent r k x = do
     now <- liftIO getCurrentTime
     run_ r $ rpush (requestEventsKey r k) (toStrict (encode (now, x)) :| [])
+    $logInfo $ decodeUtf8 $ LBS.toStrict $ Aeson.encode $ EventLogMessage
+        { logTime = show now
+        , logRequest = k
+        , logEvent = x
+        }
 
 -- | Adds 'RequestEnqueued' event and sets expiry on the events list.
-addRequestEnqueuedEvent :: MonadCommand m => RedisInfo -> RequestId -> Seconds -> m ()
+addRequestEnqueuedEvent :: (MonadCommand m, MonadLogger m) => RedisInfo -> RequestId -> Seconds -> m ()
 addRequestEnqueuedEvent r k expiry = do
     addRequestEvent r k RequestEnqueued
     expirySet <- run r $ expire (unLKey (requestEventsKey r k)) expiry

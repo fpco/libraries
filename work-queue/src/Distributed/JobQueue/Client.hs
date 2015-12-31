@@ -389,7 +389,7 @@ logCallbackExceptions k f =
 
 -- | Check for a response, give a 'RequestId'.
 checkForResponse
-    :: (MonadCommand m, Sendable response)
+    :: (MonadCommand m, MonadLogger m, Sendable response)
     => RedisInfo
     -> RequestId
     -> m (Maybe (Either DistributedJobQueueException response))

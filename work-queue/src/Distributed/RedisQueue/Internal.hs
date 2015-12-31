@@ -19,9 +19,11 @@ import           Control.Concurrent (forkIO)
 import           Control.Monad.Catch (Handler(Handler))
 import           Control.Monad.Logger (logDebugS, logErrorS)
 import           Control.Retry (RetryPolicy, limitRetries, constantDelay)
+import qualified Data.Aeson as Aeson
 import           Data.Binary (Binary, decodeOrFail)
 import qualified Data.ByteString.Char8 as BS8
 import           Data.List.NonEmpty (NonEmpty((:|)))
+import qualified Data.Text as T
 import           Data.Time.Clock.POSIX
 import           Data.Typeable (Proxy(..), typeRep)
 import           FP.Redis
@@ -42,11 +44,15 @@ data RedisInfo = RedisInfo
 newtype WorkerId = WorkerId { unWorkerId :: ByteString }
     deriving (Eq, Ord, Show, Binary, IsString, Typeable)
 
+instance Aeson.ToJSON WorkerId where toJSON = Aeson.String . T.pack . BS8.unpack . unWorkerId
+
 -- | This is the key used for enqueued requests, and, later, the
 -- response associated with it.  It's the hash of the request, which
 -- allows responses to be cached.
 newtype RequestId = RequestId { unRequestId :: ByteString }
     deriving (Eq, Ord, Show, Binary, Hashable, Typeable)
+
+instance Aeson.ToJSON RequestId where toJSON = Aeson.String . T.pack . BS8.unpack . unRequestId
 
 -- * Functions to compute Redis keys
 
