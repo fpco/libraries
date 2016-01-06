@@ -24,6 +24,7 @@ Flag long-tests
 library
   exposed-modules:     Data.WorkQueue
                        Data.Streaming.NetworkMessage
+                       Data.SimpleSupply
                        Distributed.JobQueue
                        Distributed.JobQueue.Client
                        Distributed.JobQueue.Client.NewApi

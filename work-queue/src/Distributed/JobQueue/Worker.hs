@@ -20,6 +20,7 @@ module Distributed.JobQueue.Worker
     , jobQueueWorker
     -- * General job-queue node
     , jobQueueNode
+    , mciToClientSettings
     , MasterFunc
     , SlaveFunc
     , WorkerParams(..)
@@ -38,7 +39,7 @@ import Data.Binary (Binary, encode)
 import Data.Bits (xor)
 import Data.ConcreteTypeRep (fromTypeRep)
 import Data.List.NonEmpty (NonEmpty((:|)))
-import Data.Streaming.Network (ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
+import Data.Streaming.Network (ClientSettings, ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
 import Data.Streaming.NetworkMessage (NMSettings, Sendable, defaultNMSettings, setNMHeartbeat)
 import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
@@ -464,6 +465,9 @@ data MasterConnectInfo = MasterConnectInfo
     deriving (Generic, Show, Typeable)
 
 instance Binary MasterConnectInfo
+
+mciToClientSettings :: MasterConnectInfo -> ClientSettings
+mciToClientSettings mci = clientSettingsTCP (mciPort mci) (mciHost mci)
 
 -- | This command is used by the master to request that a slave
 -- connect to it.

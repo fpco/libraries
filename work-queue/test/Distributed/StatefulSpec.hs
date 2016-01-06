@@ -8,6 +8,7 @@ import           Data.Binary (Binary)
 import           Data.Conduit.Network (serverSettings, clientSettings)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
+import           Data.SimpleSupply
 import           Data.Streaming.NetworkMessage
 import qualified Data.Vector as V
 import           Distributed.Stateful
@@ -50,21 +51,21 @@ runMasterAndSlaves
     -> IO a
 runMasterAndSlaves basePort slaveCnt slaveUpdate initialStates inner = do
     nms <- nmsSettings
-    let ports = [basePort..basePort + slaveCnt]
-    let settings = map (\port -> clientSettings port "localhost") ports
     let masterArgs = MasterArgs
-            { maInitialStates = V.fromList initialStates
-            , maSlaves = V.fromList (zip settings (repeat nms))
-            , maMinBatchSize = Nothing
+            { maMinBatchSize = Nothing
             , maMaxBatchSize = Just 5
+            , maServerSettings = serverSettings basePort "*"
+            , maNMSettings = nms
             }
-    let slaveArgs port = SlaveArgs
+    let slaveArgs = SlaveArgs
             { saUpdate = slaveUpdate
+            , saClientSettings = clientSettings basePort "localhost"
             , saNMSettings = nms
-            , saServerSettings = serverSettings port "*"
             }
-    withAsync (mapConcurrently (slave . slaveArgs) ports) $ \_ ->
-        master masterArgs (inner . V.toList)
+    idSupply <- newStateIdSupply
+    states <- withSupplyM idSupply $ mapM (\s -> (, s) <$> askSupplyM) initialStates
+    withAsync (mapConcurrently (\_ -> runSlave slaveArgs) [1..slaveCnt]) $ \_ ->
+        runMaster masterArgs (HMS.fromList states) (inner (map fst states))
 
 nmsSettings :: IO NMSettings
 nmsSettings = do
