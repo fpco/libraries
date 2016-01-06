@@ -34,6 +34,7 @@ import           Control.Concurrent.Async (mapConcurrently)
 import           Control.DeepSeq (force, NFData)
 import           Control.Exception (evaluate)
 import           Control.Monad.State (State, runState, gets, modify', state)
+import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.Binary as B
 import           Data.Binary.Orphans ()
 import qualified Data.Conduit.Network as CN
@@ -94,10 +95,10 @@ data SlaveResp state output
   | SRespGetStates !(HMS.HashMap StateId state)
   deriving (Generic, Eq, Show, NFData, B.Binary)
 
-slave :: forall state context input output a.
-     (B.Binary state, NFData state, B.Binary context, B.Binary input, B.Binary output)
-  => SlaveArgs state context input output -> IO a
-slave SlaveArgs{..} = CN.runGeneralTCPServer saServerSettings $
+slave :: forall state context input output m a.
+     (B.Binary state, NFData state, B.Binary context, B.Binary input, B.Binary output, MonadIO m)
+  => SlaveArgs state context input output -> m a
+slave SlaveArgs{..} = liftIO $ CN.runGeneralTCPServer saServerSettings $
   NM.generalRunNMApp (saNMSettings) (const "") (const "") $ \nm -> do
     go (NM.nmRead nm) (NM.nmWrite nm) (SlaveState Nothing Nothing)
   where
@@ -189,10 +190,11 @@ data MasterHandle state context input output = MasterHandle
   , mhMinBatchSize :: !(Maybe Int)
   }
 
-withStateIdSupply ::
-     MasterHandle state context input output
+withStateIdSupply
+  :: (MonadBaseControl IO m, MonadIO m)
+  => MasterHandle state context input output
   -> State StateId a
-  -> IO a
+  -> m a
 withStateIdSupply MasterHandle{..} f = do
   atomicModifyIORef' mhStateIdsCountRef $ \count0 ->
     let (x, StateId count) = runState f (StateId count0) in (count, x)
@@ -211,11 +213,12 @@ getNumStatesPerSlave numNodes numParticles = if
       (chunkSize, leftover) = numParticles `quotRem` numNodes
       in if leftover == 0 then chunkSize else chunkSize + 1
 
-master :: forall state context input output a.
-     (B.Binary state, B.Binary context, B.Binary input, B.Binary output)
+master :: forall state context input output m a.
+     ( B.Binary state, B.Binary context, B.Binary input, B.Binary output
+     , MonadBaseControl IO m, MonadIO m)
   => MasterArgs state
-  -> (V.Vector StateId -> MasterHandle state context input output -> IO a)
-  -> IO a
+  -> (V.Vector StateId -> MasterHandle state context input output -> m a)
+  -> m a
 master MasterArgs{..} cont0 = do
   case (maMinBatchSize, maMaxBatchSize) of
     (_, Just maxBatchSize) | maxBatchSize < 1 ->
@@ -232,7 +235,7 @@ master MasterArgs{..} cont0 = do
     let slaves = HMS.fromList (zip slavesIds slaves0)
     let numStates = length maInitialStates
     let statesIds = take numStates (map StateId [0..])
-    stateIdsCountRef <- newIORef numStates
+    stateIdsCountRef <- liftIO $ newIORef numStates
     let numStatesPerSlave = getNumStatesPerSlave numSlaves numStates
         slavesStates = HMS.fromList $ zip slavesIds $ map HS.fromList $
           -- Note that some slaves might be initially empty. That's fine and inevitable.
@@ -260,8 +263,8 @@ master MasterArgs{..} cont0 = do
   where
     connectToSlaves ::
          [(CN.ClientSettings, NM.NMSettings)]
-      -> ([SlaveNMAppData state context input output] -> IO a)
-      -> IO a
+      -> ([SlaveNMAppData state context input output] -> m a)
+      -> m a
     connectToSlaves settings0 cont = case settings0 of
       [] -> cont []
       (cs, nms) : settings ->
@@ -277,13 +280,13 @@ data SlaveThreadStatus input
   | STSStop
   deriving (Eq, Show)
 
-update :: forall state context input output.
-     (B.Binary state, B.Binary context, B.Binary input, B.Binary output)
+update :: forall state context input output m.
+     (B.Binary state, B.Binary context, B.Binary input, B.Binary output, MonadIO m)
   => MasterHandle state context input output
   -> context
   -> HMS.HashMap StateId input
-  -> IO (HMS.HashMap StateId (output, HS.HashSet StateId))
-update MasterHandle{..} context inputs = do
+  -> m (HMS.HashMap StateId (output, HS.HashSet StateId))
+update MasterHandle{..} context inputs = liftIO $ do
   slavesStates <- readIORef mhSlavesStatesRef
   -- FIXME: Should check that all of the inputs are used.
   let statesAndInputs =
@@ -417,9 +420,10 @@ update MasterHandle{..} context inputs = do
         _ -> Nothing
       return ()
 
-getStates ::
-     MasterHandle state context input output
-  -> IO (HMS.HashMap StateId state)
+getStates
+  :: MonadIO m
+  => MasterHandle state context input output
+  -> m (HMS.HashMap StateId state)
 getStates MasterHandle{..} = do
   -- Send states
   forM_ mhSlaves (\slave_ -> NM.nmWrite slave_ SReqGetStates)
@@ -428,10 +432,11 @@ getStates MasterHandle{..} = do
       SRespGetStates states -> Just states
       _ -> Nothing
 
-getStateIds ::
-     MasterHandle state context input output
-  -> IO (HS.HashSet StateId)
-getStateIds MasterHandle{..} = fold <$> readIORef mhSlavesStatesRef
+getStateIds
+  :: MonadIO m
+  => MasterHandle state context input output
+  -> m (HS.HashSet StateId)
+getStateIds MasterHandle{..} = liftIO $ fold <$> readIORef mhSlavesStatesRef
 
 -- TODO: More efficient version of this?
 hashMapKeySet :: (Eq k, Hashable k) => HMS.HashMap k v -> HS.HashSet k
