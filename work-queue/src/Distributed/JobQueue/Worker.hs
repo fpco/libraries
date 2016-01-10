@@ -8,6 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE ViewPatterns #-}
 
 -- | This module provides the API used by job-queue workers.  See
 -- "Distributed.JobQueue" for more info.
@@ -32,14 +33,14 @@ module Distributed.JobQueue.Worker
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async, withAsync, cancel, cancelWith, waitEither)
-import Control.Monad.Logger (logErrorS, logInfoS, logDebugS)
+import Control.Monad.Logger (logErrorS, logInfoS, logDebugS, logWarnS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import Data.Binary (Binary, encode)
 import Data.Bits (xor)
 import Data.ConcreteTypeRep (fromTypeRep)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Streaming.Network (ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
-import Data.Streaming.NetworkMessage (NMSettings, Sendable, defaultNMSettings, setNMHeartbeat)
+import Data.Streaming.NetworkMessage (NMSettings, Sendable, defaultNMSettings, setNMHeartbeat, NetworkMessageException(NMConnectionDropped))
 import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
@@ -163,13 +164,18 @@ jobQueueWorker config calc distribute =
         eres <- try $ runSlave settings wpNMSettings (\() -> init) (\() -> calc)
         case eres of
             -- This indicates that the slave couldn't connect.
-            Left err@(IOError {}) ->
+            Left (fromException -> Just err@(IOError {})) ->
                 $logInfoS "JobQueue" $
                     "Failed to connect to master, with " <>
                     tshow mci <>
                     ".  This probably isn't an issue - the master likely " <>
                     "already finished or died.  Here's the exception: " <>
                     tshow err
+            Left (fromException -> Just NMConnectionDropped) ->
+                $logWarnS "JobQueue" $ "Ignoring NMConnectionDropped in slave"
+            Left err -> do
+                $logErrorS "JobQueue" $ "Unexpected exception in slave: " ++ tshow err
+                liftIO $ throwIO err
             Right (Right ()) ->
                 $logInfoS "JobQueue" (tshow wpId ++ " done being slave of " ++ tshow mci)
             Right (Left err) -> do
