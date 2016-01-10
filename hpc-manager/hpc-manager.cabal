@@ -84,4 +84,4 @@ executable         hpc-manager
     hs-source-dirs:    app
     build-depends:     base, hpc-manager
 
-    ghc-options:       -threaded -O2 -rtsopts -with-rtsopts=-N
+    ghc-options:       -threaded -O2
