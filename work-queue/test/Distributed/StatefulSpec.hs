@@ -1,19 +1,19 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ParallelListComp #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Distributed.StatefulSpec (spec) where
 
 import           Control.Concurrent.Async
+import           Control.DeepSeq (NFData)
 import           Data.Binary (Binary)
 import           Data.Conduit.Network (serverSettings, clientSettings)
 import qualified Data.HashMap.Strict as HMS
-import qualified Data.HashSet as HS
 import           Data.Streaming.NetworkMessage
 import qualified Data.Vector as V
 import           Distributed.Stateful
 import           Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
-import           Control.DeepSeq (NFData)
 
 -- FIXME: better fix than "master inner function should get a Vector
 -- StateId"
@@ -21,32 +21,32 @@ import           Control.DeepSeq (NFData)
 spec :: Hspec.Spec
 spec = do
     it "Sends data around properly" $ do
-        nms <- nmsSettings
-        let slaveUpdate context input stateId state =
-                let val = (context, input)
-                in (val, HMS.singleton stateId (Right val : state))
-        let initialStates :: [[Either Int (String, String)]]
+        let slaveUpdate input state =
+                return (input,  Right input : state)
+        let initialStates :: [[Either Int String]]
             initialStates = map ((:[]) . Left) [1..4]
-        runMasterAndSlaves 7000 4 slaveUpdate initialStates $ \sids mh -> do
+        runMasterAndSlaves 7000 4 slaveUpdate initialStates $ \mh -> do
+            states0 <- getStates mh
             let inputs = HMS.fromList
                     [ (sid, ("input 1" :: String, i :: Int))
                     | i <- [1..4]
-                    | sid <- sids
+                    | (sid, _) <- HMS.toList states0
                     ]
-            outputs <- update mh ("step 1" :: String) (HMS.map fst inputs)
+            outputs <- update mh ("step 1" :: String)
             states <- getStates mh
-            states `shouldBe` (HMS.map (\(input, initial) -> [Right ("step 1", input), Left initial]) inputs)
+            states `shouldBe` (HMS.map (\(_input, initial) -> [Right "step 1", Left initial]) inputs)
 
 it :: String -> IO () -> Hspec.Spec
 it name f = Hspec.it name f
 
 runMasterAndSlaves
-    :: (NFData state, Binary state, Binary context, Binary input, Binary output)
+    :: forall state broadcastPayload broadcastOutput a.
+       (NFData state, Binary state, Binary broadcastPayload, Binary broadcastOutput)
     => Int
     -> Int
-    -> (context -> input -> StateId -> state -> (output, HMS.HashMap StateId state))
+    -> (broadcastPayload -> state -> IO (broadcastOutput, state))
     -> [state]
-    -> ([StateId] -> MasterHandle state context input output -> IO a)
+    -> (MasterHandle state broadcastPayload broadcastOutput () () -> IO a)
     -> IO a
 runMasterAndSlaves basePort slaveCnt slaveUpdate initialStates inner = do
     nms <- nmsSettings
@@ -60,11 +60,12 @@ runMasterAndSlaves basePort slaveCnt slaveUpdate initialStates inner = do
             }
     let slaveArgs port = SlaveArgs
             { saUpdate = slaveUpdate
+            , saResample = \() state -> return ((), state)
             , saNMSettings = nms
             , saServerSettings = serverSettings port "*"
             }
-    withAsync (mapConcurrently (slave . slaveArgs) ports) $ \_ ->
-        master masterArgs (inner . V.toList)
+    withAsync (mapConcurrently (runSlave . slaveArgs) ports) $ \_ ->
+        runMaster masterArgs inner
 
 nmsSettings :: IO NMSettings
 nmsSettings = do
