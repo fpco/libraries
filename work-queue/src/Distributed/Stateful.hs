@@ -16,15 +16,15 @@ module Distributed.Stateful
   ( -- * Master
     MasterArgs(..)
   , MasterHandle
-  , master
+  , runMaster
     -- ** Operations
   , StateId
-  , broadcast
+  , update
   , resample
   , getStates
     -- * Slave
   , SlaveArgs(..)
-  , slave
+  , runSlave
   ) where
 
 import           ClassyPrelude
@@ -44,8 +44,8 @@ import           Control.Monad.State (runState, gets, modify')
 import           Control.Monad.Trans.Control (MonadBaseControl)
 
 data SlaveArgs state broadcastPayload broadcastOutput resamplePayload resampleOutput = SlaveArgs
-  { saBroadcastUpdate :: !(broadcastPayload -> state -> IO (broadcastOutput, state))
-  , saResampleUpdate :: !(resamplePayload -> state -> IO (resampleOutput, state))
+  { saUpdate :: !(broadcastPayload -> state -> IO (broadcastOutput, state))
+  , saResample :: !(resamplePayload -> state -> IO (resampleOutput, state))
   , saServerSettings :: !CN.ServerSettings
   , saNMSettings :: !NM.NMSettings
   }
@@ -91,12 +91,12 @@ data SlaveResp state broadcastOutput resampleOutput
   | SRespGetStates !(HMS.HashMap StateId state)
   deriving (Generic, Eq, Show, NFData, B.Binary)
 
-slave :: forall state broadcastPayload broadcastOutput resamplePayload resampleOutput m a.
+runSlave :: forall state broadcastPayload broadcastOutput resamplePayload resampleOutput m a.
      ( B.Binary state, NFData state, B.Binary broadcastPayload, B.Binary broadcastOutput, B.Binary resamplePayload, B.Binary resampleOutput
      , MonadIO m
      )
   => SlaveArgs state broadcastPayload broadcastOutput resamplePayload resampleOutput -> m a
-slave SlaveArgs{..} = liftIO $ do
+runSlave SlaveArgs{..} = liftIO $ do
   CN.runGeneralTCPServer saServerSettings $
     NM.generalRunNMApp (saNMSettings) (const "") (const "") $ \nm ->
       go (NM.nmRead nm) (NM.nmWrite nm) SSNotInitialized
@@ -135,7 +135,7 @@ slave SlaveArgs{..} = liftIO $ do
                   let state = case HMS.lookup stateId states0 of
                         Nothing -> error (printf "slave: Could not find state %d (SReqBroadcast)" stateId)
                         Just state0 -> state0
-                  (output, newState) <- saBroadcastUpdate payload state
+                  (output, newState) <- saUpdate payload state
                   return (HMS.insert stateId output outputs, HMS.insert stateId newState states)
             (outputs, states) <- foldl' foldStep (return (HMS.empty, states0)) stateIds
             void (evaluate (force states))
@@ -149,7 +149,7 @@ slave SlaveArgs{..} = liftIO $ do
                         Nothing -> error (printf "slave: Could not find state %d (SReqResample)" oldStateId)
                         Just state0 -> state0
                   newResults <- HMS.fromList <$> sequence
-                    [ (newStateId, ) <$> saResampleUpdate payload state
+                    [ (newStateId, ) <$> saResample payload state
                     | (newStateId, payload) <- HMS.toList resamples
                     ]
                   return (newResults <> results)
@@ -204,14 +204,14 @@ getNumStatesPerSlave numNodes numParticles = if
       (chunkSize, leftover) = numParticles `quotRem` numNodes
       in if leftover == 0 then chunkSize else chunkSize + 1
 
-master :: forall state broadcastPayload broadcastOutput resamplePayload resampleOutput m a.
+runMaster :: forall state broadcastPayload broadcastOutput resamplePayload resampleOutput m a.
      ( MonadBaseControl IO m, MonadIO m
      , B.Binary state, B.Binary broadcastPayload, B.Binary broadcastOutput, B.Binary resamplePayload, B.Binary resampleOutput
      )
   => MasterArgs state
   -> (MasterHandle state broadcastPayload broadcastOutput resamplePayload resampleOutput -> m a)
   -> m a
-master MasterArgs{..} cont0 = do
+runMaster MasterArgs{..} cont0 = do
   case (maMinBatchSize, maMaxBatchSize) of
     (_, Just maxBatchSize) | maxBatchSize < 1 ->
       fail (printf "Distribute.master: maMaxBatchSize must be > 0 (got %d)" maxBatchSize)
@@ -271,12 +271,12 @@ data SlaveThreadStatus
   | STSStop
   deriving (Eq, Show)
 
-broadcast :: forall state broadcastPayload broadcastOutput resamplePayload resampleOutput m.
+update :: forall state broadcastPayload broadcastOutput resamplePayload resampleOutput m.
      (MonadIO m)
   => MasterHandle state broadcastPayload broadcastOutput resamplePayload resampleOutput
   -> broadcastPayload
   -> m (HMS.HashMap StateId broadcastOutput)
-broadcast MasterHandle{..} payload = liftIO $ case mhMaxBatchSize of
+update MasterHandle{..} payload = liftIO $ case mhMaxBatchSize of
   Nothing -> do
     slavesStates <- readIORef mhSlavesStatesRef
     forM_ (HMS.toList slavesStates) $ \(slaveId, slaveStatesIds) -> do
