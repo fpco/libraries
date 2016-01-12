@@ -11,6 +11,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TupleSections #-}
 module Distributed.Stateful
   ( -- * Master
     MasterArgs(..)
@@ -39,12 +40,12 @@ import           Data.Binary.Orphans ()
 import qualified Data.Vector as V
 import           Data.List.Split (chunksOf)
 import           Control.Concurrent.Async (mapConcurrently)
-import           Control.Monad.State (State, runState, gets, modify')
+import           Control.Monad.State (runState, gets, modify')
 import           Control.Monad.Trans.Control (MonadBaseControl)
 
-data SlaveArgs state broadcastPayload broadcastOutput resamplePayload = SlaveArgs
-  { saBroadcastUpdate :: !(broadcastPayload -> state -> (broadcastOutput, state))
-  , saResampleUpdate :: !(resamplePayload -> state -> state)
+data SlaveArgs state broadcastPayload broadcastOutput resamplePayload resampleOutput = SlaveArgs
+  { saBroadcastUpdate :: !(broadcastPayload -> state -> IO (broadcastOutput, state))
+  , saResampleUpdate :: !(resamplePayload -> state -> IO (resampleOutput, state))
   , saServerSettings :: !CN.ServerSettings
   , saNMSettings :: !NM.NMSettings
   }
@@ -79,22 +80,22 @@ data SlaveReq state broadcastPayload resamplePayload
   | SReqGetStates
   deriving (Generic, Eq, Show, NFData, B.Binary)
 
-data SlaveResp state output
+data SlaveResp state broadcastOutput resampleOutput
   = SRespResetState
   | SRespAddStates
   | SRespRemoveStates
       !SlaveId
       !(HMS.HashMap StateId state)
-  | SRespBroadcast !(HMS.HashMap StateId output) -- TODO consider making this a simple list -- we don't really need it to be a HMS.
-  | SRespResample
+  | SRespBroadcast !(HMS.HashMap StateId broadcastOutput) -- TODO consider making this a simple list -- we don't really need it to be a HMS.
+  | SRespResample !(HMS.HashMap StateId resampleOutput)
   | SRespGetStates !(HMS.HashMap StateId state)
   deriving (Generic, Eq, Show, NFData, B.Binary)
 
-slave :: forall state broadcastPayload broadcastOutput resamplePayload m a.
-     ( B.Binary state, NFData state, B.Binary broadcastPayload, B.Binary broadcastOutput, B.Binary resamplePayload
+slave :: forall state broadcastPayload broadcastOutput resamplePayload resampleOutput m a.
+     ( B.Binary state, NFData state, B.Binary broadcastPayload, B.Binary broadcastOutput, B.Binary resamplePayload, B.Binary resampleOutput
      , MonadIO m
      )
-  => SlaveArgs state broadcastPayload broadcastOutput resamplePayload -> m a
+  => SlaveArgs state broadcastPayload broadcastOutput resamplePayload resampleOutput -> m a
 slave SlaveArgs{..} = liftIO $ do
   CN.runGeneralTCPServer saServerSettings $
     NM.generalRunNMApp (saNMSettings) (const "") (const "") $ \nm ->
@@ -102,14 +103,14 @@ slave SlaveArgs{..} = liftIO $ do
   where
     go :: forall b.
          IO (SlaveReq state broadcastPayload resamplePayload)
-      -> (SlaveResp state broadcastOutput -> IO ())
+      -> (SlaveResp state broadcastOutput resampleOutput -> IO ())
       -> SlaveState state
       -> IO b
     go recv send = let
       loop slaveState = do
         req <- recv
-        let getStates :: String -> HMS.HashMap StateId state
-            getStates err = case slaveState of
+        let getStates' :: String -> HMS.HashMap StateId state
+            getStates' err = case slaveState of
               SSNotInitialized -> error ("slave: state not initialized (" ++ err ++ ")")
               SSInitialized states0 -> states0
         case req of
@@ -117,47 +118,48 @@ slave SlaveArgs{..} = liftIO $ do
             send SRespResetState
             loop (SSInitialized states)
           SReqAddStates newStates -> do
-            let states' = HMS.unionWith (error "slave: adding existing states") (getStates "SReqAddStates") newStates
+            let states' = HMS.unionWith (error "slave: adding existing states") (getStates' "SReqAddStates") newStates
             send SRespAddStates
             loop (SSInitialized states')
           SReqRemoveStates slaveRequesting stateIdsToDelete -> do
-            let states = getStates "SReqRemoveStates"
+            let states = getStates' "SReqRemoveStates"
             let states' = foldl' (flip HMS.delete) states stateIdsToDelete
             let statesToSend = HMS.fromList
                   [(stateId, states HMS.! stateId) | stateId <- HS.toList stateIdsToDelete]
             send (SRespRemoveStates slaveRequesting statesToSend)
             loop (SSInitialized states')
           SReqBroadcast payload stateIds -> do
-            let states0 = getStates "SReqBroadcast"
-            let foldStep (outputs, updatedStates) stateId = let
-                  state = case HMS.lookup stateId states0 of
-                    Nothing -> error (printf "slave: Could not find state %d (SReqBroadcast)" stateId)
-                    Just state0 -> state0
-                  !(!output, !state') = saBroadcastUpdate payload state
-                  in (HMS.insert stateId output outputs, HMS.insert stateId state' updatedStates)
-            let (outputs, states) = foldl' foldStep (HMS.empty, states0) stateIds
+            let states0 = getStates' "SReqBroadcast"
+            let foldStep getResults stateId = do
+                  (outputs, states) <- getResults
+                  let state = case HMS.lookup stateId states0 of
+                        Nothing -> error (printf "slave: Could not find state %d (SReqBroadcast)" stateId)
+                        Just state0 -> state0
+                  (output, newState) <- saBroadcastUpdate payload state
+                  return (HMS.insert stateId output outputs, HMS.insert stateId newState states)
+            (outputs, states) <- foldl' foldStep (return (HMS.empty, states0)) stateIds
             void (evaluate (force states))
             send (SRespBroadcast outputs)
             loop (SSInitialized states)
           SReqResample payloadss -> do
-            let states0 = getStates "SReqResample"
-            let foldStep states oldStateId resamples = let
-                  state :: state
-                  state = case HMS.lookup oldStateId states0 of
-                    Nothing -> error (printf "slave: Could not find state %d (SReqResample)" oldStateId)
-                    Just state0 -> state0
-                  newStates :: HMS.HashMap StateId state
-                  newStates = HMS.fromList
-                    [ (newStateId, saResampleUpdate payload state)
+            let states0 = getStates' "SReqResample"
+            let foldStep getResults oldStateId resamples = do
+                  results <- getResults
+                  let state = case HMS.lookup oldStateId states0 of
+                        Nothing -> error (printf "slave: Could not find state %d (SReqResample)" oldStateId)
+                        Just state0 -> state0
+                  newResults <- HMS.fromList <$> sequence
+                    [ (newStateId, ) <$> saResampleUpdate payload state
                     | (newStateId, payload) <- HMS.toList resamples
                     ]
-                  in newStates <> states
-            let states = HMS.foldlWithKey' foldStep HMS.empty payloadss
+                  return (newResults <> results)
+            results <- HMS.foldlWithKey' foldStep (return HMS.empty) payloadss
+            let states = HMS.map snd results
             void (evaluate (force states))
-            send SRespResample
+            send (SRespResample (HMS.map fst results))
             loop (SSInitialized states)
           SReqGetStates -> do
-            let states = getStates "SReqGetStates"
+            let states = getStates' "SReqGetStates"
             send (SRespGetStates states)
             loop (SSInitialized states)
       in loop
@@ -180,11 +182,11 @@ instance PrintfArg SlaveId where
   formatArg = formatArg . unSlaveId
   parseFormat = parseFormat . unSlaveId
 
-type SlaveNMAppData state broadcastPayload broadcastOutput resamplePayload =
-  NM.NMAppData (SlaveReq state broadcastPayload resamplePayload) (SlaveResp state broadcastOutput)
+type SlaveNMAppData state broadcastPayload broadcastOutput resamplePayload resampleOutput =
+  NM.NMAppData (SlaveReq state broadcastPayload resamplePayload) (SlaveResp state broadcastOutput resampleOutput)
 
-data MasterHandle state broadcastPayload broadcastOutput resamplePayload = MasterHandle
-  { mhSlaves :: !(HMS.HashMap SlaveId (SlaveNMAppData state broadcastPayload broadcastOutput resamplePayload))
+data MasterHandle state broadcastPayload broadcastOutput resamplePayload resampleOutput = MasterHandle
+  { mhSlaves :: !(HMS.HashMap SlaveId (SlaveNMAppData state broadcastPayload broadcastOutput resamplePayload resampleOutput))
   , mhSlavesStatesRef :: !(IORef (HMS.HashMap SlaveId (HS.HashSet StateId)))
   , mhStateIdsCountRef :: !(IORef Int)
   , mhMaxBatchSize :: !(Maybe Int)
@@ -202,12 +204,12 @@ getNumStatesPerSlave numNodes numParticles = if
       (chunkSize, leftover) = numParticles `quotRem` numNodes
       in if leftover == 0 then chunkSize else chunkSize + 1
 
-master :: forall state broadcastPayload broadcastOutput resamplePayload m a.
+master :: forall state broadcastPayload broadcastOutput resamplePayload resampleOutput m a.
      ( MonadBaseControl IO m, MonadIO m
-     , B.Binary state, B.Binary broadcastPayload, B.Binary broadcastOutput, B.Binary resamplePayload
+     , B.Binary state, B.Binary broadcastPayload, B.Binary broadcastOutput, B.Binary resamplePayload, B.Binary resampleOutput
      )
   => MasterArgs state
-  -> (MasterHandle state broadcastPayload broadcastOutput resamplePayload -> m a)
+  -> (MasterHandle state broadcastPayload broadcastOutput resamplePayload resampleOutput -> m a)
   -> m a
 master MasterArgs{..} cont0 = do
   case (maMinBatchSize, maMaxBatchSize) of
@@ -252,7 +254,7 @@ master MasterArgs{..} cont0 = do
   where
     connectToSlaves ::
          [(CN.ClientSettings, NM.NMSettings)]
-      -> ([SlaveNMAppData state broadcastPayload broadcastOutput resamplePayload] -> m a)
+      -> ([SlaveNMAppData state broadcastPayload broadcastOutput resamplePayload resampleOutput] -> m a)
       -> m a
     connectToSlaves settings0 cont = case settings0 of
       [] -> cont []
@@ -269,9 +271,9 @@ data SlaveThreadStatus
   | STSStop
   deriving (Eq, Show)
 
-broadcast :: forall state broadcastPayload broadcastOutput resamplePayload m.
+broadcast :: forall state broadcastPayload broadcastOutput resamplePayload resampleOutput m.
      (MonadIO m)
-  => MasterHandle state broadcastPayload broadcastOutput resamplePayload
+  => MasterHandle state broadcastPayload broadcastOutput resamplePayload resampleOutput
   -> broadcastPayload
   -> m (HMS.HashMap StateId broadcastOutput)
 broadcast MasterHandle{..} payload = liftIO $ case mhMaxBatchSize of
@@ -386,11 +388,11 @@ broadcast MasterHandle{..} payload = liftIO $ case mhMaxBatchSize of
         _ -> Nothing
       return ()
 
-resample :: forall state broadcastPayload broadcastOutput resamplePayload m.
+resample :: forall state broadcastPayload broadcastOutput resamplePayload resampleOutput m.
      (MonadIO m)
-  => MasterHandle state broadcastPayload broadcastOutput resamplePayload
+  => MasterHandle state broadcastPayload broadcastOutput resamplePayload resampleOutput
   -> HMS.HashMap StateId [resamplePayload]
-  -> m ()
+  -> m (HMS.HashMap StateId resampleOutput)
 resample MasterHandle{..} resamples = liftIO $ do
   -- TODO we might want to bracket here when writing these...
   slavesStates <- readIORef mhSlavesStatesRef
@@ -404,15 +406,19 @@ resample MasterHandle{..} resamples = liftIO $ do
   let (newSlavesStatesAndPayloads, newStateIdsCount) = reassignStates slavesStates resamples stateIdsCount
   forM_ (HMS.toList newSlavesStatesAndPayloads) $ \(slaveId, payload) -> do
     NM.nmWrite (mhSlaves HMS.! slaveId) (SReqResample payload)
-  forM_ (HMS.elems mhSlaves) $ \slave_ -> do
+  results <- fmap mconcat $ forM (HMS.elems mhSlaves) $ \slave_ -> do
     NM.nmReadSelect slave_ $ \case
-      SRespResample -> Just ()
+      SRespResample outputs -> Just outputs
       _ -> Nothing
+  -- TODO: make this debug-time check?
   let newSlaveStates = fmap
         (HS.fromList . concatMap (map fst . HMS.toList) . HMS.elems)
         newSlavesStatesAndPayloads
+  _ <- assert (concat newSlaveStates == hashMapKeySet results)
+              (fail "Didn't get expected resample outputs")
   writeIORef mhSlavesStatesRef newSlaveStates
   writeIORef mhStateIdsCountRef newStateIdsCount
+  return results
 
 generateNewStates ::
      HMS.HashMap StateId [resamplePayload]
@@ -439,7 +445,7 @@ reassignStates oldSlaveStates resamples count0 = let
   in (pickStates <$> oldSlaveStates, count)
 
 getStates ::
-     MasterHandle state broadcastPayload broadcastOutput resamplePayload
+     MasterHandle state broadcastPayload broadcastOutput resamplePayload resampleOutput
   -> IO (HMS.HashMap StateId state)
 getStates MasterHandle{..} = do
   -- Send states
@@ -448,3 +454,7 @@ getStates MasterHandle{..} = do
     NM.nmReadSelect slave_ $ \case
       SRespGetStates states -> Just states
       _ -> Nothing
+
+-- TODO: More efficient version of this?
+hashMapKeySet :: (Eq k, Hashable k) => HMS.HashMap k v -> HS.HashSet k
+hashMapKeySet = HS.fromList . HMS.keys
