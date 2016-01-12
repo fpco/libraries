@@ -16,11 +16,12 @@ module Distributed.Stateful
   ( -- * Master
     MasterArgs(..)
   , MasterHandle
-  , runMaster
+  , mkMasterHandle
     -- ** Operations
   , StateId
   , update
   , resample
+  , resetStates
   , getStates
     -- * Slave
   , SlaveArgs(..)
@@ -37,7 +38,6 @@ import qualified Data.Streaming.NetworkMessage as NM
 import qualified Data.Conduit.Network as CN
 import qualified Data.Binary as B
 import           Data.Binary.Orphans ()
-import qualified Data.Vector as V
 import           Data.List.Split (chunksOf)
 import           Control.Concurrent.Async (mapConcurrently)
 import           Control.Monad.State (runState, gets, modify')
@@ -46,7 +46,7 @@ import           Control.Monad.Trans.Control (MonadBaseControl)
 data SlaveArgs state broadcastPayload broadcastOutput resampleContext resamplePayload resampleOutput = SlaveArgs
   { saUpdate :: !(broadcastPayload -> state -> IO (broadcastOutput, state))
   , saResample :: !(resampleContext -> resamplePayload -> state -> IO (resampleOutput, state))
-  , saServerSettings :: !CN.ServerSettings
+  , saClientSettings :: !CN.ClientSettings
   , saNMSettings :: !NM.NMSettings
   }
 
@@ -98,9 +98,9 @@ runSlave :: forall state broadcastPayload broadcastOutput resampleContext resamp
      )
   => SlaveArgs state broadcastPayload broadcastOutput resampleContext resamplePayload resampleOutput -> m a
 runSlave SlaveArgs{..} = liftIO $ do
-  CN.runGeneralTCPServer saServerSettings $
-    NM.generalRunNMApp (saNMSettings) (const "") (const "") $ \nm ->
-      go (NM.nmRead nm) (NM.nmWrite nm) SSNotInitialized
+    liftIO $ CN.runTCPClient saClientSettings $
+      NM.generalRunNMApp saNMSettings (const "") (const "") $ \nm -> do
+        go (NM.nmRead nm) (NM.nmWrite nm) SSNotInitialized
   where
     go :: forall b.
          IO (SlaveReq state broadcastPayload resampleContext resamplePayload)
@@ -166,9 +166,7 @@ runSlave SlaveArgs{..} = liftIO $ do
       in loop
 
 data MasterArgs state = MasterArgs
-  { maInitialStates :: !(V.Vector state)
-  , maSlaves :: !(V.Vector (CN.ClientSettings, NM.NMSettings))
-  , maMaxBatchSize :: !(Maybe Int)
+  { maMaxBatchSize :: !(Maybe Int)
     -- ^ The maximum amount of states that will be transferred at once. If 'Nothing', they
     -- will be all transferred at once, and no "rebalancing" will ever happen.
     -- Moreover, if 'Nothing', 'maMinBatchSize' will be ignored.
@@ -190,29 +188,14 @@ data MasterHandle state broadcastPayload broadcastOutput resampleContext resampl
   { mhSlaves :: !(HMS.HashMap SlaveId (SlaveNMAppData state broadcastPayload broadcastOutput resampleContext resamplePayload resampleOutput))
   , mhSlavesStatesRef :: !(IORef (HMS.HashMap SlaveId (HS.HashSet StateId)))
   , mhStateIdsCountRef :: !(IORef Int)
-  , mhMaxBatchSize :: !(Maybe Int)
-  , mhMinBatchSize :: !(Maybe Int)
+  , mhArgs :: MasterArgs state
   }
 
-getNumStatesPerSlave ::
-     Int -- ^ Number of nodes
-  -> Int -- ^ Number of particles
-  -> Int -- ^ Number of particles per node (rounded up)
-getNumStatesPerSlave numNodes numParticles = if
-  | numNodes < 1 -> error "numStatesPerSlave: length iaNodes < 1"
-  | numParticles < 1 -> error "numStatesPerSlave: length iaInitialParticles < 1"
-  | otherwise -> let
-      (chunkSize, leftover) = numParticles `quotRem` numNodes
-      in if leftover == 0 then chunkSize else chunkSize + 1
-
-runMaster :: forall state broadcastPayload broadcastOutput resampleContext resamplePayload resampleOutput m a.
-     ( MonadBaseControl IO m, MonadIO m
-     , B.Binary state, B.Binary broadcastPayload, B.Binary broadcastOutput, B.Binary resampleContext, B.Binary resamplePayload, B.Binary resampleOutput
-     )
+mkMasterHandle
+  :: (MonadBaseControl IO m, MonadIO m)
   => MasterArgs state
-  -> (MasterHandle state broadcastPayload broadcastOutput resampleContext resamplePayload resampleOutput -> m a)
-  -> m a
-runMaster MasterArgs{..} cont0 = do
+  -> m (MasterHandle state broadcastPayload broadcastOutput resampleContext resamplePayload resampleOutput)
+mkMasterHandle ma@MasterArgs{..}= do
   case (maMinBatchSize, maMaxBatchSize) of
     (_, Just maxBatchSize) | maxBatchSize < 1 ->
       fail (printf "Distribute.master: maMaxBatchSize must be > 0 (got %d)" maxBatchSize)
@@ -222,46 +205,15 @@ runMaster MasterArgs{..} cont0 = do
       fail (printf "Distribute.master: maMinBatchSize can't be greater then maMaxBatchSize (got %d and %d)" minBatchSize maxBatchSize)
     _ ->
       return ()
-  connectToSlaves (V.toList maSlaves) $ \slaves0 -> do
-    let numSlaves = length slaves0
-    let slavesIds = take numSlaves (map SlaveId [0..])
-    let slaves = HMS.fromList (zip slavesIds slaves0)
-    let numStates = length maInitialStates
-    let statesIds = take numStates (map StateId [0..])
-    stateIdsCountRef <- newIORef numStates
-    let numStatesPerSlave = getNumStatesPerSlave numSlaves numStates
-    let slavesStates = HMS.fromList $ zip slavesIds $ map HS.fromList $
-          -- Note that some slaves might be initially empty. That's fine and inevitable.
-          chunksOf numStatesPerSlave statesIds ++ repeat []
-    slavesStatesRef <- newIORef slavesStates
-    let states :: HMS.HashMap StateId state
-        states = HMS.fromList (zip statesIds (V.toList maInitialStates))
-    -- Send states
-    forM_ (HMS.toList slavesStates) $ \(slaveId, stateIds) -> do
-      let slaveStates = HMS.intersection states
-            (HMS.fromList (zip (HS.toList stateIds) (repeat ())))
-      NM.nmWrite (slaves HMS.! slaveId) (SReqResetState slaveStates)
-    forM_ slaves $ \slave_ -> do
-      NM.nmReadSelect slave_ $ \case
-        SRespResetState -> Just ()
-        _ -> Nothing
-    cont0 MasterHandle
-      { mhSlaves = slaves
-      , mhSlavesStatesRef = slavesStatesRef
-      , mhStateIdsCountRef = stateIdsCountRef
-      , mhMaxBatchSize = maMaxBatchSize
-      , mhMinBatchSize = maMinBatchSize
-      }
-  where
-    connectToSlaves ::
-         [(CN.ClientSettings, NM.NMSettings)]
-      -> ([SlaveNMAppData state broadcastPayload broadcastOutput resampleContext resamplePayload resampleOutput] -> m a)
-      -> m a
-    connectToSlaves settings0 cont = case settings0 of
-      [] -> cont []
-      (cs, nms) : settings ->
-        CN.runGeneralTCPClient cs $ NM.generalRunNMApp nms (const "") (const "") $ \nm ->
-          connectToSlaves settings (\nodes -> cont (nm : nodes))
+  slavesRef <- newIORef HMS.empty
+  slavesStatesRef <- newIORef HMS.empty
+  stateIdsCountRef <- newIORef 0
+  return MasterHandle
+    { mhSlaves = HMS.empty
+    , mhSlavesStatesRef = slavesStatesRef
+    , mhStateIdsCountRef = stateIdsCountRef
+    , mhArgs = ma
+    }
 
 data SlaveThreadStatus
   = STSOk
@@ -277,7 +229,7 @@ update :: forall state broadcastPayload broadcastOutput resampleContext resample
   => MasterHandle state broadcastPayload broadcastOutput resampleContext resamplePayload resampleOutput
   -> broadcastPayload
   -> m (HMS.HashMap StateId broadcastOutput)
-update MasterHandle{..} payload = liftIO $ case mhMaxBatchSize of
+update MasterHandle{..} payload = liftIO $ case maMaxBatchSize of
   Nothing -> do
     slavesStates <- readIORef mhSlavesStatesRef
     forM_ (HMS.toList slavesStates) $ \(slaveId, slaveStatesIds) -> do
@@ -291,6 +243,7 @@ update MasterHandle{..} payload = liftIO $ case mhMaxBatchSize of
     remainingStates <- newMVar (HS.toList <$> slavesStates)
     mconcat <$> mapConcurrently (\slaveId -> slaveThread maxBatchSize slaveId remainingStates) (HMS.keys mhSlaves)
   where
+    MasterArgs {..} = mhArgs
     slaveThread ::
          Int -- ^ Max batch size
       -> SlaveId -- ^ The slave we're operating on
@@ -348,7 +301,7 @@ update MasterHandle{..} payload = liftIO $ case mhMaxBatchSize of
             guard (slaveId /= thisSlaveId)
             let numSlaveRemainingStates = length slaveRemainingStates
             guard (numSlaveRemainingStates > batchSize)
-            guard (min batchSize (numSlaveRemainingStates - batchSize) >= fromMaybe 0 mhMinBatchSize)
+            guard (min batchSize (numSlaveRemainingStates - batchSize) >= fromMaybe 0 maMinBatchSize)
             return (slaveId, numSlaveRemainingStates, slaveRemainingStates)
       let candidates :: [(SlaveId, Int, [StateId])]
           candidates = catMaybes (map goodCandidate (HMS.toList remainingStates))
@@ -446,6 +399,50 @@ reassignStates oldSlaveStates resamples count0 = let
     HMS.intersection newStates (HMS.fromList (zip (HS.toList slaveStates) (repeat ())))
   in (pickStates <$> oldSlaveStates, count)
 
+resetStates :: forall state broadcastPayload broadcastOutput resampleContext resamplePayload resampleOutput m.
+     ( MonadBaseControl IO m, MonadIO m
+     , B.Binary state, B.Binary broadcastPayload, B.Binary broadcastOutput, B.Binary resampleContext, B.Binary resamplePayload, B.Binary resampleOutput
+     )
+  => MasterHandle state broadcastPayload broadcastOutput resampleContext resamplePayload resampleOutput
+  -> [state]
+  -> m (HMS.HashMap StateId state)
+resetStates MasterHandle{..} states0 = do
+  -- Get a list of StateIds for states
+  stateIdsCount <- readIORef mhStateIdsCountRef
+  let numStates = length states0
+  let statesIds = map StateId [stateIdsCount..stateIdsCount + numStates - 1]
+  writeIORef mhStateIdsCountRef (stateIdsCount + numStates)
+  -- Divide up the states among the slaves
+  let slaves = HMS.toList mhSlaves
+  let numStatesPerSlave = getNumStatesPerSlave (length slaves) numStates
+  let slavesStates = HMS.fromList $ zip (map fst slaves) $ map HS.fromList $
+        -- Note that some slaves might be initially empty. That's fine and inevitable.
+        chunksOf numStatesPerSlave statesIds ++ repeat []
+  writeIORef mhSlavesStatesRef slavesStates
+  let states :: HMS.HashMap StateId state
+      states = HMS.fromList (zip statesIds states0)
+  -- Send states
+  forM_ (HMS.toList slavesStates) $ \(slaveId, stateIds) -> do
+    let slaveStates = HMS.intersection states
+          (HMS.fromList (zip (HS.toList stateIds) (repeat ())))
+    NM.nmWrite (mhSlaves HMS.! slaveId) (SReqResetState slaveStates)
+  forM_ slaves $ \(_, slave_) -> do
+    NM.nmReadSelect slave_ $ \case
+      SRespResetState -> Just ()
+      _ -> Nothing
+  return states
+
+getNumStatesPerSlave ::
+     Int -- ^ Number of nodes
+  -> Int -- ^ Number of particles
+  -> Int -- ^ Number of particles per node (rounded up)
+getNumStatesPerSlave numNodes numParticles = if
+  | numNodes < 1 -> error "numStatesPerSlave: length iaNodes < 1"
+  | numParticles < 1 -> error "numStatesPerSlave: length iaInitialParticles < 1"
+  | otherwise -> let
+      (chunkSize, leftover) = numParticles `quotRem` numNodes
+      in if leftover == 0 then chunkSize else chunkSize + 1
+
 getStates ::
      MasterHandle state broadcastPayload broadcastOutput resampleContext resamplePayload resampleOutput
   -> IO (HMS.HashMap StateId state)
@@ -460,3 +457,42 @@ getStates MasterHandle{..} = do
 -- TODO: More efficient version of this?
 hashMapKeySet :: (Eq k, Hashable k) => HMS.HashMap k v -> HS.HashSet k
 hashMapKeySet = HS.fromList . HMS.keys
+
+-- runWorker
+--      :: forall m context input state output.
+--         ( MonadConnect m
+--        , Sendable context
+--        , Sendable input
+--        , Sendable state
+--        , Sendable output
+--        )
+--     => WorkerConfig
+--     -- ^ Configuration for the worker. Note that configuration options
+--     -- relevant to the work-queue portions of things will be ignored.
+--     -- In particular, 'workerMasterLocalSlaves'.
+--     -> Int
+--     -- ^ How many slaves to request (this count is not guaranteed,
+--     -- though).
+--     -> (context -> input -> StateId -> state -> (output, HMS.HashMap StateId state))
+--     -- ^ This is the update function run by slaves.
+--     -> (RedisInfo -> MasterConnectInfo -> RequestId -> request -> MasterHandle state context input output -> IO response)
+--     -- ^ This function runs on the master after it's received a
+--     -- reqeuest. The function is expected to use functions which take
+--     -- 'MasterHandle' to send work to its slaves. In particular,
+--     -- 'update'.
+--     -> m ()
+-- runWorker config slaveCount update inner = do
+--     unless (slaveCount > 0) $ error "For stateful worker, slave count must be > 0"
+--     jobQueueNode config slave' master'
+--   where
+--     slave' wp mci = slave SlaveArgs
+--         { saUpdate = update
+--         , saServerSettings = clientSettingsTCP (mciPort mci) (mciHost mci)
+--         , saNMSettings = wpNMSettings wp
+--         }
+--     master' wp ss rid r mci = do
+--         let redis = wpRedis w
+--         forM_ [1..slaveCount] $ requestSlave redis mci
+--         runTCPServer ss $ runNMApp (wpNMSettings wp) $ \nm -> do
+--             let args = MasterArgs
+--                     {
