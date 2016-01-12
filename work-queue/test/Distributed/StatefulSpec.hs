@@ -46,7 +46,7 @@ runMasterAndSlaves
     -> Int
     -> (broadcastPayload -> state -> IO (broadcastOutput, state))
     -> [state]
-    -> (MasterHandle state broadcastPayload broadcastOutput () () -> IO a)
+    -> (MasterHandle state broadcastPayload broadcastOutput () () () -> IO a)
     -> IO a
 runMasterAndSlaves basePort slaveCnt slaveUpdate initialStates inner = do
     nms <- nmsSettings
@@ -60,7 +60,7 @@ runMasterAndSlaves basePort slaveCnt slaveUpdate initialStates inner = do
             }
     let slaveArgs port = SlaveArgs
             { saUpdate = slaveUpdate
-            , saResample = \() state -> return ((), state)
+            , saResample = \() () state -> return ((), state)
             , saNMSettings = nms
             , saServerSettings = serverSettings port "*"
             }
