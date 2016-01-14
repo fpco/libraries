@@ -1,5 +1,6 @@
 /static StaticR Static appStatic
 
-/ HomeR GET
+/ HomeR GET POST
 /status StatusR GET POST
 /requests RequestsR GET
+/default-settings DefaultSettingsR POST

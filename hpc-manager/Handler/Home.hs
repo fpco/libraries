@@ -5,25 +5,36 @@ module Handler.Home where
 import Control.Monad.Logger
 import Data.Either
 import Data.Time.Clock
-import Distributed.JobQueue.Client (cancelRequest)
+import Distributed.JobQueue.Client (cancelRequest, DistributedJobQueueException(..))
 import Distributed.JobQueue.Status
 import Distributed.RedisQueue
 import FP.Redis
 import Import
 import Yesod.Form.Bootstrap3
 
+--------------------------------------------------------------------------------
+-- Connection Configuration
+
 getHomeR :: Handler Html
 getHomeR = do
-    -- If the settings have been specified by env vars, skip configuration.
-    settings <- appSettings <$> getYesod
-    mnoRedir <- lookupGetParam "no-redirect"
-    when (appHpcRedisPrefix settings /= "" && isNothing mnoRedir) $
-        redirect StatusR
-    -- Otherwise, ask the user to configure the connection.
-    (formWidget, formEncType) <- generateFormGet' =<< configForm
+    (formWidget, formEncType) <- generateFormPost =<< configForm
     defaultLayout $ do
         setTitle "Compute Tier Status Connection Setup"
         $(widgetFile "homepage")
+
+postHomeR :: Handler Html
+postHomeR = do
+    ((res, _), _) <- runFormPost =<< configForm
+    case res of
+        FormSuccess config -> do
+            storeConfig config
+            redirect StatusR
+        _ -> do
+            setMessageI (pack (show res) :: Text)
+            redirect HomeR
+
+postDefaultSettingsR :: Handler Html
+postDefaultSettingsR = clearSession >> redirect StatusR
 
 data Config = Config
     { redisHost :: !ByteString
@@ -39,33 +50,43 @@ configForm = do
         <*> areq intField (withSmallInput $ bfs ("Redis port" :: Text)) (Just appHpcRedisPort)
         <*> fmap encodeUtf8 (areq textField (withLargeInput $ bfs ("Redis key prefix" :: Text)) (Just appHpcRedisPrefix))
 
-ensureConfig :: Handler Config
-ensureConfig = do
-    ((res, _), _) <- runFormGet =<< configForm
-    case res of
-        FormSuccess config -> return config
-        _ -> do
-            -- When there's a redirect from HomeR due to having a
-            -- configuration, there are no get params.
-            --
-            -- NOTE: ideally we'd have a way to go from a form + value
-            -- to a list of query params, then this would be
-            -- unnecessary.
+storeConfig :: Config -> Handler ()
+storeConfig config = do
+    setSessionBS "redis-host" (redisHost config)
+    setSession "redis-port" (pack (show (redisPort config)))
+    setSessionBS "redis-prefix" (redisPrefix config)
+
+clearConfig :: Handler ()
+clearConfig = do
+    deleteSession "redis-host"
+    deleteSession "redis-port"
+    deleteSession "redis-prefix"
+
+getConfig :: Handler Config
+getConfig = do
+    mredisHost <- lookupSessionBS "redis-host"
+    mredisPort <- lookupSession "redis-port"
+    mredisPrefix <- lookupSessionBS "redis-prefix"
+    case (mredisHost, mredisPort, mredisPrefix) of
+        (Just redisHost, Just (readMay . unpack -> Just redisPort), Just redisPrefix) ->
+            return Config {..}
+        (Nothing, Nothing, Nothing) -> do
             settings <- appSettings <$> getYesod
-            gps <- reqGetParams <$> getRequest
-            if null gps
-                then return Config
-                    { redisHost = encodeUtf8 (appHpcRedisHost settings)
-                    , redisPort = appHpcRedisPort settings
-                    , redisPrefix = encodeUtf8 (appHpcRedisPrefix settings)
-                    }
-                else do
-                    setMessageI (pack (show res) :: Text)
-                    redirect HomeR
+            return Config
+                { redisHost = encodeUtf8 (appHpcRedisHost settings)
+                , redisPort = appHpcRedisPort settings
+                , redisPrefix = encodeUtf8 (appHpcRedisPrefix settings)
+                }
+        _ -> do
+            setMessageI ("Unexpected session state.  Please reconfigure connection." :: Text)
+            redirect HomeR
+
+--------------------------------------------------------------------------------
+-- Worker status
 
 getStatusR :: Handler Html
 getStatusR = do
-    config <- ensureConfig
+    config <- getConfig
     setUltDestCurrent
     start <- liftIO getCurrentTime
     (jqs, workers, pending) <- withRedis' config $ \r -> do
@@ -97,48 +118,46 @@ getAndRenderRequest start r k = do
 
 postStatusR :: Handler Html
 postStatusR = do
-    ((res, _), _) <- runFormGet =<< configForm
-    case res of
-        FormSuccess config -> do
-            (postParams, _) <- runRequestBody
-            let (cmds, others) = partition (\(k, v) -> k `elem` ["cancel", "clear-heartbeats"] && v == "true") postParams
-                (reqs', others') = partition (\(k, _) -> "jqr:" `isPrefixOf` k) others
-                reqs = mapMaybe
-                    (\(k, v) ->
-                        (, (WorkerId . encodeUtf8 <$> stripPrefix "wid:" v))
-                        <$> (RequestId . encodeUtf8 <$> stripPrefix "jqr:" k))
-                    reqs'
-            when (not (null others')) $ invalidArgs (map fst others')
-            case map fst cmds of
-                ["cancel"] -> do
-                    (successes, failures) <- fmap (partition snd) $
-                        withRedis' config $ \redis ->
-                        forM reqs $ \(rid, mwid) -> do
-                            success <- cancelRequest (Seconds 60) redis rid mwid
-                            return (rid, success)
-                    let takesAWhile :: Text
-                        takesAWhile = "NOTE: it may take a while for computations to cancel, so they will likely still appear as active work items"
-                        failuresList = pack (show (map (unRequestId . fst) failures))
-                    setMessageI $ case (null successes, null failures) of
-                        (True, True) -> "No cancellations selected."
-                        (False, True) -> "Cancellation request applied.  " <> takesAWhile
-                        (True, False) ->
-                            "Failed to cancel any requests, couldn't find the following: " <>
-                            failuresList <> "\n" <> takesAWhile
-                        (False, False) ->
-                            "Some cancellations applied, couldn't find the following: " <>
-                            failuresList <> "\n" <> takesAWhile
-                ["clear-heartbeats"] -> withRedis' config $ \redis ->
-                    mapM_ (clearHeartbeatFailure redis) =<< getActiveWorkers redis
-                _ -> invalidArgs (map fst cmds)
-            redirectUltDest HomeR
-        _ -> do
-          setMessageI (pack (show res) :: Text)
-          redirect HomeR
+    config <- getConfig
+    (postParams, _) <- runRequestBody
+    let (cmds, others) = partition (\(k, v) -> k `elem` ["cancel", "clear-heartbeats"] && v == "true") postParams
+        (reqs', others') = partition (\(k, _) -> "jqr:" `isPrefixOf` k) others
+        reqs = mapMaybe
+            (\(k, v) ->
+                (, (WorkerId . encodeUtf8 <$> stripPrefix "wid:" v))
+                <$> (RequestId . encodeUtf8 <$> stripPrefix "jqr:" k))
+            reqs'
+    when (not (null others')) $ invalidArgs (map fst others')
+    case map fst cmds of
+        ["cancel"] -> do
+            (successes, failures) <- fmap (partition snd) $
+                withRedis' config $ \redis ->
+                forM reqs $ \(rid, mwid) -> do
+                    success <- cancelRequest (Seconds 60) redis rid mwid
+                    return (rid, success)
+            let takesAWhile :: Text
+                takesAWhile = "NOTE: it may take a while for computations to cancel, so they will likely still appear as active work items"
+                failuresList = pack (show (map (unRequestId . fst) failures))
+            setMessageI $ case (null successes, null failures) of
+                (True, True) -> "No cancellations selected."
+                (False, True) -> "Cancellation request applied.  " <> takesAWhile
+                (True, False) ->
+                    "Failed to cancel any requests, couldn't find the following: " <>
+                    failuresList <> "\n" <> takesAWhile
+                (False, False) ->
+                    "Some cancellations applied, couldn't find the following: " <>
+                    failuresList <> "\n" <> takesAWhile
+        ["clear-heartbeats"] -> withRedis' config $ \redis ->
+            mapM_ (clearHeartbeatFailure redis) =<< getActiveWorkers redis
+        _ -> invalidArgs (map fst cmds)
+    redirectUltDest HomeR
+
+--------------------------------------------------------------------------------
+-- Requests status
 
 getRequestsR :: Handler Html
 getRequestsR = do
-    config <- ensureConfig
+    config <- getConfig
     rs <- withRedis' config getAllRequests
     $logInfo (tshow rs)
     requests <- withRedis' config getAllRequestStats
@@ -146,8 +165,19 @@ getRequestsR = do
         setTitle "Compute Tier Requests"
         $(widgetFile "requests")
 
+--------------------------------------------------------------------------------
+-- Utilities
+
 withRedis' :: (MonadIO m, MonadCatch m, MonadBaseControl IO m)
            => Config -> (RedisInfo -> LoggingT m a) -> m a
-withRedis' config = runStdoutLoggingT . withRedis (redisPrefix config) ci
+withRedis' config = handleMismatchedSchema . runStdoutLoggingT . withRedis (redisPrefix config) ci
   where
     ci = (connectInfo (redisHost config)) { connectPort = redisPort config }
+
+handleMismatchedSchema :: (MonadIO m, MonadCatch m, MonadBaseControl IO m) => m a -> m a
+handleMismatchedSchema = flip catch $ \ex ->
+    case ex of
+        MismatchedRedisSchemaVersion { actualRedisSchemaVersion = "" } ->
+            fail $ "Either the redis prefix key is incorrect, or the hpc-manager's redis schema is mismatched: "
+                ++ show ex
+        _ -> throwM ex

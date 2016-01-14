@@ -19,8 +19,11 @@
     <b>#{length workers}
     total.
   <li>
-    <a href=@{HomeR}?no-redirect=t>Click here
+    <a href=@{HomeR}>Click here
     to change connection configuration.
+  <li>
+    <a href=@{RequestsR}>Click here
+    to view info for all requests stored in redis.
 
 <form method=post>
   <h2>Actions

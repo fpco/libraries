@@ -1,10 +1,12 @@
 <h1>Compute Tier Status Connection Setup
 
-<p>
-  Note: When using a deployed version of this manager, these settings likely have
-  the correct defaults, so you can just press "Get Status" below.
+<form method=post action=@{DefaultSettingsR}>
+  <button .btn .btn-primary type=submit>
+    Get Status Using Defaults
 
-<form method=get action=@{StatusR} enctype=#{formEncType}>
+<h1>OR
+
+<form method=post enctype=#{formEncType}>
   ^{formWidget}
   <button .btn .btn-primary type=submit>
     Get Status
