@@ -24,7 +24,7 @@ module Distributed.JobQueue.Shared
     , addRequestEnqueuedEvent
     , getRequestEvents
     -- * Schema version
-    , setOrCheckRedisSchemaVersion
+    , setRedisSchemaVersion
     , checkRedisSchemaVersion
     -- * Exceptions
     , DistributedJobQueueException(..)
@@ -32,7 +32,7 @@ module Distributed.JobQueue.Shared
     ) where
 
 import ClassyPrelude
-import Control.Monad.Logger (MonadLogger, logInfo)
+import Control.Monad.Logger (MonadLogger, logInfo, logWarn)
 import qualified Data.Aeson as Aeson
 import Data.Binary (Binary, encode)
 import Data.Binary.Orphans ()
@@ -134,15 +134,15 @@ redisSchemaKey r = VKey $ Key $ redisKeyPrefix r <> "version"
 
 -- | Checks if the redis schema version is correct.  If not present, then the
 -- key gets set.
-setOrCheckRedisSchemaVersion :: MonadCommand m => RedisInfo -> m ()
-setOrCheckRedisSchemaVersion r = do
+setRedisSchemaVersion :: (MonadCommand m, MonadLogger m) => RedisInfo -> m ()
+setRedisSchemaVersion r = do
     mv <- run r $ get (redisSchemaKey r)
     case mv of
-        Nothing -> run_ r $ set (redisSchemaKey r) redisSchemaVersion []
-        Just v -> when (v /= redisSchemaVersion) $ liftIO $ throwIO MismatchedRedisSchemaVersion
-            { actualRedisSchemaVersion = v
-            , expectedRedisSchemaVersion = redisSchemaVersion
-            }
+        Nothing -> return ()
+        Just v -> $logWarn $
+            "Redis schema version changed from " <> tshow v <> " to " <> tshow (redisSchemaKey r) <>
+            ".  This is only expected once after updating work-queue version."
+    run_ r $ set (redisSchemaKey r) redisSchemaVersion []
 
 -- | Throws 'MismatchedRedisSchemaVersion' if it's wrong or unset.
 checkRedisSchemaVersion :: MonadCommand m => RedisInfo -> m ()
