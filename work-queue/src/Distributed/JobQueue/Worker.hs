@@ -33,6 +33,7 @@ module Distributed.JobQueue.Worker
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async, withAsync, cancel, cancelWith, waitEither)
+import Control.Exception (BlockedIndefinitelyOnMVar(..))
 import Control.Monad.Logger (logErrorS, logInfoS, logDebugS, logWarnS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import Data.Binary (Binary, encode)
@@ -343,10 +344,15 @@ jobQueueWorkerInternal params@WorkerParams{..} slave master = do
     -- Heartbeats get their own redis connection, as this way it's
     -- less likely that they'll fail due to the main redis connection
     -- transferring lots of data.
-    withHeartbeats = do
+    withHeartbeats inner = do
+        heartbeatSentVar <- newEmptyMVar
         let logTag = LogTag (wpName <> "-heartbeat")
-        withAsyncLifted $ withLogTag logTag $ withRedis' wpConfig $ \r ->
-            sendHeartbeats r (workerHeartbeatSendIvl wpConfig) wpId
+            runHeartbeats = withLogTag logTag $ withRedis' wpConfig $ \r ->
+                sendHeartbeats r (workerHeartbeatSendIvl wpConfig) wpId heartbeatSentVar
+        withAsyncLifted runHeartbeats $ \heartbeatThread -> do
+            takeMVar heartbeatSentVar `catch` \BlockedIndefinitelyOnMVar ->
+                liftIO $ throwIO $ InternalJobQueueException "Heartbeat checker thread died before sending initial heartbeat"
+            inner heartbeatThread
 
 becomeMaster
     :: forall m request response.
