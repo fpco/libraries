@@ -305,6 +305,7 @@ encodeRequest request _ =
     toStrict $ encode JobRequest
         { jrRequestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         , jrResponseType = fromTypeRep (typeRep (Proxy :: Proxy response))
+        , jrSchema = redisSchemaVersion
         , jrBody = toStrict (encode request)
         }
 

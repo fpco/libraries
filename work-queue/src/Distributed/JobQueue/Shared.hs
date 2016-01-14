@@ -24,6 +24,7 @@ module Distributed.JobQueue.Shared
     , addRequestEnqueuedEvent
     , getRequestEvents
     -- * Schema version
+    , redisSchemaVersion
     , setRedisSchemaVersion
     , checkRedisSchemaVersion
     -- * Exceptions
@@ -50,6 +51,7 @@ import FP.Redis
 
 data JobRequest = JobRequest
     { jrRequestType, jrResponseType :: ConcreteTypeRep
+    , jrSchema :: ByteString
     , jrBody :: ByteString
     } deriving (Generic, Show, Typeable)
 
@@ -127,7 +129,7 @@ getRequestEvents r k =
 -- * Schema version
 
 redisSchemaVersion :: ByteString
-redisSchemaVersion = "1"
+redisSchemaVersion = "2"
 
 redisSchemaKey :: RedisInfo -> VKey
 redisSchemaKey r = VKey $ Key $ redisKeyPrefix r <> "version"
@@ -187,6 +189,13 @@ data DistributedJobQueueException
         , actualRedisSchemaVersion :: ByteString
         }
     -- ^ Exception thrown on initialization of work-queue
+    | MismatchedRequestRedisSchemaVersion
+        { expectedRequestRedisSchemaVersion :: ByteString
+        , actualRequestRedisSchemaVersion :: ByteString
+        , schemaMismatchRequestId :: RequestId
+        }
+    -- ^ Exception thrown when request is received with the wrong schema
+    -- version.
     | NetworkMessageException NetworkMessageException
     -- ^ Exceptions thrown by "Data.Streaming.NetworkMessage"
     | InternalJobQueueException Text
@@ -231,6 +240,12 @@ instance Show DistributedJobQueueException where
         "MismatchedRedisSchemaVersion " ++
         "{ expectedRedisSchemaVersion = " ++ show expectedRedisSchemaVersion ++
         ", actualRedisSchemaVersion = " ++ show actualRedisSchemaVersion ++
+        "}"
+    show (MismatchedRequestRedisSchemaVersion {..}) =
+        "MismatchedRequestRedisSchemaVersion " ++
+        "{ expectedRequestRedisSchemaVersion = " ++ show expectedRequestRedisSchemaVersion ++
+        ", actualRequestRedisSchemaVersion = " ++ show actualRequestRedisSchemaVersion ++
+        ", schemaMismatchRequestId = " ++ show schemaMismatchRequestId ++
         "}"
     show (NetworkMessageException nme) =
         "NetworkMessageException (" ++ show nme ++ ")"

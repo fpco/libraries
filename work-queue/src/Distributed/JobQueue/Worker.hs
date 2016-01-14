@@ -371,6 +371,12 @@ becomeMaster params@WorkerParams{..} k req master = do
                 , expectedRequestType = requestType
                 , actualRequestType = jrRequestType
                 }
+        when (jrSchema /= redisSchemaVersion) $ do
+            liftIO $ throwIO MismatchedRequestRedisSchemaVersion
+                { expectedRequestRedisSchemaVersion = redisSchemaVersion
+                , actualRequestRedisSchemaVersion = jrSchema
+                , schemaMismatchRequestId = k
+                }
         decoded <- decodeOrThrow "jobQueueWorker" jrBody
         let WorkerConfig{..} = wpConfig
         watchForCancel wpRedis k workerCancellationCheckIvl $ do
