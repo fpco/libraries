@@ -8,7 +8,7 @@
       $of Nothing
         <b>Heartbeats not yet checked.  This is either a bug, or the wrong redis key prefix has been specified.
       $of Just lastHeartbeat
-        <b>#{show lastHeartbeat}
+        <b>#{show (diffUTCTime start lastHeartbeat)}
         since last heartbeat check.
   <li>
     <b>#{length pending}
@@ -47,6 +47,7 @@
             <td>#{wid}
             <td>#{rid}
           $of Right msg
+            <td>
             <td>
             <td>
             <td>#{wid}
