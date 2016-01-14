@@ -117,6 +117,7 @@ handleWorkerFailure
 handleWorkerFailure r (Seconds expiry) wid = do
     moved <- run r $ (eval script ks as :: CommandRequest Int64)
     case moved of
+        (-1) -> return ()
         0 -> $logWarnS "JobQueue" $ tshow wid <>
             " failed its heartbeat, but didn't have items to re-enqueue."
         1 -> $logWarnS "JobQueue" $ tshow wid <>
@@ -149,7 +150,8 @@ handleWorkerFailure r (Seconds expiry) wid = do
         [ "local xs = redis.pcall('lrange', KEYS[1], 0, -1)"
         -- This indicates that failure was already handled.
         , "if xs['err'] then"
-        , "    return 0"
+        , "    redis.call('zrem', KEYS[3], ARGV[1])"
+        , "    return -1"
         , "else"
         , "    local len = table.getn(xs)"
         , "    if len > 0 then"
@@ -157,7 +159,7 @@ handleWorkerFailure r (Seconds expiry) wid = do
         , "    end"
         , "    redis.call('del', KEYS[1])"
         , "    redis.call('setex', KEYS[1], ARGV[2], 'HeartbeatFailure')"
-        , "    redis.pcall('zrem', KEYS[3], ARGV[1])"
+        , "    redis.call('zrem', KEYS[3], ARGV[1])"
         , "    return len"
         , "end"
         ]
