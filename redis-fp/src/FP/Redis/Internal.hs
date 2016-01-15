@@ -9,7 +9,7 @@ module FP.Redis.Internal where
 import Blaze.ByteString.Builder (Builder)
 import qualified Blaze.ByteString.Builder as Builder
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Builder
-import ClassyPrelude.Conduit hiding (Builder)
+import ClassyPrelude.Conduit hiding (Builder, DList)
 import Control.Concurrent.STM (retry)
 import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..), BlockedIndefinitelyOnSTM(..))
 import Data.DList (DList)

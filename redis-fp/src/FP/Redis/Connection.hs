@@ -15,7 +15,7 @@ module FP.Redis.Connection
 
 -- TODO OPTIONAL: Add a HasConnection class so clients don't need to pass Connections explicitly
 
-import ClassyPrelude.Conduit hiding (Builder, connect)
+import ClassyPrelude.Conduit hiding (Builder, DList, connect)
 import Blaze.ByteString.Builder (Builder)
 import qualified Blaze.ByteString.Builder as Builder
 import qualified Control.Concurrent.Async as Async
