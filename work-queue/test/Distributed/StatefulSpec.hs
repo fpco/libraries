@@ -2,14 +2,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ParallelListComp #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts #-}
 module Distributed.StatefulSpec (spec) where
 
 import           Control.Concurrent.Async
 import           Control.DeepSeq (NFData)
+import           Control.Monad.Trans.Control (MonadBaseControl)
 import           Data.Binary (Binary)
 import           Data.Conduit.Network (serverSettings, clientSettings)
+import qualified Data.Conduit.Network as CN
+import           Data.Foldable
 import qualified Data.HashMap.Strict as HMS
 import           Data.Streaming.NetworkMessage
+import qualified Data.Streaming.NetworkMessage as NM
 import qualified Data.Vector as V
 import           Distributed.Stateful
 import           Test.Hspec (shouldBe)
@@ -40,32 +45,47 @@ it :: String -> IO () -> Hspec.Spec
 it name f = Hspec.it name f
 
 runMasterAndSlaves
-    :: forall state broadcastPayload broadcastOutput a.
-       (NFData state, Binary state, Binary broadcastPayload, Binary broadcastOutput)
+    :: forall state updatePayload updateOutput a.
+       (NFData state, Binary state, Binary updatePayload, Binary updateOutput)
     => Int
     -> Int
-    -> (broadcastPayload -> state -> IO (broadcastOutput, state))
+    -> (updatePayload -> state -> IO (updateOutput, state))
     -> [state]
-    -> (MasterHandle state broadcastPayload broadcastOutput () () () -> IO a)
+    -> (MasterHandle state updatePayload updateOutput () () () -> IO a)
     -> IO a
 runMasterAndSlaves basePort slaveCnt slaveUpdate initialStates inner = do
     nms <- nmsSettings
     let ports = [basePort..basePort + slaveCnt]
-    let settings = map (\port -> clientSettings port "localhost") ports
+    let settings = map (\port -> serverSettings port "localhost") ports
     let masterArgs = MasterArgs
-            { maInitialStates = V.fromList initialStates
-            , maSlaves = V.fromList (zip settings (repeat nms))
-            , maMinBatchSize = Nothing
+            { maMinBatchSize = Nothing
             , maMaxBatchSize = Just 5
+            , maNMSettings = nms
             }
-    let slaveArgs port = SlaveArgs
+    let slaveArgs = SlaveArgs
             { saUpdate = slaveUpdate
             , saResample = \() () state -> return ((), state)
             , saNMSettings = nms
-            , saServerSettings = serverSettings port "*"
+            , saClientSettings = clientSettings "" "localhost"
             }
     withAsync (mapConcurrently (runSlave . slaveArgs) ports) $ \_ ->
-        runMaster masterArgs inner
+      connectToSlaves (zip settings (repeat nms)) $ \slaves -> do
+        mh <- mkMasterHandle masterArgs
+        forM_ slaves (addSlaveConnection mh)
+        resetStates mh initialStates
+        inner mh
+
+-- connectToSlaves
+--   :: (MonadBaseControl IO m, Binary state, Binary updatePayload, Binary updateOutput, Binary resampleContext, Binary resamplePayload, Binary resampleOutput)
+--   => [(CN.ServerSettings, NM.NMSettings)]
+--   -> ([SlaveNMAppData state updatePayload updateOutput resampleContext resamplePayload resampleOutput] -> m a)
+--   -> m a
+-- connectToSlaves settings0 cont = case settings0 of
+--   [] -> cont []
+--   (ss, nms) : settings ->
+--     CN.runGeneralTCPServer ss $ NM.generalRunNMApp nms (const "") (const "") $ \nm ->
+--       connectToSlaves settings (\nodes -> cont (nm : nodes))
+
 
 nmsSettings :: IO NMSettings
 nmsSettings = do
