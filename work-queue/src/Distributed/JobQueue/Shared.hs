@@ -140,10 +140,10 @@ setRedisSchemaVersion :: (MonadCommand m, MonadLogger m) => RedisInfo -> m ()
 setRedisSchemaVersion r = do
     mv <- run r $ get (redisSchemaKey r)
     case mv of
-        Nothing -> return ()
-        Just v -> $logWarn $
-            "Redis schema version changed from " <> tshow v <> " to " <> tshow (redisSchemaKey r) <>
+        Just v | v /= redisSchemaVersion -> $logWarn $
+            "Redis schema version changed from " <> tshow v <> " to " <> tshow redisSchemaVersion <>
             ".  This is only expected once after updating work-queue version."
+        _ -> return ()
     run_ r $ set (redisSchemaKey r) redisSchemaVersion []
 
 -- | Throws 'MismatchedRedisSchemaVersion' if it's wrong or unset.
