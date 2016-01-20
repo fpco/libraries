@@ -43,12 +43,18 @@ spec = do
         finished `shouldBe` Just 1
     it "doesn't fail when a lazy value takes more than the heartbeat time" $ do
         settings <- defaultNMSettings
+        -- Using an MVar instead of directly threadDelaying is to avoid
+        -- a "Control.Concurrent.STM.atomically was nested" message.
+        valueReady <- newEmptyMVar
         let client app = do
                 nmWrite app True
                 nmRead app
-            server app = do
-                nmWrite app $ unsafePerformIO $ do
-                    threadDelay (getNMHeartbeat settings * 3)
+            triggerValueReady = do
+                threadDelay (getNMHeartbeat settings * 3)
+                putMVar valueReady ()
+            server app =
+                withAsync triggerValueReady $ \_ -> nmWrite app $ unsafePerformIO $ do
+                    takeMVar valueReady
                     return (1 :: Int)
         finished <- timeout (1000 * 1000 * 2) $
             runClientAndServer' settings client server
