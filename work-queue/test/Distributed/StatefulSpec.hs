@@ -3,91 +3,150 @@
 {-# LANGUAGE ParallelListComp #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Distributed.StatefulSpec (spec) where
 
+import           ClassyPrelude
 import           Control.Concurrent.Async
 import           Control.DeepSeq (NFData)
+import           Control.Exception (BlockedIndefinitelyOnMVar(..))
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import           Data.Binary (Binary)
 import           Data.Conduit.Network (serverSettings, clientSettings)
 import qualified Data.Conduit.Network as CN
-import           Data.Foldable
 import qualified Data.HashMap.Strict as HMS
+import qualified Data.HashSet as HS
 import           Data.Streaming.NetworkMessage
 import qualified Data.Streaming.NetworkMessage as NM
 import qualified Data.Vector as V
 import           Distributed.Stateful
+import           System.Timeout (timeout)
 import           Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
+import           Test.QuickCheck
 
--- FIXME: better fix than "master inner function should get a Vector
--- StateId"
+newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Binary)
+newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Binary)
+newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Binary, NFData)
+newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq)
 
 spec :: Hspec.Spec
 spec = do
     it "Sends data around properly" $ do
-        let slaveUpdate input state =
-                return (input,  Right input : state)
+        let slaveUpdate :: () -> String -> [Either Int String] -> IO ([Either Int String], String)
+            slaveUpdate _context input state =
+                return (Right input : state, input)
         let initialStates :: [[Either Int String]]
             initialStates = map ((:[]) . Left) [1..4]
         runMasterAndSlaves 7000 4 slaveUpdate initialStates $ \mh -> do
-            states0 <- getStates mh
-            let inputs = HMS.fromList
-                    [ (sid, ("input 1" :: String, i :: Int))
-                    | i <- [1..4]
-                    | (sid, _) <- HMS.toList states0
-                    ]
-            outputs <- update mh ("step 1" :: String)
             states <- getStates mh
-            states `shouldBe` (HMS.map (\(_input, initial) -> [Right "step 1", Left initial]) inputs)
+            print states
+            sids <- getStateIds mh
+            let inputs = HMS.fromList $ map (, ["input 1"]) $ HS.toList sids
+            outputs <- update mh () inputs
+            print outputs
+            -- states `shouldBe` (HMS.map (\(_input, initial) -> [Right "step 1", Left initial]) inputs)
+    Hspec.it "Passes quickcheck comparison with pure implementation" $
+      property $ forAll arbitrary $
+      \( Blind (function :: Context -> Input -> State -> (State, Output))
+       , initialStates :: [State]
+       , updates :: [(Context, [[Input]])]
+       ) -> ioProperty $ do
+         results <- runMasterAndSlaves 7000 4 (\c i s -> return (function c i s)) initialStates $ \mh -> do
+           resetStates mh initialStates
+           let go :: PureState State -> (Context, [[Input]]) -> IO (PureState State)
+               go ps (ctx, inputs) = do
+                 sids <- getStateIds mh
+                 let inputMap = HMS.fromList (zip (sort (HS.toList sids)) inputs)
+                 outputs <- update mh ctx inputMap
+                 let (ps', outputs') = pureUpdate function ctx inputMap ps
+                 outputs `shouldBe` outputs'
+                 return ps'
+           foldM go (initialPureState initialStates) updates
+         return True
 
 it :: String -> IO () -> Hspec.Spec
 it name f = Hspec.it name f
 
 runMasterAndSlaves
-    :: forall state updatePayload updateOutput a.
-       (NFData state, Binary state, Binary updatePayload, Binary updateOutput)
+    :: forall state context input output a.
+       (NFData state, Binary state, Binary context, Binary input, Binary output)
     => Int
     -> Int
-    -> (updatePayload -> state -> IO (updateOutput, state))
+    -> (context -> input -> state -> IO (state, output))
     -> [state]
-    -> (MasterHandle state updatePayload updateOutput () () () -> IO a)
+    -> (MasterHandle state context input output -> IO a)
     -> IO a
-runMasterAndSlaves basePort slaveCnt slaveUpdate initialStates inner = do
+runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
     nms <- nmsSettings
-    let ports = [basePort..basePort + slaveCnt]
-    let settings = map (\port -> serverSettings port "localhost") ports
+    -- Running slaves
+    let slaveArgs = SlaveArgs
+            { saUpdate = slaveUpdate
+            , saInit = return ()
+            , saNMSettings = nms
+            , saClientSettings = clientSettings port "localhost"
+            }
+    let runSlaves = mapConcurrently (\_ -> runSlave slaveArgs) (replicate slaveCnt () :: [()])
+    -- Running master
     let masterArgs = MasterArgs
             { maMinBatchSize = Nothing
             , maMaxBatchSize = Just 5
-            , maNMSettings = nms
             }
-    let slaveArgs = SlaveArgs
-            { saUpdate = slaveUpdate
-            , saResample = \() () state -> return ((), state)
-            , saNMSettings = nms
-            , saClientSettings = clientSettings "" "localhost"
-            }
-    withAsync (mapConcurrently (runSlave . slaveArgs) ports) $ \_ ->
-      connectToSlaves (zip settings (repeat nms)) $ \slaves -> do
-        mh <- mkMasterHandle masterArgs
-        forM_ slaves (addSlaveConnection mh)
+    mh <- mkMasterHandle masterArgs
+    masterReady <- newEmptyMVar
+    someConnected <- newEmptyMVar
+    doneVar <- newEmptyMVar
+    let ss = CN.setAfterBind (\_ -> tryPutMVar masterReady () >> return ()) (serverSettings port "*")
+    let acceptConns =
+            timeout (1000 * 1000 * 2) $
+            CN.runGeneralTCPServer ss $ NM.generalRunNMApp nms (const "") (const "") $ \nm -> do
+                addSlaveConnection mh nm
+                void $ tryPutMVar someConnected ()
+                readMVar doneVar
+    withAsync ((takeMVar masterReady >> runSlaves) `concurrently` acceptConns) $ \_ -> do
+        takeMVar someConnected `catch` \BlockedIndefinitelyOnMVar -> fail "No slaves connected"
         resetStates mh initialStates
-        inner mh
+        r <- inner mh
+        putMVar doneVar ()
+        return r
 
--- connectToSlaves
---   :: (MonadBaseControl IO m, Binary state, Binary updatePayload, Binary updateOutput, Binary resampleContext, Binary resamplePayload, Binary resampleOutput)
---   => [(CN.ServerSettings, NM.NMSettings)]
---   -> ([SlaveNMAppData state updatePayload updateOutput resampleContext resamplePayload resampleOutput] -> m a)
---   -> m a
--- connectToSlaves settings0 cont = case settings0 of
---   [] -> cont []
---   (ss, nms) : settings ->
---     CN.runGeneralTCPServer ss $ NM.generalRunNMApp nms (const "") (const "") $ \nm ->
---       connectToSlaves settings (\nodes -> cont (nm : nodes))
+data PureState state = PureState
+    { pureStates :: HMS.HashMap StateId state
+    , pureIdCounter :: Int
+    }
 
+initialPureState :: [state] -> PureState state
+initialPureState states = PureState
+    { pureStates = HMS.fromList $ zip (map StateId [0..]) states
+    , pureIdCounter = length states
+    }
+
+pureUpdate :: forall state context input output.
+              (context -> input -> state -> (state, output))
+           -> context
+           -> HMS.HashMap StateId [input]
+           -> PureState state
+           -> (PureState state, HMS.HashMap StateId (HMS.HashMap StateId output))
+pureUpdate f context inputs ps = (ps', outputs)
+  where
+    sortedInputs :: [(StateId, [input])]
+    sortedInputs = sortBy (comparing fst) (HMS.toList inputs)
+    labeledInputs :: [(StateId, StateId, input)]
+    labeledInputs =
+      zipWith (\sid' (sid, inp) -> (sid, StateId sid', inp))
+              [pureIdCounter ps ..]
+              (concatMap (\(sid, inps) -> map (sid, ) inps) sortedInputs)
+    ps' = PureState
+      { pureStates = HMS.fromList (map (\(_, sid, (state, _)) -> (sid, state)) results)
+      , pureIdCounter = pureIdCounter ps + length labeledInputs
+      }
+    results :: [(StateId, StateId, (state, output))]
+    results = map (\(sid, sid', input) -> (sid, sid', f context input (pureStates ps HMS.! sid))) labeledInputs
+    outputs :: HMS.HashMap StateId (HMS.HashMap StateId output)
+    outputs = HMS.fromListWith (<>) (map (\(sid, sid', (_, output)) -> (sid, HMS.singleton sid' output)) results)
 
 nmsSettings :: IO NMSettings
 nmsSettings = do
-  nms <- defaultNMSettings
-  return $ setNMHeartbeat 5000000 nms -- We use 5 seconds
+    nms <- defaultNMSettings
+    return $ setNMHeartbeat 5000000 nms -- We use 5 seconds
