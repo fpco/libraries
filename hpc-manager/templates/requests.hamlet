@@ -1,3 +1,11 @@
+<h1>Compute Tier Requests
+<ul>
+ <li>
+    <a href=@{HomeR}>Click here
+    to change connection configuration.
+  <li>
+    <a href=@{StatusR}>Click here
+    to view info about worker status.
 <table .table>
   <tr>
     <th>Request ID
