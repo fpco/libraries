@@ -20,7 +20,9 @@ import qualified Data.HashSet as HS
 import           Data.Streaming.NetworkMessage
 import qualified Data.Streaming.NetworkMessage as NM
 import qualified Data.Vector as V
-import           Distributed.Stateful
+import           Distributed.Stateful.Slave
+import           Distributed.Stateful.Master
+import           Distributed.Stateful.Internal (StateId(..))
 import           System.Timeout (timeout)
 import           Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec

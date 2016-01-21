@@ -33,6 +33,9 @@ library
                        Distributed.RedisQueue
                        Distributed.RedisQueue.Internal
                        Distributed.Stateful
+                       Distributed.Stateful.Internal
+                       Distributed.Stateful.Master
+                       Distributed.Stateful.Slave
                        Distributed.WorkQueue
                        Control.Concurrent.ThreadPool
                        Control.Exception.Mask
