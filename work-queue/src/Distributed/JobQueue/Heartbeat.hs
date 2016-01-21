@@ -88,6 +88,9 @@ checkHeartbeats r heartbeatExpiry (Seconds ivl) = logNest "checkHeartbeats" $ fo
     $logDebug $ "Checking if enough time has elapsed since last heartbeat check.  Looking for a time before " ++
         tshow oldTime
     mlastTime <- getRedisTime r (heartbeatLastCheckKey r)
+    let setTimeAndWait = do
+            setRedisTime r (heartbeatLastCheckKey r) startTime []
+            liftIO $ threadDelay (fromIntegral ivl * 1000000)
     -- Do the heartbeat check when enough time has elapsed since the last check,
     -- or when no check has ever happened.
     case mlastTime of
@@ -96,7 +99,7 @@ checkHeartbeats r heartbeatExpiry (Seconds ivl) = logNest "checkHeartbeats" $ fo
             $logDebug $ "Heartbeat check: Not enough time has elapsed since the last check, delaying by: " ++
                         tshow usecs
             liftIO $ threadDelay usecs
-        _ -> do
+        Just lastTime -> do
             -- Blocks other checkers from starting, for the first half of the
             -- heartbeat interval.
             $logDebug "Trying to acquire heartbeat check mutex."
@@ -105,13 +108,14 @@ checkHeartbeats r heartbeatExpiry (Seconds ivl) = logNest "checkHeartbeats" $ fo
             when gotMutex $ do
                 $logDebug "Acquired heartbeat check mutex."
                 let ninf = -1 / 0
-                inactive <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac oldTime) False
+                inactive <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac lastTime) False
                 reenqueuedSome <- fmap or $ forM inactive $ handleWorkerFailure r heartbeatExpiry . WorkerId
                 when reenqueuedSome $ do
                     $logDebug "Notifying that some requests were re-enqueued"
                     notifyRequestAvailable r
                 $logDebug "Setting timestamp for last heartbeat check"
-                setRedisTime r (heartbeatLastCheckKey r) startTime []
+                setTimeAndWait
+        Nothing -> setTimeAndWait
 
 handleWorkerFailure
     :: (MonadCommand m, MonadLogger m) => RedisInfo -> Seconds -> WorkerId -> m Bool
