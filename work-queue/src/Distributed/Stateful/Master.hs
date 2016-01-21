@@ -129,7 +129,8 @@ update MasterHandle{..} context inputs = liftIO $ do
         map (\(slaveId, states) ->
               (slaveId, mapMaybe (\k -> (k,) <$> HMS.lookup k inputMap) (HS.toList states)))
             (HMS.toList (siStates si0))
-  outputs <- case maMaxBatchSize mhArgs of
+  when (isJust (maMaxBatchSize mhArgs)) $ putStrLn "Ignoring that maMaxBatchSize is a Just, since rebalancing code isn't working currently"
+  outputs <- case Nothing of
     Nothing -> do
       forM_ slaveIdsAndInputs $ \(slaveId, inps) -> do
         NM.nmWrite (slaves HMS.! slaveId) (SReqUpdate context (fmap HMS.fromList $ HMS.fromList inps))
