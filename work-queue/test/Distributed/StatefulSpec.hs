@@ -52,16 +52,19 @@ spec = do
          results <- runMasterAndSlaves 7000 4 (\c i s -> return (function c i s)) initialStates $ \mh -> do
            let go :: PureState State -> (Context, [[Input]]) -> IO (PureState State)
                go ps (ctx, inputs) = do
-                 sids <- getStateIds mh
                  let sids' = sort (HMS.keys (pureStates ps))
-                 sort (HS.toList sids) `shouldBe` sids'
                  let inputMap = HMS.fromList (zip sids' inputs)
-                 outputs <- update mh ctx inputMap
                  let (ps', outputs') = pureUpdate function ctx inputMap ps
                  -- putStrLn "===="
-                 -- print (ctx, inputs)
+                 -- print ctx
+                 -- print inputMap
                  -- print ps
                  -- print ps'
+                 curStates <- getStates mh
+                 --
+                 sids <- getStateIds mh
+                 sort (HS.toList sids) `shouldBe` sids'
+                 outputs <- update mh ctx inputMap
                  -- print outputs
                  -- print outputs'
                  outputs `shouldBe` outputs'
@@ -104,7 +107,7 @@ runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
     doneVar <- newEmptyMVar
     let ss = CN.setAfterBind (\_ -> tryPutMVar masterReady () >> return ()) (serverSettings port "*")
     let acceptConns =
-            timeout (1000 * 1000 * 2) $
+            -- timeout (1000 * 1000 * 2) $
             CN.runGeneralTCPServer ss $ NM.generalRunNMApp nms (const "") (const "") $ \nm -> do
                 addSlaveConnection mh nm
                 void $ tryPutMVar someConnected ()
