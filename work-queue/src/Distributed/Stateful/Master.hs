@@ -14,12 +14,14 @@ module Distributed.Stateful.Master
     , resetStates
     , getStateIds
     , getStates
+    , getSlaveCount
     , addSlaveConnection
     , SlaveNMAppData
     ) where
 
 import           ClassyPrelude
 import           Control.Concurrent.Async (mapConcurrently)
+import           Control.Concurrent.STM hiding (atomically)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.Binary as B
 import           Data.Binary.Orphans ()
@@ -44,6 +46,7 @@ data MasterArgs = MasterArgs
 
 data MasterHandle state context input output = MasterHandle
   { mhSlaveInfoRef :: !(IORef (SlaveInfo state context input output))
+  , mhSlaveCountTVar :: !(TVar Int)
   , mhSlaveIdSupply :: !(Supply SlaveId)
   , mhStateIdSupply :: !(Supply StateId)
   , mhArgs :: !MasterArgs
@@ -82,10 +85,12 @@ mkMasterHandle ma@MasterArgs{..} logFunc = do
     { siConnections = HMS.empty
     , siStates = HMS.empty
     }
+  connectionCountVar <- liftIO $ newTVarIO 0
   slaveIdSupply <- newSupply (SlaveId 0) (\(SlaveId n) -> SlaveId (n + 1))
   stateIdSupply <- newSupply (StateId 0) (\(StateId n) -> StateId (n + 1))
   return MasterHandle
     { mhSlaveInfoRef = slaveInfoRef
+    , mhSlaveCountTVar = connectionCountVar
     , mhSlaveIdSupply = slaveIdSupply
     , mhStateIdSupply = stateIdSupply
     , mhArgs = ma
@@ -273,6 +278,7 @@ addSlaveConnection MasterHandle{..} conn = do
     { siConnections = HMS.insert slaveId conn (siConnections si)
     , siStates = HMS.insert slaveId HS.empty (siStates si)
     })
+  atomically $ modifyTVar mhSlaveCountTVar (+1)
 
 -- | This sets the states stored in the slaves. It distributes the
 -- states among the currently connected slaves.
@@ -343,6 +349,11 @@ getStates MasterHandle{..} = do
       SRespGetStates states -> Just states
       _ -> Nothing
   return (mconcat responses)
+
+getSlaveCount
+  :: MasterHandle state context input output
+  -> STM Int
+getSlaveCount = readTVar . mhSlaveCountTVar
 
 readSelect
   :: MonadIO m

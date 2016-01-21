@@ -11,6 +11,8 @@ module Distributed.JobQueue.Client.NewApi
     , newJobClient
     , submitRequest
     , LogFunc
+    , RequestId(..)
+    , DistributedJobQueueException(..)
     ) where
 
 import ClassyPrelude

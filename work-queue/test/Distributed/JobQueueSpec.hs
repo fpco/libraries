@@ -27,7 +27,7 @@ import           Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import           Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
 import           Data.Binary (encode)
 import           Data.Bits (shiftL)
-import           Data.List.NonEmpty (nonEmpty, NonEmpty(..))
+import           Data.List.NonEmpty (NonEmpty(..))
 import           Data.List.Split (chunksOf)
 import           Data.Proxy (Proxy(..))
 import qualified Data.Set as S
@@ -37,7 +37,8 @@ import           Distributed.JobQueue
 import           Distributed.JobQueue.Status
 import           Distributed.RedisQueue
 import           Distributed.RedisQueue.Internal (run_)
-import           Distributed.WorkQueueSpec (redisTestPrefix, forkWorker, cancelProcess)
+import           Distributed.TestUtil
+import           Distributed.WorkQueueSpec (forkWorker, cancelProcess)
 import           FP.Redis
 import           FP.ThreadFileLogger
 import           System.Random (randomRIO)
@@ -382,13 +383,6 @@ getException seconds resultVar = liftIO $ do
         Nothing -> fail "Timed out waiting for exception"
         Just (Right n) -> fail $ "Expected exception, but got " ++ show n
         Just (Left err) -> return err
-
-clearRedisKeys :: MonadIO m => m ()
-clearRedisKeys =
-    liftIO $ runThreadFileLoggingT $ logNest "clearRedisKeys" $ withConnection localhost $ \redis -> do
-        matches <- runCommand redis $ keys (redisTestPrefix <> "*")
-        mapM_ (runCommand_ redis . del) (nonEmpty matches)
-
 {-
 clearSlaveRequests :: MonadIO m => m ()
 clearSlaveRequests =
@@ -401,9 +395,6 @@ enqueueSlaveRequest mci =
     liftIO $ runThreadFileLoggingT $ logNest "enqueueSlaveRequest" $ withRedis redisTestPrefix localhost $ \r -> do
         let encoded = toStrict (encode mci)
         run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
-
-localhost :: ConnectInfo
-localhost = connectInfo "localhost"
 
 -- Keeping track of requests which have been sent, haven't yet been
 -- watched, and have been received.

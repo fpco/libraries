@@ -14,7 +14,7 @@ module Distributed.Stateful.Slave
 
 import           ClassyPrelude
 import           Control.DeepSeq (force, NFData)
-import           Control.Exception (evaluate, AsyncException(ThreadKilled))
+import           Control.Exception (evaluate, AsyncException)
 import qualified Data.Binary as B
 import           Data.Binary.Orphans ()
 import qualified Data.Conduit.Network as CN
@@ -101,7 +101,7 @@ runSlave SlaveArgs{..} =
         Right (output, states') -> do
           send output
           go recv send states'
-        Left err@(fromException -> Just ThreadKilled) -> throwIO err
+        Left (fromException -> Just (err :: AsyncException)) -> throwIO err
         Left (err :: SomeException) -> do
           send (SRespError (pack (show err)))
           throwAndLog saLogFunc err

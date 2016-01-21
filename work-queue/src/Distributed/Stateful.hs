@@ -9,7 +9,8 @@ module Distributed.Stateful
   , runWorker
     -- * Re-exports
   , MasterArgs(..)
-  , WorkerConfig
+  , WorkerConfig(..)
+  , defaultWorkerConfig
   , MasterHandle
   , StateId
   , update
@@ -19,18 +20,21 @@ module Distributed.Stateful
   ) where
 
 import           ClassyPrelude
+import           Control.Concurrent.Async (withAsync, concurrently)
+import           Control.Concurrent.STM (check)
 import           Control.DeepSeq (NFData)
-import           Control.Monad.Logger (MonadLogger)
-import           Control.Monad.Trans.Control (MonadBaseControl)
+import           Control.Monad.Logger (LoggingT, runLoggingT, logErrorN)
 import qualified Data.Binary as B
 import           Data.Binary.Orphans ()
 import qualified Data.Conduit.Network as CN
+import           Data.Streaming.NetworkMessage
 import           Distributed.JobQueue.Worker hiding (MasterFunc, SlaveFunc)
 import           Distributed.RedisQueue
 import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
 import           Distributed.Stateful.Slave
 import           FP.Redis
+import           System.Timeout (timeout)
 
 data WorkerArgs = WorkerArgs
   { waConfig :: WorkerConfig
@@ -51,11 +55,10 @@ data WorkerArgs = WorkerArgs
 -- | Runs a job-queue worker which implements a stateful distributed
 -- computation.
 runWorker
-    :: forall state context input output request response m.
-     ( MonadIO m, MonadBaseControl IO m, MonadCatch m, MonadLogger m
+    :: forall state context input output request response.
      -- FIXME: remove these, by generalizing job-queue to not require
      -- Typeable..
-     , Typeable request, Typeable response
+     ( Typeable request, Typeable response
      , NFData state, NFData output
      , B.Binary state, B.Binary context, B.Binary input, B.Binary output, B.Binary request, B.Binary response
      )
@@ -66,7 +69,7 @@ runWorker
     -> (context -> input -> state -> IO (state, output))
     -- ^ This function is run on the slave, to perform a unit of work.
     -- See 'saUpdate'.
-    -> (RedisInfo -> RequestId -> request -> MasterHandle state context input output -> m response)
+    -> (RedisInfo -> RequestId -> request -> MasterHandle state context input output -> IO response)
     -- ^ This function runs on the master after it's received a
     -- reqeuest, and after some slaves have connected. The function is
     -- expected to use functions which take 'MasterHandle' to send work
@@ -77,11 +80,12 @@ runWorker
     -- 'update' should be invoked in order to execute the computation.
     --
     -- 'getStates' should be used to fetch result states (if necessary).
-    -> m ()
+    -> IO ()
 runWorker WorkerArgs {..} logFunc slave master =
-  jobQueueNode waConfig slave' master'
+    runLoggingT (jobQueueNode waConfig slave' master') logFunc
   where
-    slave' :: WorkerParams -> MasterConnectInfo -> IO () -> m ()
+    runLogger f = runLoggingT f logFunc
+    slave' :: WorkerParams -> MasterConnectInfo -> IO () -> LoggingT IO ()
     slave' wp mci init = liftIO $ runSlave SlaveArgs
       { saUpdate = slave
       , saInit = init
@@ -89,8 +93,31 @@ runWorker WorkerArgs {..} logFunc slave master =
       , saNMSettings = wpNMSettings wp
       , saLogFunc = logFunc
       }
-    master' :: WorkerParams -> CN.ServerSettings -> RequestId -> request -> m MasterConnectInfo -> m response
+    master' :: WorkerParams -> CN.ServerSettings -> RequestId -> request -> LoggingT IO MasterConnectInfo -> LoggingT IO response
     master' wp ss rid r getMci = do
       mh <- mkMasterHandle waMasterArgs logFunc
-      mci <- getMci
-      master (wpRedis wp) rid r mh
+      nms <- liftIO nmsSettings
+      doneVar <- newEmptyMVar
+      let acceptConns =
+            CN.runGeneralTCPServer ss $ generalRunNMApp nms (const "") (const "") $ \nm -> do
+              addSlaveConnection mh nm
+              readMVar doneVar
+      let runMaster = do
+            res <- timeout (1000 * 1000 * fromIntegral (unSeconds waMasterWaitTime)) $
+              atomically (check . (== waRequestSlaveCount) =<< getSlaveCount mh)
+            slaveCount <- atomically (getSlaveCount mh)
+            case (res, slaveCount) of
+              (Nothing, 0) -> do
+                runLogger $ logErrorN "Timed out waiting for slaves to connect"
+                -- FIXME: need a way to cancel being a master.
+                fail "Timed out waiting for slaves to connect. (see FIXME comment in code)"
+              _ -> liftIO $ master (wpRedis wp) rid r mh
+      let requestSlaves = runLogger $
+            mapM_ (\_ -> requestSlave (wpRedis wp) =<< getMci) [1..waRequestSlaveCount]
+      liftIO $ withAsync (requestSlaves `concurrently` acceptConns) $ \_ ->
+        runMaster
+
+nmsSettings :: IO NMSettings
+nmsSettings = do
+    nms <- defaultNMSettings
+    return $ setNMHeartbeat 5000000 nms -- 5 seconds

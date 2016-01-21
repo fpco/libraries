@@ -148,6 +148,7 @@ test-suite wq-test
                        Distributed.JobQueueSpec
                        Distributed.StatefulSpec
                        Distributed.WorkQueueSpec
+                       Distributed.TestUtil
                        Spec
   build-depends:       base
                      , QuickCheck

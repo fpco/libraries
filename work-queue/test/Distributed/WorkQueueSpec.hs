@@ -18,6 +18,7 @@ import           Data.Streaming.Network (getSocketFamilyTCP)
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Distributed.JobQueue
 import           Distributed.RedisQueue
+import           Distributed.TestUtil
 import           Distributed.WorkQueue
 import           FP.Redis (Seconds(..), connectInfo)
 import           FP.ThreadFileLogger
@@ -71,9 +72,6 @@ spec = do
 
 defaultXorConfig :: Int -> SharedConfig -> Config
 defaultXorConfig n c = XorConfig n 12 100 c { expectedOutput = Just (show n) }
-
-redisTestPrefix :: ByteString
-redisTestPrefix = "fpco:job-queue-test:"
 
 defaultSharedConfig :: SharedConfig
 defaultSharedConfig = SharedConfig 1 True True True id f Nothing

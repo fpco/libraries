@@ -9,8 +9,9 @@ module Distributed.StatefulSpec (spec) where
 
 import           ClassyPrelude
 import           Control.Concurrent.Async
+import           Control.Concurrent.STM (retry, check)
 import           Control.DeepSeq (NFData)
-import           Control.Exception (BlockedIndefinitelyOnMVar(..))
+import           Control.Exception (BlockedIndefinitelyOnSTM(..))
 import           Control.Monad.Logger
 import           Data.Binary (Binary)
 import           Data.Conduit.Network (serverSettings, clientSettings)
@@ -19,9 +20,14 @@ import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Data.Streaming.NetworkMessage
 import qualified Data.Streaming.NetworkMessage as NM
+import           Distributed.JobQueue.Client.NewApi
+import           Distributed.RedisQueue (RedisInfo)
+import           Distributed.Stateful
 import           Distributed.Stateful.Internal (StateId(..))
 import           Distributed.Stateful.Master
 import           Distributed.Stateful.Slave
+import           Distributed.TestUtil
+import           FP.Redis
 import           Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
 import           Test.QuickCheck hiding (output)
@@ -41,7 +47,7 @@ spec = do
             let inputs = HMS.fromList $ map (, ["input 1"]) $ HS.toList sids
             outputs <- update mh () inputs
             print outputs
-            -- states `shouldBe` (HMS.map (\(_input, initial) -> [Right "step 1", Left initial]) inputs)
+            -- states `shouldBe` (HMS.map (\(_input, initial) -> [Right "step 1", Left initial]) inputsy)
     Hspec.it "Passes quickcheck comparison with pure implementation" $
       property $ forAll arbitrary $
       \( Blind (function :: Context -> Input -> State -> (State, Output))
@@ -68,8 +74,35 @@ spec = do
                  -- print outputs'
                  outputs `shouldBe` outputs'
                  return ps'
-           void $ foldM go (initialPureState initialStates) updates
+           void $ foldM go (initialPureState initialStates) (take 4 updates)
          return True
+    Hspec.it "Integrates with job-queue" $ do
+        clearRedisKeys
+        let args = WorkerArgs
+              { waConfig = defaultWorkerConfig redisTestPrefix localhost "localhost"
+              , waMasterArgs = MasterArgs Nothing (Just 5)
+              , waRequestSlaveCount = 2
+              , waMasterWaitTime = Seconds 1
+              }
+        logFunc <- runStdoutLoggingT askLoggerIO
+        let slaveFunc (Context x) (Input y) (State z) = return (State (z + y), Output (z + x))
+        let masterFunc :: RedisInfo -> RequestId -> Context -> MasterHandle State Context Input Output -> IO (HMS.HashMap StateId (HMS.HashMap StateId Output))
+            masterFunc _redis _rid r mh = do
+              sids <- HMS.keys <$> resetStates mh (map State [1..10])
+              update mh r (HMS.fromList (zip sids (map ((:[]) . Input) [1..])))
+        void $ mapConcurrently (\_ -> runWorker args logFunc slaveFunc masterFunc) [1..2]
+          `race` do
+            jc <- newJobClient logFunc defaultJobClientConfig
+                { jccRedisPrefix = redisTestPrefix }
+            fetchOutput <- submitRequest jc (RequestId "request") (Context 1)
+            res <- atomically $ do
+                mres <- fetchOutput
+                case mres of
+                    Just res -> return res
+                    Nothing -> retry
+            putStrLn "=========================================="
+            print (res :: Either DistributedJobQueueException (HMS.HashMap StateId (HMS.HashMap StateId Output)))
+            putStrLn "=========================================="
 
 it :: String -> IO () -> Hspec.Spec
 it name f = Hspec.it name f
@@ -112,7 +145,8 @@ runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
                 void $ tryPutMVar someConnected ()
                 readMVar doneVar
     withAsync ((takeMVar masterReady >> runSlaves) `concurrently` acceptConns) $ \_ -> do
-        takeMVar someConnected `catch` \BlockedIndefinitelyOnMVar -> fail "No slaves connected"
+        atomically (check . (> 0) =<< getSlaveCount mh)
+          `catch` \BlockedIndefinitelyOnSTM -> fail "No slaves connected"
         void $ resetStates mh initialStates
         r <- inner mh
         putMVar doneVar ()
@@ -161,4 +195,4 @@ pureUpdate f context inputs ps = (ps', outputs)
 nmsSettings :: IO NMSettings
 nmsSettings = do
     nms <- defaultNMSettings
-    return $ setNMHeartbeat 5000000 nms -- We use 5 seconds
+    return $ setNMHeartbeat 5000000 nms -- 5 seconds
