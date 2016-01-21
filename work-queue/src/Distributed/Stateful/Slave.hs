@@ -5,15 +5,17 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE ViewPatterns #-}
 module Distributed.Stateful.Slave
   ( SlaveArgs(..)
   , StateId
   , runSlave
   ) where
 
+import Control.Concurrent (threadDelay)
 import           ClassyPrelude
 import           Control.DeepSeq (force, NFData)
-import           Control.Exception (evaluate)
+import           Control.Exception (evaluate, AsyncException(ThreadKilled))
 import qualified Data.Binary as B
 import           Data.Binary.Orphans ()
 import qualified Data.Conduit.Network as CN
@@ -34,70 +36,74 @@ data SlaveArgs state context input output = SlaveArgs
     -- ^ Settings for the slave's TCP connection.
   , saNMSettings :: !NM.NMSettings
     -- ^ Settings for the connection to the master.
+  , saLogFunc :: !LogFunc
+    -- ^ Function used for logging.
   }
 
-data SlaveState state
-  = SSNotInitialized
-  | SSInitialized !(HMS.HashMap StateId state)
-  deriving (Generic, Eq, Show, NFData, B.Binary)
+data SlaveException
+  = AddingExistingStates [StateId]
+  | MissingStatesToRemove [StateId]
+  | InputStateNotFound StateId
+  deriving (Show, Typeable)
+
+instance Exception SlaveException
 
 -- | Runs a stateful slave, and never returns (though may throw
 -- exceptions).
-runSlave :: forall state context input output m a.
-     ( B.Binary state, NFData state, B.Binary context, B.Binary input, B.Binary output
-     , MonadIO m
+runSlave :: forall state context input output a.
+     ( B.Binary state, NFData state, B.Binary context, B.Binary input, B.Binary output, NFData output
      )
-  => SlaveArgs state context input output -> m a
-runSlave SlaveArgs{..} = liftIO $ do
-    liftIO $ CN.runTCPClient saClientSettings $
-      NM.generalRunNMApp saNMSettings (const "") (const "") $ \nm -> do
-        saInit
-        go (NM.nmRead nm) (NM.nmWrite nm) SSNotInitialized
+  => SlaveArgs state context input output -> IO a
+runSlave SlaveArgs{..} =
+    CN.runTCPClient saClientSettings $
+    NM.generalRunNMApp saNMSettings (const "") (const "") $ \nm -> do
+      saInit
+      go (NM.nmRead nm) (NM.nmWrite nm) HMS.empty
   where
+    throw = throwAndLog saLogFunc
     go :: forall b.
          IO (SlaveReq state context input)
       -> (SlaveResp state output -> IO ())
-      -> SlaveState state
+      -> (HMS.HashMap StateId state)
       -> IO b
-    go recv send = let
-      loop slaveState = do
-        req <- recv
-        let getStates' :: String -> HMS.HashMap StateId state
-            getStates' err = case slaveState of
-              SSNotInitialized -> error ("slave: state not initialized (" ++ err ++ ")")
-              SSInitialized states0 -> states0
-        case req of
-          SReqResetState states -> do
-            send SRespResetState
-            loop (SSInitialized states)
+    go recv send states = do
+      req <- recv
+      eres <- try $ do
+        res <- case req of
+          SReqResetState states -> return (SRespResetState, states)
           SReqAddStates newStates -> do
-            let states' = HMS.unionWith (error "slave: adding existing states") (getStates' "SReqAddStates") newStates
-            send SRespAddStates
-            loop (SSInitialized states')
+            let aliased = HMS.keys (HMS.intersection newStates states)
+            unless (null aliased) $ throw (AddingExistingStates aliased)
+            return (SRespAddStates, HMS.union newStates states)
+          SReqGetStates -> return (SRespGetStates states, states)
           SReqRemoveStates slaveRequesting stateIdsToDelete -> do
-            let states = getStates' "SReqRemoveStates"
+            let eitherLookup sid =
+                  case HMS.lookup sid states of
+                    Nothing -> Left sid
+                    Just x -> Right (sid, x)
+            let (missing, toSend) =
+                  partitionEithers $ map eitherLookup $ HS.toList stateIdsToDelete
+            unless (null missing) $ throw (MissingStatesToRemove missing)
             let states' = foldl' (flip HMS.delete) states stateIdsToDelete
-            let statesToSend = HMS.fromList
-                  [(stateId, states HMS.! stateId) | stateId <- HS.toList stateIdsToDelete]
-            send (SRespRemoveStates slaveRequesting statesToSend)
-            loop (SSInitialized states')
+            return (SRespRemoveStates slaveRequesting (HMS.fromList toSend), states')
           SReqUpdate context inputs -> do
-            let states0 = getStates' "SReqBroadcast"
             results <- forM (HMS.toList inputs) $ \(oldStateId, innerInputs) ->
               if null innerInputs then return Nothing else Just <$> do
-                let state = case HMS.lookup oldStateId states0 of
-                      Nothing -> error (printf "slave: Could not find state %d (SReqBroadcast)" oldStateId)
-                      Just state0 -> state0
+                state <- case HMS.lookup oldStateId states of
+                  Nothing -> throw (InputStateNotFound oldStateId)
+                  Just state0 -> return state0
                 fmap ((oldStateId, ) . HMS.fromList) $ forM (HMS.toList innerInputs) $ \(newStateId, input) ->
                   fmap (newStateId, ) $ saUpdate context input state
             let resultsMap = HMS.fromList (catMaybes results)
-            let states = foldMap (fmap fst) resultsMap
+            let states' = foldMap (fmap fst) resultsMap
             let outputs = fmap (fmap snd) resultsMap
-            void (evaluate (force states))
-            send (SRespUpdate outputs)
-            loop (SSInitialized states)
-          SReqGetStates -> do
-            let states = getStates' "SReqGetStates"
-            send (SRespGetStates states)
-            loop (SSInitialized states)
-      in loop
+            return (SRespUpdate outputs, states')
+        evaluate (force res)
+      case eres of
+        Right (output, states') -> do
+          send output
+          go recv send states'
+        Left err@(fromException -> Just ThreadKilled) -> throwIO err
+        Left (err :: SomeException) -> do
+          send (SRespError (pack (show err)))
+          throwAndLog saLogFunc err

@@ -4,6 +4,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE OverloadedStrings #-}
 module Distributed.Stateful.Master
     ( MasterArgs(..)
     , MasterHandle
@@ -46,6 +47,7 @@ data MasterHandle state context input output = MasterHandle
   , mhSlaveIdSupply :: !(Supply SlaveId)
   , mhStateIdSupply :: !(Supply StateId)
   , mhArgs :: !MasterArgs
+  , mhLogFunc :: !LogFunc
   }
 
 -- TODO: consider unifying these maps? Seemed like more refactoring work
@@ -64,8 +66,9 @@ type SlaveNMAppData state context input output =
 mkMasterHandle
   :: (MonadBaseControl IO m, MonadIO m)
   => MasterArgs
+  -> LogFunc
   -> m (MasterHandle state context input output)
-mkMasterHandle ma@MasterArgs{..}= do
+mkMasterHandle ma@MasterArgs{..} logFunc = do
   case (maMinBatchSize, maMaxBatchSize) of
     (_, Just maxBatchSize) | maxBatchSize < 1 ->
       fail (printf "Distribute.master: maMaxBatchSize must be > 0 (got %d)" maxBatchSize)
@@ -86,6 +89,7 @@ mkMasterHandle ma@MasterArgs{..}= do
     , mhSlaveIdSupply = slaveIdSupply
     , mhStateIdSupply = stateIdSupply
     , mhArgs = ma
+    , mhLogFunc = logFunc
     }
 
 -- | Send an update request to all the slaves. This will cause each of
@@ -119,6 +123,7 @@ update MasterHandle{..} context inputs = liftIO $ do
   -- Update the slave states.
   si0 <- readIORef mhSlaveInfoRef
   let slaves = siConnections si0
+  -- FIXME: throw errors for unused inputs
   let slaveIdsAndInputs :: [(SlaveId, [(StateId, [(StateId, input)])])]
       slaveIdsAndInputs =
         map (\(slaveId, states) ->
@@ -129,7 +134,7 @@ update MasterHandle{..} context inputs = liftIO $ do
       forM_ slaveIdsAndInputs $ \(slaveId, inps) -> do
         NM.nmWrite (slaves HMS.! slaveId) (SReqUpdate context (fmap HMS.fromList $ HMS.fromList inps))
       forM slaveIdsAndInputs $ \(slaveId, _) ->
-        liftM (slaveId,) $ NM.nmReadSelect (slaves HMS.! slaveId) $ \case
+        liftM (slaveId,) $ readSelect (slaves HMS.! slaveId) $ \case
           SRespUpdate outputs -> Just outputs
           _ -> Nothing
     Just maxBatchSize -> do
@@ -186,7 +191,7 @@ updateSlaveThread MasterArgs{..} context maxBatchSize thisSlaveId slaves slaveSt
       let broadcastAndContinue roundStates = do
             let inputs = map (\k -> (k, HMS.fromList (inputMap HMS.! k))) roundStates
             NM.nmWrite thisSlave (SReqUpdate context (HMS.fromList inputs))
-            roundOutputs <- NM.nmReadSelect thisSlave $ \case
+            roundOutputs <- readSelect thisSlave $ \case
               SRespUpdate outputs -> Just outputs
               _ -> Nothing
             moreOutputs <- go
@@ -195,8 +200,8 @@ updateSlaveThread MasterArgs{..} context maxBatchSize thisSlaveId slaves slaveSt
         STSOk roundStates -> broadcastAndContinue roundStates
         STSStop -> return HMS.empty
         STSRequestStates requestFrom statesToRequest -> do
-          -- printf ("Transferring states from %d to %d %s\n")
-          --   requestFrom thisSlaveId (show (map unStateId (HS.toList statesToRequest)))
+          printf ("Transferring states from %d to %d %s\n")
+              requestFrom thisSlaveId (show (map unStateId statesToRequest))
           requestStatesForSlave requestFrom statesToRequest
           broadcastAndContinue statesToRequest
 
@@ -242,12 +247,12 @@ updateSlaveThread MasterArgs{..} context maxBatchSize thisSlaveId slaves slaveSt
       -- Request the states
       NM.nmWrite otherSlave (SReqRemoveStates thisSlaveId (HS.fromList statesToRequest))
       -- Receive the states
-      states <- NM.nmReadSelect otherSlave $ \case
+      states <- readSelect otherSlave $ \case
         SRespRemoveStates slaveRequesting states | slaveRequesting == thisSlaveId -> Just states
         _ -> Nothing
       -- Upload states
       NM.nmWrite thisSlave (SReqAddStates states)
-      NM.nmReadSelect thisSlave $ \case
+      readSelect thisSlave $ \case
         SRespAddStates -> Just ()
         _ -> Nothing
       return ()
@@ -303,7 +308,7 @@ resetStates MasterHandle{..} states0 = do
       forM_ (HMS.toList slavesStates) $ \(slaveId, states) -> do
         NM.nmWrite (slaves HMS.! slaveId) (SReqResetState (HMS.fromList states))
       forM_ (HMS.elems slaves) $ \slave_ -> do
-        NM.nmReadSelect slave_ $ \case
+        readSelect slave_ $ \case
           SRespResetState -> Just ()
           _ -> Nothing
       return (HMS.fromList allStates)
@@ -325,14 +330,22 @@ getStateIds ::
 getStateIds = fmap (fold . siStates) . readIORef . mhSlaveInfoRef
 
 -- | Fetches current states stored in the slaves.
-getStates ::
+getStates :: Show state =>
      MasterHandle state context input output
   -> IO (HMS.HashMap StateId state)
 getStates MasterHandle{..} = do
   -- Send states
   slaves <- siConnections <$> readIORef mhSlaveInfoRef
   forM_ slaves (\slave_ -> NM.nmWrite slave_ SReqGetStates)
-  fmap mconcat $ forM (HMS.elems slaves) $ \slave_ -> do
-    NM.nmReadSelect slave_ $ \case
+  responses <- forM (HMS.elems slaves) $ \slave_ -> do
+    readSelect slave_ $ \case
       SRespGetStates states -> Just states
+      _ -> Nothing
+  return (mconcat responses)
+
+readSelect slave f =
+  NM.nmReadSelect slave $ \x -> case f x of
+    Just y -> return y
+    Nothing -> case x of
+      SRespError err -> error (unpack err)
       _ -> Nothing

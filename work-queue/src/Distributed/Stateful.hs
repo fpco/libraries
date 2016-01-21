@@ -27,6 +27,7 @@ import           Data.Binary.Orphans ()
 import qualified Data.Conduit.Network as CN
 import           Distributed.JobQueue.Worker hiding (MasterFunc, SlaveFunc)
 import           Distributed.RedisQueue
+import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
 import           Distributed.Stateful.Slave
 import           FP.Redis
@@ -55,10 +56,13 @@ runWorker
      -- FIXME: remove these, by generalizing job-queue to not require
      -- Typeable..
      , Typeable request, Typeable response
-     , NFData state, B.Binary state, B.Binary context, B.Binary input, B.Binary output, B.Binary request, B.Binary response
+     , NFData state, NFData output
+     , B.Binary state, B.Binary context, B.Binary input, B.Binary output, B.Binary request, B.Binary response
      )
     => WorkerArgs
     -- ^ Settings to use to run the worker.
+    -> LogFunc
+    -- ^ Logger function
     -> (context -> input -> state -> IO (state, output))
     -- ^ This function is run on the slave, to perform a unit of work.
     -- See 'saUpdate'.
@@ -74,18 +78,19 @@ runWorker
     --
     -- 'getStates' should be used to fetch result states (if necessary).
     -> m ()
-runWorker WorkerArgs {..} slave master =
+runWorker WorkerArgs {..} logFunc slave master =
   jobQueueNode waConfig slave' master'
   where
     slave' :: WorkerParams -> MasterConnectInfo -> IO () -> m ()
-    slave' wp mci init = runSlave SlaveArgs
+    slave' wp mci init = liftIO $ runSlave SlaveArgs
       { saUpdate = slave
       , saInit = init
       , saClientSettings = CN.clientSettings (mciPort mci) (mciHost mci)
       , saNMSettings = wpNMSettings wp
+      , saLogFunc = logFunc
       }
     master' :: WorkerParams -> CN.ServerSettings -> RequestId -> request -> m MasterConnectInfo -> m response
     master' wp ss rid r getMci = do
-      mh <- mkMasterHandle waMasterArgs
+      mh <- mkMasterHandle waMasterArgs logFunc
       mci <- getMci
       master (wpRedis wp) rid r mh

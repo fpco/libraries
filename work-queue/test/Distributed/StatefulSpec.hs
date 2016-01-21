@@ -11,6 +11,7 @@ import           ClassyPrelude
 import           Control.Concurrent.Async
 import           Control.DeepSeq (NFData)
 import           Control.Exception (BlockedIndefinitelyOnMVar(..))
+import           Control.Monad.Logger
 import           Data.Binary (Binary)
 import           Data.Conduit.Network (serverSettings, clientSettings)
 import qualified Data.Conduit.Network as CN
@@ -18,9 +19,9 @@ import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Data.Streaming.NetworkMessage
 import qualified Data.Streaming.NetworkMessage as NM
-import           Distributed.Stateful.Slave
-import           Distributed.Stateful.Master
 import           Distributed.Stateful.Internal (StateId(..))
+import           Distributed.Stateful.Master
+import           Distributed.Stateful.Slave
 import           System.Timeout (timeout)
 import           Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
@@ -73,7 +74,7 @@ it name f = Hspec.it name f
 
 runMasterAndSlaves
     :: forall state context input output a.
-       (NFData state, Binary state, Binary context, Binary input, Binary output)
+       (NFData state, Binary state, Binary context, Binary input, NFData output, Binary output, Show state)
     => Int
     -> Int
     -> (context -> input -> state -> IO (state, output))
@@ -82,12 +83,14 @@ runMasterAndSlaves
     -> IO a
 runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
     nms <- nmsSettings
+    logFunc <- runStdoutLoggingT askLoggerIO
     -- Running slaves
     let slaveArgs = SlaveArgs
             { saUpdate = slaveUpdate
             , saInit = return ()
             , saNMSettings = nms
             , saClientSettings = clientSettings port "localhost"
+            , saLogFunc = logFunc
             }
     let runSlaves = mapConcurrently (\_ -> runSlave slaveArgs) (replicate slaveCnt () :: [()])
     -- Running master
@@ -95,7 +98,7 @@ runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
             { maMinBatchSize = Nothing
             , maMaxBatchSize = Just 5
             }
-    mh <- mkMasterHandle masterArgs
+    mh <- mkMasterHandle masterArgs logFunc
     masterReady <- newEmptyMVar
     someConnected <- newEmptyMVar
     doneVar <- newEmptyMVar
@@ -116,7 +119,7 @@ runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
 newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Binary)
 newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Binary)
 newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Binary, NFData)
-newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq)
+newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq, NFData)
 
 data PureState state = PureState
     { pureStates :: HMS.HashMap StateId state

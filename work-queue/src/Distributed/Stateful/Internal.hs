@@ -7,6 +7,7 @@ module Distributed.Stateful.Internal where
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
+import           Control.Monad.Logger
 import qualified Data.Binary as B
 import           Data.Binary.Orphans ()
 import qualified Data.HashMap.Strict as HMS
@@ -50,4 +51,12 @@ data SlaveResp state output
       !(HMS.HashMap StateId state)
   | SRespUpdate !(HMS.HashMap StateId (HMS.HashMap StateId output)) -- TODO consider making this a simple list -- we don't really need it to be a HMS.
   | SRespGetStates !(HMS.HashMap StateId state)
+  | SRespError Text
   deriving (Generic, Eq, Show, NFData, B.Binary)
+
+type LogFunc = Loc -> LogSource -> LogLevel -> LogStr -> IO ()
+
+throwAndLog :: (Exception e, MonadIO m) => LogFunc -> e -> m a
+throwAndLog logFunc err = do
+  runLoggingT (logErrorN (pack (show err))) logFunc
+  liftIO $ throwIO err
