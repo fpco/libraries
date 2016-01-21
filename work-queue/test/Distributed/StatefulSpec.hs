@@ -22,10 +22,9 @@ import qualified Data.Streaming.NetworkMessage as NM
 import           Distributed.Stateful.Internal (StateId(..))
 import           Distributed.Stateful.Master
 import           Distributed.Stateful.Slave
-import           System.Timeout (timeout)
 import           Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
-import           Test.QuickCheck
+import           Test.QuickCheck hiding (output)
 
 spec :: Hspec.Spec
 spec = do
@@ -49,7 +48,7 @@ spec = do
        , initialStates :: [State]
        , updates :: [(Context, [[Input]])]
        ) -> ioProperty $ do
-         results <- runMasterAndSlaves 7000 4 (\c i s -> return (function c i s)) initialStates $ \mh -> do
+         runMasterAndSlaves 7000 4 (\c i s -> return (function c i s)) initialStates $ \mh -> do
            let go :: PureState State -> (Context, [[Input]]) -> IO (PureState State)
                go ps (ctx, inputs) = do
                  let sids' = sort (HMS.keys (pureStates ps))
@@ -60,16 +59,16 @@ spec = do
                  -- print inputMap
                  -- print ps
                  -- print ps'
-                 curStates <- getStates mh
-                 --
                  sids <- getStateIds mh
                  sort (HS.toList sids) `shouldBe` sids'
+                 curStates <- getStates mh
+                 curStates `shouldBe` pureStates ps
                  outputs <- update mh ctx inputMap
                  -- print outputs
                  -- print outputs'
                  outputs `shouldBe` outputs'
                  return ps'
-           foldM go (initialPureState initialStates) updates
+           void $ foldM go (initialPureState initialStates) updates
          return True
 
 it :: String -> IO () -> Hspec.Spec
@@ -114,14 +113,14 @@ runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
                 readMVar doneVar
     withAsync ((takeMVar masterReady >> runSlaves) `concurrently` acceptConns) $ \_ -> do
         takeMVar someConnected `catch` \BlockedIndefinitelyOnMVar -> fail "No slaves connected"
-        resetStates mh initialStates
+        void $ resetStates mh initialStates
         r <- inner mh
         putMVar doneVar ()
         return r
 
-newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Binary)
-newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Binary)
-newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Binary, NFData)
+newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq)
+newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq)
+newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq, NFData)
 newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq, NFData)
 
 data PureState state = PureState

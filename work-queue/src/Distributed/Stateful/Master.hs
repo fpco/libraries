@@ -344,6 +344,11 @@ getStates MasterHandle{..} = do
       _ -> Nothing
   return (mconcat responses)
 
+readSelect
+  :: MonadIO m
+  => SlaveNMAppData state context input output
+  -> (SlaveResp state output -> Maybe a)
+  -> m a
 readSelect slave f =
   NM.nmReadSelect slave $ \x -> case f x of
     Just y -> return y

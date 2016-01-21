@@ -45,7 +45,7 @@ sendHeartbeats
     :: MonadConnect m => RedisInfo -> Seconds -> WorkerId -> MVar () -> m void
 sendHeartbeats r (Seconds ivl) wid heartbeatSentVar = do
     sendHeartbeat
-    tryPutMVar heartbeatSentVar ()
+    void $ tryPutMVar heartbeatSentVar ()
     forever $ do
         liftIO $ threadDelay ((fromIntegral ivl `max` 1) * 1000 * 1000)
         sendHeartbeat

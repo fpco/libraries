@@ -12,7 +12,6 @@ module Distributed.Stateful.Slave
   , runSlave
   ) where
 
-import Control.Concurrent (threadDelay)
 import           ClassyPrelude
 import           Control.DeepSeq (force, NFData)
 import           Control.Exception (evaluate, AsyncException(ThreadKilled))
@@ -23,7 +22,6 @@ import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import qualified Data.Streaming.NetworkMessage as NM
 import           Distributed.Stateful.Internal
-import           Text.Printf (printf)
 
 -- | Arguments for 'runSlave'.
 data SlaveArgs state context input output = SlaveArgs
@@ -70,7 +68,7 @@ runSlave SlaveArgs{..} =
       req <- recv
       eres <- try $ do
         res <- case req of
-          SReqResetState states -> return (SRespResetState, states)
+          SReqResetState states' -> return (SRespResetState, states')
           SReqAddStates newStates -> do
             let aliased = HMS.keys (HMS.intersection newStates states)
             unless (null aliased) $ throw (AddingExistingStates aliased)
