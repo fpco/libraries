@@ -11,7 +11,6 @@ import           ClassyPrelude
 import           Control.Concurrent.Async
 import           Control.DeepSeq (NFData)
 import           Control.Exception (BlockedIndefinitelyOnMVar(..))
-import           Control.Monad.Trans.Control (MonadBaseControl)
 import           Data.Binary (Binary)
 import           Data.Conduit.Network (serverSettings, clientSettings)
 import qualified Data.Conduit.Network as CN
@@ -19,7 +18,6 @@ import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Data.Streaming.NetworkMessage
 import qualified Data.Streaming.NetworkMessage as NM
-import qualified Data.Vector as V
 import           Distributed.Stateful.Slave
 import           Distributed.Stateful.Master
 import           Distributed.Stateful.Internal (StateId(..))
@@ -27,11 +25,6 @@ import           System.Timeout (timeout)
 import           Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
 import           Test.QuickCheck
-
-newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Binary)
-newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Binary)
-newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Binary, NFData)
-newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq)
 
 spec :: Hspec.Spec
 spec = do
@@ -56,13 +49,20 @@ spec = do
        , updates :: [(Context, [[Input]])]
        ) -> ioProperty $ do
          results <- runMasterAndSlaves 7000 4 (\c i s -> return (function c i s)) initialStates $ \mh -> do
-           resetStates mh initialStates
            let go :: PureState State -> (Context, [[Input]]) -> IO (PureState State)
                go ps (ctx, inputs) = do
                  sids <- getStateIds mh
-                 let inputMap = HMS.fromList (zip (sort (HS.toList sids)) inputs)
+                 let sids' = sort (HMS.keys (pureStates ps))
+                 sort (HS.toList sids) `shouldBe` sids'
+                 let inputMap = HMS.fromList (zip sids' inputs)
                  outputs <- update mh ctx inputMap
                  let (ps', outputs') = pureUpdate function ctx inputMap ps
+                 -- putStrLn "===="
+                 -- print (ctx, inputs)
+                 -- print ps
+                 -- print ps'
+                 -- print outputs
+                 -- print outputs'
                  outputs `shouldBe` outputs'
                  return ps'
            foldM go (initialPureState initialStates) updates
@@ -113,10 +113,15 @@ runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
         putMVar doneVar ()
         return r
 
+newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Binary)
+newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Binary)
+newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Binary, NFData)
+newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq)
+
 data PureState state = PureState
     { pureStates :: HMS.HashMap StateId state
     , pureIdCounter :: Int
-    }
+    } deriving (Show)
 
 initialPureState :: [state] -> PureState state
 initialPureState states = PureState

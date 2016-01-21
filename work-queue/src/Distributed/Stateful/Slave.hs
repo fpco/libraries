@@ -83,14 +83,16 @@ runSlave SlaveArgs{..} = liftIO $ do
             loop (SSInitialized states')
           SReqUpdate context inputs -> do
             let states0 = getStates' "SReqBroadcast"
-            results <- fmap HMS.fromList $ forM (HMS.toList inputs) $ \(oldStateId, innerInputs) -> do
-              let state = case HMS.lookup oldStateId states0 of
-                    Nothing -> error (printf "slave: Could not find state %d (SReqBroadcast)" oldStateId)
-                    Just state0 -> state0
-              fmap ((oldStateId, ) . HMS.fromList) $ forM (HMS.toList innerInputs) $ \(newStateId, input) ->
-                fmap (newStateId, ) $ saUpdate context input state
-            let states = foldMap (fmap fst) results
-            let outputs = fmap (fmap snd) results
+            results <- forM (HMS.toList inputs) $ \(oldStateId, innerInputs) ->
+              if null innerInputs then return Nothing else Just <$> do
+                let state = case HMS.lookup oldStateId states0 of
+                      Nothing -> error (printf "slave: Could not find state %d (SReqBroadcast)" oldStateId)
+                      Just state0 -> state0
+                fmap ((oldStateId, ) . HMS.fromList) $ forM (HMS.toList innerInputs) $ \(newStateId, input) ->
+                  fmap (newStateId, ) $ saUpdate context input state
+            let resultsMap = HMS.fromList (catMaybes results)
+            let states = foldMap (fmap fst) resultsMap
+            let outputs = fmap (fmap snd) resultsMap
             void (evaluate (force states))
             send (SRespUpdate outputs)
             loop (SSInitialized states)
