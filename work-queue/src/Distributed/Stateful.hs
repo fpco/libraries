@@ -7,6 +7,7 @@
 module Distributed.Stateful
   ( WorkerArgs(..)
   , runWorker
+  , generalRunWorker
     -- * Re-exports
   , MasterArgs(..)
   , WorkerConfig(..)
@@ -28,6 +29,7 @@ import qualified Data.Binary as B
 import           Data.Binary.Orphans ()
 import qualified Data.Conduit.Network as CN
 import           Data.Streaming.NetworkMessage
+import           Data.WrappedBinary
 import           Distributed.JobQueue.Worker hiding (MasterFunc, SlaveFunc)
 import           Distributed.RedisQueue
 import           Distributed.Stateful.Internal
@@ -56,8 +58,6 @@ data WorkerArgs = WorkerArgs
 -- computation.
 runWorker
     :: forall state context input output request response.
-     -- FIXME: remove these, by generalizing job-queue to not require
-     -- Typeable..
      ( Typeable request, Typeable response
      , NFData state, NFData output
      , B.Binary state, B.Binary context, B.Binary input, B.Binary output, B.Binary request, B.Binary response
@@ -121,3 +121,20 @@ nmsSettings :: IO NMSettings
 nmsSettings = do
     nms <- defaultNMSettings
     return $ setNMHeartbeat 5000000 nms -- 5 seconds
+
+-- | Like 'runWorker', but doesn't require that request and response be Typeable.
+generalRunWorker
+    :: forall state context input output request response.
+     ( NFData state, NFData output
+     , B.Binary state, B.Binary context, B.Binary input, B.Binary output, B.Binary request, B.Binary response
+     )
+    => WorkerArgs
+    -> LogFunc
+    -> (context -> input -> state -> IO (state, output))
+    -> (RedisInfo -> RequestId -> request -> MasterHandle state context input output -> IO response)
+    -> IO ()
+generalRunWorker wa logFunc slave master =
+    runWorker wa logFunc slave master'
+  where
+    master' :: RedisInfo -> RequestId -> WrappedBinary -> MasterHandle state context input output -> IO WrappedBinary
+    master' redis rid r mh = wrapBinary <$> master redis rid (unwrapBinary r) mh

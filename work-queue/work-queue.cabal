@@ -23,6 +23,7 @@ Flag long-tests
 
 library
   exposed-modules:     Data.WorkQueue
+                       Data.WrappedBinary
                        Data.SimpleSupply
                        Data.Streaming.NetworkMessage
                        Distributed.JobQueue
