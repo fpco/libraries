@@ -10,6 +10,7 @@ module Distributed.JobQueue.Client.NewApi
     , JobClient
     , newJobClient
     , submitRequest
+    , checkForResponse
     , LogFunc
     ) where
 
@@ -19,7 +20,8 @@ import Control.Monad.Logger
 import Control.Retry (RetryPolicy)
 import Data.Streaming.NetworkMessage (Sendable)
 import Data.Void (absurd)
-import Distributed.JobQueue.Client
+import Distributed.JobQueue.Client hiding (checkForResponse)
+import qualified Distributed.JobQueue.Client as Client
 import Distributed.RedisQueue.Internal
 import FP.Redis
 
@@ -141,6 +143,18 @@ submitRequest JobClient{..} rid req = liftIO $ do
             (jobQueueRequestWithId jcConfig jcClientVars jcRedis rid req)
             jcLogFunc
         atomically $ writeTVar responseVar (Just response)
+    return (readTVar responseVar)
+
+checkForResponse ::
+     (MonadIO m, Sendable response)
+  => JobClient response
+  -> RequestId
+  -> m (STM (Maybe (Either DistributedJobQueueException response)))
+checkForResponse JobClient{..} rid = liftIO $ do
+    responseVar <- newTVarIO Nothing
+    _ <- forkIO $ do
+        response <- runLoggingT (Client.checkForResponse jcRedis rid) jcLogFunc
+        atomically $ writeTVar responseVar response
     return (readTVar responseVar)
 
 {- TODO: implement something like this?  Then we won't get as much of a
