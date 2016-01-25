@@ -21,7 +21,6 @@ module Distributed.Stateful.Master
 
 import           ClassyPrelude
 import           Control.Concurrent.Async (mapConcurrently)
-import           Control.Concurrent.STM hiding (atomically)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.Binary as B
 import           Data.Binary.Orphans ()

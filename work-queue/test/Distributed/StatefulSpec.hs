@@ -30,9 +30,7 @@ import           Distributed.TestUtil
 import           FP.Redis
 import           Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
-import qualified Test.Hspec.Core.Spec as Hspec
 import           Test.QuickCheck hiding (output)
-import           Test.QuickCheck.Random
 
 spec :: Hspec.Spec
 spec = do
@@ -94,7 +92,7 @@ spec = do
             masterFunc _redis _rid r mh = do
               sids <- HMS.keys <$> resetStates mh (map State [1..10])
               update mh r (HMS.fromList (zip sids (map ((:[]) . Input) [1..])))
-        void $ mapConcurrently (\_ -> runWorker args logFunc slaveFunc masterFunc) [1..2]
+        void $ mapConcurrently (\_ -> runWorker args logFunc slaveFunc masterFunc) [1..(2 :: Int)]
           `race` do
             jc <- newJobClient logFunc defaultJobClientConfig
                 { jccRedisPrefix = redisTestPrefix }

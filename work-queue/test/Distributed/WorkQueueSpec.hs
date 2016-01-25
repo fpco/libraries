@@ -154,7 +154,7 @@ forkMasterSlave which = do
             slavePids <- readIORef slavesRef
             case (useForkIO, mmasterPid) of
                 (False, Just masterPid) -> do
-                    when (checkMasterRan config && masterPid `notElem` seenPids) $
+                    when (checkMasterRan config && masterPid `onotElem` seenPids) $
                         fail "Master never ran"
                     when (checkAllSlavesRan config) $
                         sort (delete masterPid seenPids) `shouldBe` sort slavePids
@@ -259,11 +259,11 @@ runArgs'
 runArgs' config initialData calc' inner' = do
     let calc initial input = do
             pid <- getProcessID
-            appendFile (fpToString seenPidsPath) (show pid ++ "\n")
+            appendFile seenPidsPath (show pid ++ "\n")
             calc' initial input
         inner initial queue = do
             result <- inner' initial queue
-            appendFile (fpToString resultsPath) (show result)
+            appendFile resultsPath (show result)
     wrapProcess config $ runArgs initialData calc inner
 
 -- Wait for a connection to the test socket to succeed, indicating

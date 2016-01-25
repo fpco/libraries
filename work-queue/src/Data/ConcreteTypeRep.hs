@@ -25,15 +25,10 @@ module Data.ConcreteTypeRep (
 import Data.Typeable
 #if MIN_VERSION_base(4, 4, 0)
 import Data.Typeable.Internal
-import GHC.Fingerprint.Type
 #endif
 
-import Data.Hashable
 import Data.Binary
-
-import System.IO.Unsafe
-
-import Control.Applicative((<$>))
+import Data.Hashable
 
 -- | Abstract type providing the functionality of 'TypeRep', but additionally supporting hashing and serialization.
 --
@@ -74,8 +69,8 @@ toTyConRep :: TyCon -> TyConRep
 fromTyConRep :: TyConRep -> TyCon
 #if MIN_VERSION_base(4, 4, 0)
 type TyConRep = (String, String, String)
-toTyConRep (TyCon _ pack mod name) = (pack, mod, name)
-fromTyConRep (pack, mod, name) = mkTyCon3 pack mod name
+toTyConRep (TyCon _ pack modu name) = (pack, modu, name)
+fromTyConRep (pack, modu, name) = mkTyCon3 pack modu name
 #else
 type TyConRep = String
 toTyConRep = tyConString
