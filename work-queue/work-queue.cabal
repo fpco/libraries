@@ -164,6 +164,7 @@ test-suite wq-test
                      , enclosed-exceptions
                      , executable-path
                      , hspec
+                     , hspec-core
                      , lifted-base
                      , monad-control
                      , monad-logger

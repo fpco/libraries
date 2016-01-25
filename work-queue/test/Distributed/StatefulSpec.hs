@@ -30,7 +30,9 @@ import           Distributed.TestUtil
 import           FP.Redis
 import           Test.Hspec (shouldBe)
 import qualified Test.Hspec as Hspec
+import qualified Test.Hspec.Core.Spec as Hspec
 import           Test.QuickCheck hiding (output)
+import           Test.QuickCheck.Random
 
 spec :: Hspec.Spec
 spec = do
@@ -48,6 +50,7 @@ spec = do
             outputs <- update mh () inputs
             print outputs
             -- states `shouldBe` (HMS.map (\(_input, initial) -> [Right "step 1", Left initial]) inputsy)
+    -- setReplay (mkQCGen 957312063, 0) $
     Hspec.it "Passes quickcheck comparison with pure implementation" $
       property $ forAll arbitrary $
       \( Blind (function :: Context -> Input -> State -> (State, Output))
@@ -62,9 +65,10 @@ spec = do
                  let (ps', outputs') = pureUpdate function ctx inputMap ps
                  -- putStrLn "===="
                  -- print ctx
-                 -- print inputMap
-                 -- print ps
-                 -- print ps'
+                 -- print ("inputs", inputMap)
+                 -- print ("outputs", outputs')
+                 -- print ("before", ps)
+                 -- print ("after", ps')
                  sids <- getStateIds mh
                  sort (HS.toList sids) `shouldBe` sids'
                  curStates <- getStates mh
@@ -196,3 +200,17 @@ nmsSettings :: IO NMSettings
 nmsSettings = do
     nms <- defaultNMSettings
     return $ setNMHeartbeat 5000000 nms -- 5 seconds
+
+{- Utility for doing a quickcheck replay
+
+setReplay :: (QCGen, Int) -> Hspec.SpecWith a -> Hspec.SpecWith a
+setReplay v = modifyArgs (\x -> x {replay = Just v})
+
+-- Copied from
+-- https://github.com/hspec/hspec/blob/2644587355583d340658cc3fb38b9e38a43c7c4a/hspec-core/src/Test/Hspec/Core/QuickCheck.hs
+modifyArgs :: (Args -> Args) -> Hspec.SpecWith a -> Hspec.SpecWith a
+modifyArgs = Hspec.modifyParams . modify
+  where
+    modify :: (Args -> Args) -> Hspec.Params -> Hspec.Params
+    modify f p = p {Hspec.paramsQuickCheckArgs = f (Hspec.paramsQuickCheckArgs p)}
+-}
