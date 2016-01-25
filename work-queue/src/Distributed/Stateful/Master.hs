@@ -8,6 +8,7 @@
 module Distributed.Stateful.Master
     ( MasterArgs(..)
     , MasterHandle
+    , MasterException(..)
     , StateId
     , mkMasterHandle
     , update
@@ -22,6 +23,7 @@ module Distributed.Stateful.Master
 import           ClassyPrelude
 import           Control.Concurrent.Async (mapConcurrently)
 import           Control.Monad.Trans.Control (MonadBaseControl)
+import           Control.Monad.Logger (runLoggingT, logDebugNS)
 import qualified Data.Binary as B
 import           Data.Binary.Orphans ()
 import           Data.Foldable (foldlM)
@@ -63,6 +65,16 @@ data SlaveInfo state context input output = SlaveInfo
 type SlaveNMAppData state context input output =
   NM.NMAppData (SlaveReq state context input) (SlaveResp state output)
 
+data MasterException
+  = MasterException Text
+  | InputMissingException StateId
+  | UnusedInputsException [StateId]
+  | NoSlavesConnectedException
+  | ExceptionFromSlave Text
+  deriving (Eq, Show, Typeable)
+
+instance Exception MasterException
+
 -- | Create a new 'MasterHandle' based on the 'MasterArgs'. This
 -- 'MasterHandle' should be used for all interactions with this
 -- particular stateful computation (via 'update' and 'resample').
@@ -72,13 +84,14 @@ mkMasterHandle
   -> LogFunc
   -> m (MasterHandle state context input output)
 mkMasterHandle ma@MasterArgs{..} logFunc = do
+  let throw = throwAndLog logFunc . MasterException . pack
   case (maMinBatchSize, maMaxBatchSize) of
     (_, Just maxBatchSize) | maxBatchSize < 1 ->
-      fail (printf "Distribute.master: maMaxBatchSize must be > 0 (got %d)" maxBatchSize)
+      throw (printf "Distribute.master: maMaxBatchSize must be > 0 (got %d)" maxBatchSize)
     (Just minBatchSize, _) | minBatchSize < 0 ->
-      fail (printf "Distribute.master: maMinBatchSize must be >= 0 (got %d)" minBatchSize)
+      throw (printf "Distribute.master: maMinBatchSize must be >= 0 (got %d)" minBatchSize)
     (Just minBatchSize, Just maxBatchSize) | minBatchSize > maxBatchSize ->
-      fail (printf "Distribute.master: maMinBatchSize can't be greater then maMaxBatchSize (got %d and %d)" minBatchSize maxBatchSize)
+      throw (printf "Distribute.master: maMinBatchSize can't be greater then maMaxBatchSize (got %d and %d)" minBatchSize maxBatchSize)
     _ ->
       return ()
   slaveInfoRef <- newIORef SlaveInfo
@@ -133,14 +146,14 @@ update MasterHandle{..} context inputs0 = liftIO $ do
         -- more efficiently / concisely.
         r <- forM (HS.toList states) $ \k ->
           case HMS.lookup k inputs of
-            Nothing -> fail ("Input missing: " ++ show k)
+            Nothing -> throwAndLog mhLogFunc (InputMissingException k)
             Just input -> return (k, input)
         let inputs' = inputs `HMS.difference` (HMS.fromList (map (,()) (HS.toList states)))
         return ((slaveId, r):rs, inputs')
   (slaveIdsAndInputs :: [(SlaveId, [(StateId, [(StateId, input)])])], unusedInputs)
     <- foldlM go ([], inputMap) (HMS.toList (siStates si0))
   when (not (HMS.null unusedInputs)) $
-      fail ("Unused inputs: " ++ show (HMS.keys unusedInputs))
+    throwAndLog mhLogFunc (UnusedInputsException (HMS.keys unusedInputs))
   outputs <- case maMaxBatchSize mhArgs of
     Nothing -> do
       forM_ slaveIdsAndInputs $ \(slaveId, inps) -> do
@@ -151,7 +164,7 @@ update MasterHandle{..} context inputs0 = liftIO $ do
           _ -> Nothing
     Just maxBatchSize -> do
       slaveStatesVar <- newMVar (HMS.fromList (map (second (map fst)) slaveIdsAndInputs))
-      let slaveThread slaveId = updateSlaveThread mhArgs context maxBatchSize slaveId slaves slaveStatesVar inputMap
+      let slaveThread slaveId = updateSlaveThread mhArgs mhLogFunc context maxBatchSize slaveId slaves slaveStatesVar inputMap
       mapConcurrently (\slaveId -> (slaveId, ) <$> slaveThread slaveId) (HMS.keys slaves)
   atomicModifyIORef' mhSlaveInfoRef $ \si -> (, ()) $ si
     { siStates =
@@ -173,6 +186,7 @@ data SlaveThreadStatus
 updateSlaveThread
   :: forall state context input output.
      MasterArgs
+  -> LogFunc
   -> context
   -> Int -- ^ Max batch size
   -> SlaveId -- ^ The slave we're operating on
@@ -180,8 +194,9 @@ updateSlaveThread
   -> MVar (HMS.HashMap SlaveId [StateId]) -- ^ 'MVar's holding the remaining states for each slave
   -> HMS.HashMap StateId [(StateId, input)] -- Inputs to the computation
   -> IO (HMS.HashMap StateId (HMS.HashMap StateId output))
-updateSlaveThread MasterArgs{..} context maxBatchSize thisSlaveId slaves slaveStatesVar inputMap = go
+updateSlaveThread MasterArgs{..} logFunc context maxBatchSize thisSlaveId slaves slaveStatesVar inputMap = go
   where
+    debug msg = runLoggingT (logDebugNS "Distributed.Stateful.Master.updateSlaveThread" (pack msg)) logFunc
     thisSlave = slaves HMS.! thisSlaveId
 
     go :: IO (HMS.HashMap StateId (HMS.HashMap StateId output))
@@ -212,8 +227,8 @@ updateSlaveThread MasterArgs{..} context maxBatchSize thisSlaveId slaves slaveSt
         STSOk roundStates -> broadcastAndContinue roundStates
         STSStop -> return HMS.empty
         STSRequestStates requestFrom statesToRequest -> do
-          printf ("Transferring states from %d to %d %s\n")
-              requestFrom thisSlaveId (show (map unStateId statesToRequest))
+          debug (printf ("Transferring states from %d to %d %s\n")
+              requestFrom thisSlaveId (show (map unStateId statesToRequest)))
           requestStatesForSlave requestFrom statesToRequest
           broadcastAndContinue statesToRequest
 
@@ -227,8 +242,8 @@ updateSlaveThread MasterArgs{..} context maxBatchSize thisSlaveId slaves slaveSt
       -- requested.
     stealStatesForSlave batchSize remainingStates = do
       let thisSlaveStates = remainingStates HMS.! thisSlaveId
-      when (not (null thisSlaveStates)) $
-        fail "broadcast.stealStatesForSlave: Expecting no states in thisSlaveId"
+      when (not (null thisSlaveStates)) $ throwAndLog logFunc $
+        MasterException "broadcast.stealStatesForSlave: Expecting no states in thisSlaveId"
       let goodCandidate (slaveId, slaveRemainingStates) = do
             guard (slaveId /= thisSlaveId)
             let numSlaveRemainingStates = length slaveRemainingStates
@@ -299,12 +314,13 @@ resetStates :: forall state context input output m.
   -> m (HMS.HashMap StateId state)
 resetStates MasterHandle{..} states0 = do
   -- Get a list of StateIds for states
-  let numStates = length states0
   allStates <- withSupplyM mhStateIdSupply $ mapM (\state -> (, state) <$> askSupplyM) states0
   -- Divide up the states among the slaves
   mres <- atomicModifyIORef' mhSlaveInfoRef $ \si ->
     let slaves = siConnections si
-        numStatesPerSlave = getNumStatesPerSlave (length slaves) numStates
+        numStatesPerSlave =
+          let (chunkSize, leftover) = length states0 `quotRem` length slaves
+          in if leftover == 0 then chunkSize else chunkSize + 1
         slavesStates :: HMS.HashMap SlaveId [(StateId, state)]
         slavesStates = HMS.fromList $ zip (HMS.keys slaves) $
           -- Note that some slaves might be initially empty. That's fine and inevitable.
@@ -315,7 +331,7 @@ resetStates MasterHandle{..} states0 = do
        then (si, Nothing)
        else (si { siStates = slaveStateIds }, Just (slaves, slavesStates))
   case mres of
-    Nothing -> fail "Can't resetStates unless some slaves are connected."
+    Nothing -> throwAndLog mhLogFunc NoSlavesConnectedException
     Just (slaves, slavesStates) -> do
       -- Send states
       forM_ (HMS.toList slavesStates) $ \(slaveId, states) -> do
@@ -325,17 +341,6 @@ resetStates MasterHandle{..} states0 = do
           SRespResetState -> Just ()
           _ -> Nothing
       return (HMS.fromList allStates)
-
-getNumStatesPerSlave ::
-     Int -- ^ Number of nodes
-  -> Int -- ^ Number of particles
-  -> Int -- ^ Number of particles per node (rounded up)
-getNumStatesPerSlave numNodes numParticles
-  | numNodes < 1 = error "numStatesPerSlave: length iaNodes < 1"
-  | numParticles < 1 = error "numStatesPerSlave: length iaInitialParticles < 1"
-  | otherwise = let
-      (chunkSize, leftover) = numParticles `quotRem` numNodes
-      in if leftover == 0 then chunkSize else chunkSize + 1
 
 getStateIds ::
      MasterHandle state context input output
@@ -366,9 +371,12 @@ readSelect
   => SlaveNMAppData state context input output
   -> (SlaveResp state output -> Maybe a)
   -> m a
-readSelect slave f =
-  NM.nmReadSelect slave $ \x -> case f x of
-    Just y -> return y
+readSelect slave f = do
+  eres <- NM.nmReadSelect slave $ \x -> case f x of
+    Just y -> return (Right y)
     Nothing -> case x of
-      SRespError err -> error (unpack err)
+      SRespError err -> return (Left err)
       _ -> Nothing
+  case eres of
+    Left err -> liftIO $ throwIO (ExceptionFromSlave err)
+    Right res -> return res

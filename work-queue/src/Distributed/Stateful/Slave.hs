@@ -43,7 +43,7 @@ data SlaveException
   = AddingExistingStates [StateId]
   | MissingStatesToRemove [StateId]
   | InputStateNotFound StateId
-  deriving (Show, Typeable)
+  deriving (Eq, Show, Typeable)
 
 instance Exception SlaveException
 

@@ -5,6 +5,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
 module Distributed.StatefulSpec (spec) where
 
 import           ClassyPrelude
@@ -28,19 +29,14 @@ import           Distributed.Stateful.Master
 import           Distributed.Stateful.Slave
 import           Distributed.TestUtil
 import           FP.Redis
-import           Test.Hspec (shouldBe)
+import           Test.Hspec (shouldBe, shouldThrow)
 import qualified Test.Hspec as Hspec
 import           Test.QuickCheck hiding (output)
 
 spec :: Hspec.Spec
 spec = do
     it "Sends data around properly" $ do
-        let slaveUpdate :: () -> String -> [Either Int String] -> IO ([Either Int String], String)
-            slaveUpdate _context input state =
-                return (Right input : state, input)
-        let initialStates :: [[Either Int String]]
-            initialStates = map ((:[]) . Left) [1..4]
-        runMasterAndSlaves 7000 4 slaveUpdate initialStates $ \mh -> do
+        runSimple $ \mh -> do
             states <- getStates mh
             print states
             sids <- getStateIds mh
@@ -86,7 +82,7 @@ spec = do
               , waRequestSlaveCount = 2
               , waMasterWaitTime = Seconds 1
               }
-        logFunc <- runStdoutLoggingT askLoggerIO
+        logFunc <- runStdoutLoggingT (filterLogger (\_ l -> l > LogDebug) askLoggerIO)
         let slaveFunc (Context x) (Input y) (State z) = return (State (z + y), Output (z + x))
         let masterFunc :: RedisInfo -> RequestId -> Context -> MasterHandle State Context Input Output -> IO (HMS.HashMap StateId (HMS.HashMap StateId Output))
             masterFunc _redis _rid r mh = do
@@ -105,9 +101,55 @@ spec = do
             putStrLn "=========================================="
             print (res :: Either DistributedJobQueueException (HMS.HashMap StateId (HMS.HashMap StateId Output)))
             putStrLn "=========================================="
+    Hspec.it "Throws InputMissingException" $
+        runSimple $ \mh -> do
+            (sid0:sids) <- HS.toList <$> getStateIds mh
+            let inputs = HMS.fromList $ map (, ["input 1"]) sids
+            update mh () inputs `shouldThrow` (== InputMissingException sid0)
+    Hspec.it "Throws UnusedInputsException" $
+        runSimple $ \mh -> do
+            let extra = StateId 10
+            sids <- ((extra:) . HS.toList) <$> getStateIds mh
+            let inputs = HMS.fromList $ map (, ["input 1"]) sids
+            update mh () inputs `shouldThrow` (== UnusedInputsException [extra])
+    Hspec.it "Throws NoSlavesConnectedException" $ do
+        logFunc <- runStdoutLoggingT askLoggerIO
+        mh <- mkMasterHandle (MasterArgs Nothing Nothing) logFunc
+        resetStates (mh :: MasterHandle State Context Input Output) []
+          `shouldThrow` (== NoSlavesConnectedException)
+    Hspec.it "Throws exception for non-positive maxBatchSize" $ do
+        let ma = MasterArgs
+              { maMinBatchSize = Nothing
+              , maMaxBatchSize = Just 0
+              }
+        logFunc <- runStdoutLoggingT askLoggerIO
+        mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
+    Hspec.it "Throws exception for negative minBatchSize" $ do
+        let ma = MasterArgs
+              { maMinBatchSize = Just (-1)
+              , maMaxBatchSize = Nothing
+              }
+        logFunc <- runStdoutLoggingT askLoggerIO
+        mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
+    Hspec.it "Throws exception for minBatchSize greater than maxBatchSize" $ do
+        let ma = MasterArgs
+              { maMinBatchSize = Just 5
+              , maMaxBatchSize = Just 4
+              }
+        logFunc <- runStdoutLoggingT askLoggerIO
+        mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
 
 it :: String -> IO () -> Hspec.Spec
 it name f = Hspec.it name f
+
+runSimple :: (MasterHandle [Either Int String] () String String -> IO a) -> IO a
+runSimple = runMasterAndSlaves 7000 4 simpleSlaveUpdate simpleInitialStates
+
+simpleSlaveUpdate :: () -> String -> [Either Int String] -> IO ([Either Int String], String)
+simpleSlaveUpdate _context input state = return (Right input : state, input)
+
+simpleInitialStates :: [[Either Int String]]
+simpleInitialStates = map ((:[]) . Left) [1..4]
 
 runMasterAndSlaves
     :: forall state context input output a.
