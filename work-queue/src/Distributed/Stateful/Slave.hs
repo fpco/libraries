@@ -15,6 +15,7 @@ module Distributed.Stateful.Slave
 import           ClassyPrelude
 import           Control.DeepSeq (force, NFData)
 import           Control.Exception (evaluate, AsyncException)
+import           Control.Monad.Logger (runLoggingT, logDebugNS)
 import qualified Data.Binary as B
 import           Data.Binary.Orphans ()
 import qualified Data.Conduit.Network as CN
@@ -59,6 +60,7 @@ runSlave SlaveArgs{..} =
       go (NM.nmRead nm) (NM.nmWrite nm) HMS.empty
   where
     throw = throwAndLog saLogFunc
+    debug msg = runLoggingT (logDebugNS "Distributed.Stateful.Slave" msg) saLogFunc
     go :: forall b.
          IO (SlaveReq state context input)
       -> (SlaveResp state output -> IO ())
@@ -66,14 +68,15 @@ runSlave SlaveArgs{..} =
       -> IO b
     go recv send states = do
       req <- recv
+      debug (displayReq req)
       eres <- try $ do
         res <- case req of
           SReqResetState states' -> return (SRespResetState, states')
+          SReqGetStates -> return (SRespGetStates states, states)
           SReqAddStates newStates -> do
             let aliased = HMS.keys (HMS.intersection newStates states)
             unless (null aliased) $ throw (AddingExistingStates aliased)
             return (SRespAddStates, HMS.union newStates states)
-          SReqGetStates -> return (SRespGetStates states, states)
           SReqRemoveStates slaveRequesting stateIdsToDelete -> do
             let eitherLookup sid =
                   case HMS.lookup sid states of
@@ -99,6 +102,7 @@ runSlave SlaveArgs{..} =
       case eres of
         Right (output, states') -> do
           send output
+          debug (displayResp output)
           go recv send states'
         Left (fromException -> Just (err :: AsyncException)) -> throwIO err
         Left (err :: SomeException) -> do

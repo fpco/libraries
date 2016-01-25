@@ -3,6 +3,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE OverloadedStrings #-}
 module Distributed.Stateful.Internal where
 
 import           ClassyPrelude
@@ -53,6 +54,21 @@ data SlaveResp state output
   | SRespGetStates !(HMS.HashMap StateId state)
   | SRespError Text
   deriving (Generic, Eq, Show, NFData, B.Binary)
+
+displayReq :: SlaveReq state context input -> Text
+displayReq (SReqResetState mp) = "SReqResetState (" <> pack (show (HMS.keys mp)) <> ")"
+displayReq (SReqAddStates mp) = "SReqAddStates (" <> pack (show (HMS.keys mp)) <> ")"
+displayReq (SReqRemoveStates k mp) = "SReqRemoveStates (" <> pack (show k) <> ") " <> "(" <> pack (show (HS.toList mp)) <> ")"
+displayReq (SReqUpdate _ mp) = "SReqUpdate (" <> pack (show (fmap HMS.keys mp)) <> ")"
+displayReq SReqGetStates = "SReqGetStates"
+
+displayResp :: SlaveResp state output -> Text
+displayResp SRespResetState = "SRespResetState"
+displayResp SRespAddStates = "SRespAddStates"
+displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> pack (show k) <> ") " <> "(" <> pack (show (HMS.keys mp)) <> ")"
+displayResp (SRespUpdate mp) = "SRespUpdate (" <> pack (show (fmap HMS.keys mp)) <> ")"
+displayResp (SRespGetStates mp) = "SRespGetStates (" <> pack (show (HMS.keys mp)) <> ")"
+displayResp (SRespError err) = "SRespError " <> pack (show err)
 
 type LogFunc = Loc -> LogSource -> LogLevel -> LogStr -> IO ()
 
