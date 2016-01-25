@@ -25,6 +25,7 @@ import           Control.Concurrent.STM hiding (atomically)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.Binary as B
 import           Data.Binary.Orphans ()
+import           Data.Foldable (foldlM)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Data.List.Split (chunksOf)
@@ -116,10 +117,10 @@ update :: forall state context input output m.
   -> context
   -> HMS.HashMap StateId [input]
   -> m (HMS.HashMap StateId (HMS.HashMap StateId output))
-update MasterHandle{..} context inputs = liftIO $ do
+update MasterHandle{..} context inputs0 = liftIO $ do
   -- Give state ids to each of the inputs, which will be used to label the
   -- state resulting from invoking saUpdate with that input.
-  let sortedInputs = sortBy (comparing fst) (HMS.toList inputs)
+  let sortedInputs = sortBy (comparing fst) (HMS.toList inputs0)
   inputMap <-
     withSupplyM mhStateIdSupply $
     fmap HMS.fromList $
@@ -128,13 +129,19 @@ update MasterHandle{..} context inputs = liftIO $ do
   -- Update the slave states.
   si0 <- readIORef mhSlaveInfoRef
   let slaves = siConnections si0
-  -- FIXME: throw errors for unused inputs
-  let slaveIdsAndInputs :: [(SlaveId, [(StateId, [(StateId, input)])])]
-      slaveIdsAndInputs =
-        map (\(slaveId, states) ->
-              (slaveId, mapMaybe (\k -> (k,) <$> HMS.lookup k inputMap) (HS.toList states)))
-            (HMS.toList (siStates si0))
-  when (isJust (maMaxBatchSize mhArgs)) $ putStrLn "Ignoring that maMaxBatchSize is a Just, since rebalancing code isn't working currently"
+  let go (rs, inputs) (slaveId, states) = do
+        -- TODO: Other Map + Set datatypes have functions for doing this
+        -- more efficiently / concisely.
+        r <- forM (HS.toList states) $ \k ->
+          case HMS.lookup k inputs of
+            Nothing -> fail ("Input missing: " ++ show k)
+            Just input -> return (k, input)
+        let inputs' = inputs `HMS.difference` (HMS.fromList (map (,()) (HS.toList states)))
+        return ((slaveId, r):rs, inputs')
+  (slaveIdsAndInputs :: [(SlaveId, [(StateId, [(StateId, input)])])], unusedInputs)
+    <- foldlM go ([], inputMap) (HMS.toList (siStates si0))
+  when (not (HMS.null unusedInputs)) $
+      fail ("Unused inputs: " ++ show (HMS.keys unusedInputs))
   outputs <- case maMaxBatchSize mhArgs of
     Nothing -> do
       forM_ slaveIdsAndInputs $ \(slaveId, inps) -> do
