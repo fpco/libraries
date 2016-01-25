@@ -79,8 +79,7 @@ runSlave SlaveArgs{..} =
                   case HMS.lookup sid states of
                     Nothing -> Left sid
                     Just x -> Right (sid, x)
-            let (missing, toSend) =
-                  partitionEithers $ map eitherLookup $ HS.toList stateIdsToDelete
+            let (missing, toSend) = partitionEithers $ map eitherLookup $ HS.toList stateIdsToDelete
             unless (null missing) $ throw (MissingStatesToRemove missing)
             let states' = foldl' (flip HMS.delete) states stateIdsToDelete
             return (SRespRemoveStates slaveRequesting (HMS.fromList toSend), states')
@@ -95,7 +94,7 @@ runSlave SlaveArgs{..} =
             let resultsMap = HMS.fromList (catMaybes results)
             let states' = foldMap (fmap fst) resultsMap
             let outputs = fmap (fmap snd) resultsMap
-            return (SRespUpdate outputs, states')
+            return (SRespUpdate outputs, states' `HMS.union` (states `HMS.difference` inputs))
         evaluate (force res)
       case eres of
         Right (output, states') -> do

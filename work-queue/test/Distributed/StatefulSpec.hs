@@ -58,7 +58,7 @@ spec = do
            let go :: PureState State -> (Context, [[Input]]) -> IO (PureState State)
                go ps (ctx, inputs) = do
                  let sids' = sort (HMS.keys (pureStates ps))
-                 let inputMap = HMS.fromList (zip sids' inputs)
+                 let inputMap = HMS.fromList (zip sids' (inputs ++ repeat []))
                  let (ps', outputs') = pureUpdate function ctx inputMap ps
                  -- putStrLn "===="
                  -- print ctx
