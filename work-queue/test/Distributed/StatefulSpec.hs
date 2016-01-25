@@ -15,6 +15,7 @@ import           Control.DeepSeq (NFData)
 import           Control.Exception (BlockedIndefinitelyOnSTM(..))
 import           Control.Monad.Logger
 import           Data.Binary (Binary)
+import           Data.Bits
 import           Data.Conduit.Network (serverSettings, clientSettings)
 import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
@@ -82,12 +83,14 @@ spec = do
               , waRequestSlaveCount = 2
               , waMasterWaitTime = Seconds 1
               }
-        logFunc <- runStdoutLoggingT (filterLogger (\_ l -> l > LogDebug) askLoggerIO)
-        let slaveFunc (Context x) (Input y) (State z) = return (State (z + y), Output (z + x))
-        let masterFunc :: RedisInfo -> RequestId -> Context -> MasterHandle State Context Input Output -> IO (HMS.HashMap StateId (HMS.HashMap StateId Output))
+        logFunc <- runStdoutLoggingT (filterLogger (\_ l -> l > LevelDebug) askLoggerIO)
+        let slaveFunc _ (Input y) (State z) = return (State (y `xor` z), Output (y `xor` z))
+        let masterFunc :: RedisInfo -> RequestId -> Context -> MasterHandle State Context Input Output -> IO Int
             masterFunc _redis _rid r mh = do
-              sids <- HMS.keys <$> resetStates mh (map State [1..10])
-              update mh r (HMS.fromList (zip sids (map ((:[]) . Input) [1..])))
+              sids <- HMS.keys <$> resetStates mh (map State [1..16])
+              outputs <- update mh r (HMS.fromList (zip sids (map ((:[]) . Input) [17..32])))
+              let outputValues = map (\(Output n) -> n) (concatMap HMS.elems (HMS.elems outputs))
+              return (foldl' xor 0 outputValues)
         void $ mapConcurrently (\_ -> runWorker args logFunc slaveFunc masterFunc) [1..(2 :: Int)]
           `race` do
             jc <- newJobClient logFunc defaultJobClientConfig
@@ -98,9 +101,7 @@ spec = do
                 case mres of
                     Just res -> return res
                     Nothing -> retry
-            putStrLn "=========================================="
-            print (res :: Either DistributedJobQueueException (HMS.HashMap StateId (HMS.HashMap StateId Output)))
-            putStrLn "=========================================="
+            res `shouldBe` Right (32 :: Int)
     Hspec.it "Throws InputMissingException" $
         runSimple $ \mh -> do
             (sid0:sids) <- HS.toList <$> getStateIds mh
