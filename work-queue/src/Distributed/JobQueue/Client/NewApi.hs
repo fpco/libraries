@@ -10,7 +10,7 @@ module Distributed.JobQueue.Client.NewApi
     , JobClient
     , newJobClient
     , submitRequest
-    , checkForResponse
+    , waitForResponse
     , LogFunc
     ) where
 
@@ -20,8 +20,7 @@ import Control.Monad.Logger
 import Control.Retry (RetryPolicy)
 import Data.Streaming.NetworkMessage (Sendable)
 import Data.Void (absurd)
-import Distributed.JobQueue.Client hiding (checkForResponse)
-import qualified Distributed.JobQueue.Client as Client
+import Distributed.JobQueue.Client
 import Distributed.RedisQueue.Internal
 import FP.Redis
 
@@ -117,45 +116,27 @@ data JobClient response = JobClient
     , jcLogFunc :: LogFunc
     }
 
--- | Submit a new request to the queue to be processed. This returns an 'STM'
--- action to get the response when it's available. By ignoring that action, you
--- can submit a request without checking its response. The STM action can be
--- used to either poll for a response, or by using @retry@, you can block until
--- a response is available.
---
--- Note that calling this function twice with the same @RequestId@ will not
--- submit two requests: the second call will see the existance of the request
--- in the queue (or a waiting response) and not enqueue additional work. Once
--- the request or response values expire, of course, new work will be necessary
--- and enqueued.
-submitRequest
-    :: (MonadIO m, Sendable response, Sendable request)
+-- | Submits a new request. Returns a 'Just' if the response to the request is already
+-- ready (e.g. if a request with the given 'RequestId' was already submitted and processed).
+submitRequest ::
+       (MonadCommand m, Sendable request, Sendable response)
     => JobClient response
     -> RequestId
     -> request
-    -> m (STM (Maybe (Either DistributedJobQueueException response)))
-submitRequest JobClient{..} rid req = liftIO $ do
-    -- FIXME: Avoid this re-wrapping of MVar as a TMVar.  Also avoid re-
-    -- Either-ifying the exception.
-    responseVar <- newTVarIO Nothing
-    _ <- forkIO $ do
-        response <- try $ runLoggingT
-            (jobQueueRequestWithId jcConfig jcClientVars jcRedis rid req)
-            jcLogFunc
-        atomically $ writeTVar responseVar (Just response)
-    return (readTVar responseVar)
+    -> m (Maybe response)
+submitRequest JobClient{..} reqId request =
+    runLoggingT (sendRequestWithId jcConfig jcRedis reqId request) jcLogFunc
 
-checkForResponse ::
-     (MonadIO m, Sendable response)
-  => JobClient response
-  -> RequestId
-  -> m (STM (Maybe (Either DistributedJobQueueException response)))
-checkForResponse JobClient{..} rid = liftIO $ do
-    responseVar <- newTVarIO Nothing
-    _ <- forkIO $ do
-        response <- runLoggingT (Client.checkForResponse jcRedis rid) jcLogFunc
-        atomically $ writeTVar responseVar response
-    return (readTVar responseVar)
+-- | Blocks until a response for the given 'RequestId' is available.
+waitForResponse ::
+       (MonadIO m, Sendable response)
+    => JobClient response
+    -> RequestId
+    -> m (Either DistributedJobQueueException response)
+waitForResponse JobClient{..} rid = liftIO $ do
+    mv <- newEmptyMVar
+    runLoggingT (registerResponseCallback jcClientVars jcRedis rid (putMVar mv)) jcLogFunc
+    takeMVar mv
 
 {- TODO: implement something like this?  Then we won't get as much of a
 guarantee that having a 'JobClient' means the job client threads are
