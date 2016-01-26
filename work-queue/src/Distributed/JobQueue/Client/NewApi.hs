@@ -11,6 +11,7 @@ module Distributed.JobQueue.Client.NewApi
     , newJobClient
     , submitRequest
     , waitForResponse
+    , checkForResponse
     , LogFunc
     ) where
 
@@ -20,7 +21,8 @@ import Control.Monad.Logger
 import Control.Retry (RetryPolicy)
 import Data.Streaming.NetworkMessage (Sendable)
 import Data.Void (absurd)
-import Distributed.JobQueue.Client
+import Distributed.JobQueue.Client hiding (checkForResponse)
+import qualified Distributed.JobQueue.Client as Client
 import Distributed.RedisQueue.Internal
 import FP.Redis
 
@@ -137,6 +139,14 @@ waitForResponse JobClient{..} rid = liftIO $ do
     mv <- newEmptyMVar
     runLoggingT (registerResponseCallback jcClientVars jcRedis rid (putMVar mv)) jcLogFunc
     takeMVar mv
+
+-- | Returns immediately with the request, if present.
+checkForResponse ::
+       (MonadIO m, Sendable response)
+    => JobClient response
+    -> RequestId
+    -> m (Maybe (Either DistributedJobQueueException response))
+checkForResponse JobClient{..} rid = liftIO (runLoggingT (Client.checkForResponse jcRedis rid) jcLogFunc)
 
 {- TODO: implement something like this?  Then we won't get as much of a
 guarantee that having a 'JobClient' means the job client threads are
