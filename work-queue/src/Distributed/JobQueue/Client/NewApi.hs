@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 
 module Distributed.JobQueue.Client.NewApi
     ( JobClientConfig(..)
@@ -129,16 +130,16 @@ submitRequest ::
 submitRequest JobClient{..} reqId request =
     runLoggingT (sendRequestWithId jcConfig jcRedis reqId request) jcLogFunc
 
--- | Blocks until a response for the given 'RequestId' is available.
+-- | Provides an 'STM' action to be able to wait on the response.
 waitForResponse ::
        (MonadIO m, Sendable response)
     => JobClient response
     -> RequestId
-    -> m (Either DistributedJobQueueException response)
+    -> m (STM (Maybe (Either DistributedJobQueueException response)))
 waitForResponse JobClient{..} rid = liftIO $ do
-    mv <- newEmptyMVar
-    runLoggingT (registerResponseCallback jcClientVars jcRedis rid (putMVar mv)) jcLogFunc
-    takeMVar mv
+    tv <- newTVarIO Nothing
+    runLoggingT (registerResponseCallback jcClientVars jcRedis rid (atomically . writeTVar tv . Just)) jcLogFunc
+    return (readTVar tv)
 
 -- | Returns immediately with the request, if present.
 checkForResponse ::
