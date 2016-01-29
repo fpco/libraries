@@ -115,7 +115,7 @@ runWorker WorkerArgs {..} logFunc slave master =
       let requestSlaves = runLogger $
             mapM_ (\_ -> requestSlave (wpRedis wp) =<< getMci) [1..waRequestSlaveCount]
       liftIO $ withAsync (requestSlaves `concurrently` acceptConns) $ \_ ->
-        runMaster
+        runMaster `finally` putMVar doneVar ()
 
 nmsSettings :: IO NMSettings
 nmsSettings = do
