@@ -315,7 +315,7 @@ jobQueueWorkerInternal params@WorkerParams{..} slave master = do
                         -- then block waiting for a notification.
                         WithSubscription notified _ -> do
                             $logDebugS "JobQueue" "Waiting for request notification"
-                            takeMVar notified
+                            takeMVarE notified NoLongerWaitingForRequest
                             $logDebugS "JobQueue" "Got notified of an available request"
                             loop mws heartbeatThread
                     -- Let the client know about missing requests.
@@ -350,8 +350,10 @@ jobQueueWorkerInternal params@WorkerParams{..} slave master = do
             runHeartbeats = withLogTag logTag $ withRedis' wpConfig $ \r ->
                 sendHeartbeats r (workerHeartbeatSendIvl wpConfig) wpId heartbeatSentVar
         withAsyncLifted runHeartbeats $ \heartbeatThread -> do
-            takeMVar heartbeatSentVar `catch` \BlockedIndefinitelyOnMVar ->
-                liftIO $ throwIO $ InternalJobQueueException "Heartbeat checker thread died before sending initial heartbeat"
+            takeMVarE heartbeatSentVar $ InternalJobQueueException $ concat
+                [ "Heartbeat checker thread died before sending initial heartbeat (cancelling computation).  "
+                , "This usually indicates that we lost the connection to redis and couldn't reconnect."
+                ]
             inner heartbeatThread
 
 becomeMaster
@@ -425,7 +427,8 @@ watchForCancel r k ivl f = do
     case res of
         Left () -> do
             liftIO $ cancel watcher
-            takeMVar resultVar
+            takeMVarE resultVar $ InternalJobQueueException
+                "Unexpected BlockedIndefinitelyOnMVar exception in watchForCancel"
         Right () -> liftIO $ throwIO (RequestCanceledException k)
 
 -- | This subscribes to the requests notification channel. The yielded
@@ -456,11 +459,11 @@ subscribeToRequests redis = do
         withSubscription redis (requestChannel redis) handleConnect $ \_ ->
             void $ tryPutMVar notified ()
     -- Wait for the subscription to connect before returning.
-    takeMVar ready
+    takeMVarE ready NoLongerWaitingForRequest
     -- 'notified' also gets filled by 'handleConnect', since this is
     -- needed when a reconnection occurs. We don't want it to be filled
     -- for the initial connection, though, so we take it.
-    takeMVar notified
+    takeMVarE notified NoLongerWaitingForRequest
     -- Since we waited for ready to be filled, disconnectVar must no
     -- longer contains its error value.
     unsub <- readIORef disconnectVar

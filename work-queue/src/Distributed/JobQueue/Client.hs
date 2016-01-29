@@ -228,7 +228,7 @@ jobQueueRequestRaw config cvs redis k encoded = do
             resultVar <- newEmptyMVar
             registerResponseCallbackInternal cvs k $ putMVar resultVar
             sendRequestInternal config redis k encoded
-            eres <- takeMVar resultVar
+            eres <- takeMVarE resultVar NoLongerWaitingForRequest
             either (liftIO . throwIO) return eres
 
 -- | Sends a request to the workers.  This yields a 'RequestId' for

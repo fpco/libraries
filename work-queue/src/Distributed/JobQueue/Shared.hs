@@ -30,22 +30,25 @@ module Distributed.JobQueue.Shared
     -- * Exceptions
     , DistributedJobQueueException(..)
     , wrapException
+    , takeMVarE
     ) where
 
-import ClassyPrelude
-import Control.Monad.Logger (MonadLogger, logInfo, logWarn)
+import           ClassyPrelude
+import           Control.Exception (BlockedIndefinitelyOnMVar(..))
+import           Control.Monad.Logger (MonadLogger, logInfo, logWarn)
+import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.Aeson as Aeson
-import Data.Binary (Binary, encode)
-import Data.Binary.Orphans ()
+import           Data.Binary (Binary, encode)
+import           Data.Binary.Orphans ()
 import qualified Data.ByteString.Lazy as LBS
-import Data.ConcreteTypeRep (ConcreteTypeRep)
-import Data.List.NonEmpty
-import Data.Streaming.NetworkMessage (NetworkMessageException)
-import Data.Text.Binary ()
-import Data.Typeable (typeOf)
-import Distributed.RedisQueue
-import Distributed.RedisQueue.Internal
-import FP.Redis
+import           Data.ConcreteTypeRep (ConcreteTypeRep)
+import           Data.List.NonEmpty
+import           Data.Streaming.NetworkMessage (NetworkMessageException)
+import           Data.Text.Binary ()
+import           Data.Typeable (typeOf)
+import           Distributed.RedisQueue
+import           Distributed.RedisQueue.Internal
+import           FP.Redis
 
 -- * Requests
 
@@ -196,6 +199,12 @@ data DistributedJobQueueException
         }
     -- ^ Exception thrown when request is received with the wrong schema
     -- version.
+    | NoLongerWaitingForResult
+    -- ^ Exception thrown by job-queue client functions that block
+    -- waiting for response.
+    | NoLongerWaitingForRequest
+    -- ^ Exception thrown by worker functions that block waiting for
+    -- request.
     | NetworkMessageException NetworkMessageException
     -- ^ Exceptions thrown by "Data.Streaming.NetworkMessage"
     | InternalJobQueueException Text
@@ -247,6 +256,15 @@ instance Show DistributedJobQueueException where
         ", actualRequestRedisSchemaVersion = " ++ show actualRequestRedisSchemaVersion ++
         ", schemaMismatchRequestId = " ++ show schemaMismatchRequestId ++
         "}"
+    show NoLongerWaitingForResult = concat
+        [ "NoLongerWaitingForResult "
+        , "{- This indicates that the jobQueueClient threads are no longer running.  "
+        , "This is usually because lost the connection to redis, and couldn't reconnect. -}"
+        ]
+    show NoLongerWaitingForRequest = concat
+        [ "NoLongerWaitingForRequest "
+        , "{- This is usually because we lost the connection to redis, and couldn't reconnect. -}"
+        ]
     show (NetworkMessageException nme) =
         "NetworkMessageException (" ++ show nme ++ ")"
     show (InternalJobQueueException txt) =
@@ -260,3 +278,7 @@ wrapException ex =
         (fromException -> Just err) -> err
         (fromException -> Just err) -> NetworkMessageException err
         _ -> OtherException (tshow (typeOf ex)) (tshow ex)
+
+-- | Like 'takeMVar', but convert wrap 'BlockedIndefinitelyOnMVar' exception in other exception.
+takeMVarE :: (MonadBaseControl IO m, Exception ex) => MVar a -> ex -> m a
+takeMVarE mvar exception = takeMVar mvar `catch` \BlockedIndefinitelyOnMVar -> throwIO exception
