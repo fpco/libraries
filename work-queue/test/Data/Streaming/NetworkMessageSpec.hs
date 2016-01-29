@@ -46,17 +46,18 @@ spec = do
         -- Using an MVar instead of directly threadDelaying is to avoid
         -- a "Control.Concurrent.STM.atomically was nested" message.
         valueReady <- newEmptyMVar
-        let client app = do
+        let heartbeatMicros = getNMHeartbeat settings
+            client app = do
                 nmWrite app True
                 nmRead app
             triggerValueReady = do
-                threadDelay (getNMHeartbeat settings * 3)
+                threadDelay (heartbeatMicros * 3)
                 putMVar valueReady ()
             server app =
                 withAsync triggerValueReady $ \_ -> nmWrite app $ unsafePerformIO $ do
                     takeMVar valueReady
                     return (1 :: Int)
-        finished <- timeout (1000 * 1000 * 2) $
+        finished <- timeout (heartbeatMicros * 6) $
             runClientAndServer' settings client server
         finished `shouldBe` Just 1
     it "successfully transfers a 10MB bytestring both ways" $
