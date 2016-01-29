@@ -148,6 +148,7 @@ executable hpc-example-stateful-client
                      , stm
                      , bytestring
                      , monad-logger
+                     , time
   ghc-options:         -Wall -threaded
 
 executable hpc-example-stateful-worker
