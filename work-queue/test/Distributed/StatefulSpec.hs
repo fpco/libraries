@@ -95,7 +95,7 @@ spec = do
           `race` do
             jc <- newJobClient logFunc defaultJobClientConfig
                 { jccRedisPrefix = redisTestPrefix }
-            fetchOutput <- submitRequest jc (RequestId "request") (Context 1)
+            fetchOutput <- submitRequestAndWaitForResponse jc (RequestId "request") (Context 1)
             res <- atomically $ do
                 mres <- fetchOutput
                 case mres of

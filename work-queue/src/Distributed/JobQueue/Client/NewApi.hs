@@ -13,6 +13,7 @@ module Distributed.JobQueue.Client.NewApi
     , submitRequest
     , waitForResponse
     , checkForResponse
+    , submitRequestAndWaitForResponse
     , LogFunc
     , RequestId(..)
     , DistributedJobQueueException(..)
@@ -150,6 +151,18 @@ checkForResponse ::
     -> RequestId
     -> m (Maybe (Either DistributedJobQueueException response))
 checkForResponse JobClient{..} rid = liftIO (runLoggingT (Client.checkForResponse jcRedis rid) jcLogFunc)
+
+submitRequestAndWaitForResponse ::
+       (MonadCommand m, Sendable response, Sendable request)
+    => JobClient response
+    -> RequestId
+    -> request
+    -> m (STM (Maybe (Either DistributedJobQueueException response)))
+submitRequestAndWaitForResponse jc rid request = do
+    mres <- submitRequest jc rid request
+    case mres of
+        Just res -> return (return (Just (Right res)))
+        Nothing -> waitForResponse jc rid
 
 {- TODO: implement something like this?  Then we won't get as much of a
 guarantee that having a 'JobClient' means the job client threads are
