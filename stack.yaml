@@ -8,6 +8,7 @@ packages:
   - ./thread-file-logger
   - ./work-queue
   - ./hpc-manager
+  - ./th-relative-paths
 
 image:
   container:
