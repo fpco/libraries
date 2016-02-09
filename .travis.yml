@@ -1,0 +1,31 @@
+language: c
+sudo: false
+
+cache:
+  directories:
+  - $HOME/.stack
+
+matrix:
+  include:
+  - env: BUILD=stack ARGS="--stack-yaml=stack-lts-3.yaml"
+    compiler: ": #stack lts-3"
+    addons: {apt: {packages: [libgmp-dev]}}
+
+  - env: BUILD=stack ARGS="--stack-yaml=stack-lts-5.yaml"
+    compiler: ": #stack lts-5"
+    addons: {apt: {packages: [libgmp-dev]}}
+
+  allow_failures:
+  - env: BUILD=stack ARGS="--stack-yaml=stack-lts-5.yaml"
+
+before_install:
+ - unset CC
+ - export PATH=$HOME/.local/bin:$PATH
+ - mkdir -p ~/.local/bin
+ - curl -L https://www.stackage.org/stack/linux-x86_64 | tar xz --wildcards --strip-components=1 -C ~/.local/bin '*/stack';
+
+install:
+ - stack --no-terminal --install-ghc $ARGS test --only-dependencies
+
+script:
+ - stack --no-terminal $ARGS test --haddock --no-haddock-deps

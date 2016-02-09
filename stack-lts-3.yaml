@@ -1,0 +1,19 @@
+resolver: lts-3.0
+extra-deps:
+  - hybrid-vectors-0.2
+  - binary-orphans-0.1.2.0
+packages:
+  - ./json-conduit
+  - ./redis-fp
+  - ./thread-file-logger
+  - ./work-queue
+  - ./hpc-manager
+  - ./th-relative-paths
+
+image:
+  container:
+    base: "fpco/stack-run"
+    name: "hpc-manager-ui"
+    add:
+      hpc-manager/config/: /usr/local/lib/hpc-manager/config/
+      hpc-manager/static/: /usr/local/lib/hpc-manager/static/
