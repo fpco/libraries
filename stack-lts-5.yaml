@@ -1,4 +1,6 @@
 resolver: lts-5.0
+extra-deps:
+  - retry-0.6
 packages:
   - ./json-conduit
   - ./redis-fp
