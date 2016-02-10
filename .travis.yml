@@ -27,5 +27,8 @@ before_install:
 install:
  - stack --no-terminal --install-ghc $ARGS test --only-dependencies
 
+before_script:
+ - sudo redis-server
+
 script:
  - stack --no-terminal $ARGS test --haddock --no-haddock-deps
