@@ -83,7 +83,7 @@ spec = do
               , waRequestSlaveCount = 2
               , waMasterWaitTime = Seconds 1
               }
-        logFunc <- runStdoutLoggingT (filterLogger (\_ l -> l > LevelDebug) askLoggerIO)
+        logFunc <- getLogFunc
         let slaveFunc _ (Input y) (State z) = return (State (y `xor` z), Output (y `xor` z))
         let masterFunc :: RedisInfo -> RequestId -> Context -> MasterHandle State Context Input Output -> IO Int
             masterFunc _redis _rid r mh = do
@@ -114,7 +114,7 @@ spec = do
             let inputs = HMS.fromList $ map (, ["input 1"]) sids
             update mh () inputs `shouldThrow` (== UnusedInputsException [extra])
     Hspec.it "Throws NoSlavesConnectedException" $ do
-        logFunc <- runStdoutLoggingT askLoggerIO
+        logFunc <- getLogFunc
         mh <- mkMasterHandle (MasterArgs Nothing Nothing) logFunc
         resetStates (mh :: MasterHandle State Context Input Output) []
           `shouldThrow` (== NoSlavesConnectedException)
@@ -123,21 +123,21 @@ spec = do
               { maMinBatchSize = Nothing
               , maMaxBatchSize = Just 0
               }
-        logFunc <- runStdoutLoggingT askLoggerIO
+        logFunc <- getLogFunc
         mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
     Hspec.it "Throws exception for negative minBatchSize" $ do
         let ma = MasterArgs
               { maMinBatchSize = Just (-1)
               , maMaxBatchSize = Nothing
               }
-        logFunc <- runStdoutLoggingT askLoggerIO
+        logFunc <- getLogFunc
         mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
     Hspec.it "Throws exception for minBatchSize greater than maxBatchSize" $ do
         let ma = MasterArgs
               { maMinBatchSize = Just 5
               , maMaxBatchSize = Just 4
               }
-        logFunc <- runStdoutLoggingT askLoggerIO
+        logFunc <- getLogFunc
         mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
 
 it :: String -> IO () -> Hspec.Spec
@@ -241,6 +241,8 @@ nmsSettings :: IO NMSettings
 nmsSettings = do
     nms <- defaultNMSettings
     return $ setNMHeartbeat 5000000 nms -- 5 seconds
+
+getLogFunc = runStdoutLoggingT (filterLogger (\_ l -> l > LevelDebug) askLoggerIO)
 
 {- Utility for doing a quickcheck replay
 
