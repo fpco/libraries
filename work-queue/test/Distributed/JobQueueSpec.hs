@@ -393,7 +393,7 @@ clearSlaveRequests =
 enqueueSlaveRequest :: MonadIO m => MasterConnectInfo -> m ()
 enqueueSlaveRequest mci =
     liftIO $ runThreadFileLoggingT $ logNest "enqueueSlaveRequest" $ withRedis redisTestPrefix localhost $ \r -> do
-        let encoded = toStrict (encode mci)
+        let encoded = encode mci
         run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
 
 -- Keeping track of requests which have been sent, haven't yet been

@@ -177,7 +177,7 @@ test-suite wq-test
   build-depends:       base
                      , QuickCheck
                      , async
-                     , cereal
+                     , fpco-cereal
                      , bytestring
                      , classy-prelude
                      , conduit-extra
@@ -231,7 +231,7 @@ benchmark wq-bench
                      , streaming-commons
                      , async
                      , bytestring
-                     , cereal
+                     , fpco-cereal
                      , network
                      , enclosed-exceptions
                      , unix
