@@ -41,6 +41,10 @@ library
                               , scientific
                               , tagged
                               , vector
+                                -- For conduit
+                              , conduit
+                              , resourcet
+                              , transformers
 
         hs-source-dirs:         src
 
@@ -48,7 +52,8 @@ library
                                 Data.Serialize.Orphans,
                                 Data.Serialize.Put,
                                 Data.Serialize.Get,
-                                Data.Serialize.IEEE754
+                                Data.Serialize.IEEE754,
+                                Data.Serialize.Conduit
 
         ghc-options:            -Wall -O2 -funbox-strict-fields
 
