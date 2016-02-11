@@ -20,7 +20,7 @@ module Distributed.JobQueue.Client.NewApi
     ) where
 
 import ClassyPrelude
-import Control.Concurrent (forkIO)
+import Control.Concurrent.Async (async, cancel)
 import Control.Monad.Logger
 import Control.Retry (RetryPolicy)
 import Data.Streaming.NetworkMessage (Sendable)
@@ -100,19 +100,30 @@ newJobClient logFunc JobClientConfig{..} = liftIO $ do
             , connectRetryPolicy = Just jccRedisRetryPolicy
             }
     cvs <- newClientVars
-    _ <- forkIO $ forever $ flip runLoggingT logFunc $ do
+
+    jobQueueClientAsync <- async $ forever $ flip runLoggingT logFunc $ do
         eres <- tryAny $ withRedis jccRedisPrefix ci $ jobQueueClient config cvs
         case eres of
             Right x -> absurd x
             Left err -> do
                 $logErrorS "JobClient" (pack (show err))
                 $logInfoS "JobClient" "Restarting job client after exception."
+
+    -- See description of jcKeepRunning for the purpose of this strange IORef
+    -- and weak pointer business business
+    keepRunning <- newIORef ()
+    _ <- mkWeakIORef keepRunning $ do
+        flip runLoggingT logFunc $ $logInfoS "JobClient"
+            "Detected JobClient no longer used, killing jobQueueClient thread"
+        cancel jobQueueClientAsync
+
     conn <- runLoggingT (connect ci) logFunc
     return JobClient
         { jcConfig = config
         , jcClientVars = cvs
         , jcRedis = RedisInfo conn ci jccRedisPrefix
         , jcLogFunc = logFunc
+        , jcKeepRunning = keepRunning
         }
 
 data JobClient response = JobClient
@@ -120,6 +131,14 @@ data JobClient response = JobClient
     , jcClientVars :: ClientVars (LoggingT IO) response
     , jcRedis :: RedisInfo
     , jcLogFunc :: LogFunc
+    , jcKeepRunning :: IORef ()
+    -- ^ This IORef is not used for anything except its identity. We want to
+    -- detect when our @JobClient@ is no longer referenced by the application,
+    -- since at that point we can stop running the background job client
+    -- thread. However, weak pointers are only reliable when attached to
+    -- objects with identity (like an @IORef@ or @MVar@). So we keep such an
+    -- @IORef@ in this data type and, when initializing, create a weak
+    -- reference to it.
     }
 
 -- | Submits a new request. Returns a 'Just' if the response to the request is already
