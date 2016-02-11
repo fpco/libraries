@@ -9,6 +9,7 @@ packages:
   - ./work-queue
   - ./hpc-manager
   - ./th-relative-paths
+  - ./cereal
 
 image:
   container:

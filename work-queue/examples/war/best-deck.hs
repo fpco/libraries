@@ -14,6 +14,7 @@ import           Data.War
 import           Data.WorkQueue
 import           Prelude                      hiding (round)
 import           System.Random.MWC
+import           Data.Serialize.Orphans ()
 import Distributed.WorkQueue
 
 competitorCount :: Int

@@ -25,11 +25,10 @@ import           Control.Concurrent.Async (withAsync, concurrently)
 import           Control.Concurrent.STM (check)
 import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger (LoggingT, runLoggingT, logErrorN)
-import qualified Data.Binary as B
-import           Data.Binary.Orphans ()
+import qualified Data.Serialize as B
 import qualified Data.Conduit.Network as CN
 import           Data.Streaming.NetworkMessage
-import           Data.WrappedBinary
+import           Data.WrappedSerialize
 import           Distributed.JobQueue.Worker hiding (MasterFunc, SlaveFunc)
 import           Distributed.RedisQueue
 import           Distributed.Stateful.Internal
@@ -60,7 +59,7 @@ runWorker
     :: forall state context input output request response.
      ( Typeable request, Typeable response
      , NFData state, NFData output
-     , B.Binary state, B.Binary context, B.Binary input, B.Binary output, B.Binary request, B.Binary response
+     , B.Serialize state, B.Serialize context, B.Serialize input, B.Serialize output, B.Serialize request, B.Serialize response
      )
     => WorkerArgs
     -- ^ Settings to use to run the worker.
@@ -126,7 +125,7 @@ nmsSettings = do
 generalRunWorker
     :: forall state context input output request response.
      ( NFData state, NFData output
-     , B.Binary state, B.Binary context, B.Binary input, B.Binary output, B.Binary request, B.Binary response
+     , B.Serialize state, B.Serialize context, B.Serialize input, B.Serialize output, B.Serialize request, B.Serialize response
      )
     => WorkerArgs
     -> LogFunc
@@ -136,5 +135,5 @@ generalRunWorker
 generalRunWorker wa logFunc slave master =
     runWorker wa logFunc slave master'
   where
-    master' :: RedisInfo -> RequestId -> WrappedBinary -> MasterHandle state context input output -> IO WrappedBinary
-    master' redis rid r mh = wrapBinary <$> master redis rid (unwrapBinary r) mh
+    master' :: RedisInfo -> RequestId -> WrappedSerialize -> MasterHandle state context input output -> IO WrappedSerialize
+    master' redis rid r mh = wrapSerialize <$> master redis rid (unwrapSerialize r) mh

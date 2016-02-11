@@ -1,16 +1,19 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
--- | Wrapper to hold data that is Binary serializable but not Typeable.
-module Data.WrappedBinary where
+-- | Wrapper to hold data that is Serialize serializable but not Typeable.
+module Data.WrappedSerialize where
 
-import Data.Binary
+import Data.Serialize
 import Data.ByteString
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Typeable
+import Control.Monad (guard)
 
-newtype WrappedBinary = WrappedBinary ByteString deriving (Binary, Typeable)
+newtype WrappedSerialize = WrappedSerialize ByteString deriving (Serialize, Typeable)
 
-unwrapBinary :: Binary a => WrappedBinary -> a
-unwrapBinary (WrappedBinary bs) = decode (fromStrict bs)
+unwrapSerialize :: Serialize a => WrappedSerialize -> a
+unwrapSerialize (WrappedSerialize bs) = case runGet (get <* (guard =<< isEmpty)) bs of
+  Left err -> error ("unwrapSerialize: could not decode: " ++ err)
+  Right x -> x
 
-wrapBinary :: Binary a => a -> WrappedBinary
-wrapBinary = WrappedBinary . toStrict . encode
+wrapSerialize :: Serialize a => a -> WrappedSerialize
+wrapSerialize = WrappedSerialize . encode

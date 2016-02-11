@@ -38,13 +38,12 @@ import           Control.Exception (BlockedIndefinitelyOnMVar(..))
 import           Control.Monad.Logger (MonadLogger, logInfo, logWarn)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.Aeson as Aeson
-import           Data.Binary (Binary, encode)
-import           Data.Binary.Orphans ()
+import           Data.Serialize (Serialize, encode)
+import           Data.Serialize.Orphans ()
 import qualified Data.ByteString.Lazy as LBS
 import           Data.ConcreteTypeRep (ConcreteTypeRep)
 import           Data.List.NonEmpty
 import           Data.Streaming.NetworkMessage (NetworkMessageException)
-import           Data.Text.Binary ()
 import           Data.Typeable (typeOf)
 import           Distributed.RedisQueue
 import           Distributed.RedisQueue.Internal
@@ -58,7 +57,7 @@ data JobRequest = JobRequest
     , jrBody :: ByteString
     } deriving (Generic, Show, Typeable)
 
-instance Binary JobRequest
+instance Serialize JobRequest
 
 notifyRequestAvailable :: MonadCommand m => RedisInfo -> m ()
 notifyRequestAvailable r = run_ r $ publish (requestChannel r) ""
@@ -89,7 +88,7 @@ data RequestEvent
     | RequestResponseRead
     deriving (Generic, Show, Typeable)
 
-instance Binary RequestEvent
+instance Serialize RequestEvent
 instance Aeson.ToJSON RequestEvent
 
 data EventLogMessage
@@ -109,7 +108,7 @@ requestEventsKey r k = LKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestI
 addRequestEvent :: (MonadCommand m, MonadLogger m) => RedisInfo -> RequestId -> RequestEvent -> m ()
 addRequestEvent r k x = do
     now <- liftIO getCurrentTime
-    run_ r $ rpush (requestEventsKey r k) (toStrict (encode (now, x)) :| [])
+    run_ r $ rpush (requestEventsKey r k) (encode (now, x) :| [])
     $logInfo $ decodeUtf8 $ LBS.toStrict $ Aeson.encode $ EventLogMessage
         { logTime = show now
         , logRequest = k
@@ -215,7 +214,7 @@ data DistributedJobQueueException
     deriving (Eq, Typeable, Generic)
 
 instance Exception DistributedJobQueueException
-instance Binary DistributedJobQueueException
+instance Serialize DistributedJobQueueException
 
 instance Show DistributedJobQueueException where
     show (WorkStillInProgress wid) =

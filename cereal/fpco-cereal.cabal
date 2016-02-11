@@ -1,4 +1,4 @@
-name:                   cereal
+name:                   fpco-cereal
 version:                0.5.1.0
 license:                BSD3
 license-file:           LICENSE
@@ -31,10 +31,21 @@ library
         build-depends:          bytestring >= 0.10.2.0,
                                 base >= 4.4 && < 5, containers, array,
                                 ghc-prim >= 0.2
+                                -- For orphan instances
+                              , unordered-containers
+                              , hashable
+                              , text
+                              , time
+                              , aeson
+                              , semigroups
+                              , scientific
+                              , tagged
+                              , vector
 
         hs-source-dirs:         src
 
         exposed-modules:        Data.Serialize,
+                                Data.Serialize.Orphans,
                                 Data.Serialize.Put,
                                 Data.Serialize.Get,
                                 Data.Serialize.IEEE754

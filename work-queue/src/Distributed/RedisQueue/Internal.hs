@@ -20,7 +20,8 @@ import           Control.Monad.Catch (Handler(Handler))
 import           Control.Monad.Logger (logDebugS, logErrorS)
 import           Control.Retry (RetryPolicy, limitRetries, constantDelay)
 import qualified Data.Aeson as Aeson
-import           Data.Binary (Binary, decodeOrFail)
+import           Data.Serialize (Serialize)
+import qualified Data.Serialize as C
 import qualified Data.ByteString.Char8 as BS8
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import qualified Data.Text as T
@@ -42,7 +43,7 @@ data RedisInfo = RedisInfo
 -- needed for the fault tolerance portion - in the event that a worker
 -- goes down we need to be able to re-enqueue its work.
 newtype WorkerId = WorkerId { unWorkerId :: ByteString }
-    deriving (Eq, Ord, Show, Binary, IsString, Typeable)
+    deriving (Eq, Ord, Show, Serialize, IsString, Typeable)
 
 instance Aeson.ToJSON WorkerId where toJSON = Aeson.String . T.pack . BS8.unpack . unWorkerId
 
@@ -50,7 +51,7 @@ instance Aeson.ToJSON WorkerId where toJSON = Aeson.String . T.pack . BS8.unpack
 -- response associated with it.  It's the hash of the request, which
 -- allows responses to be cached.
 newtype RequestId = RequestId { unRequestId :: ByteString }
-    deriving (Eq, Ord, Show, Binary, Hashable, Typeable)
+    deriving (Eq, Ord, Show, Serialize, Hashable, Typeable)
 
 instance Aeson.ToJSON RequestId where toJSON = Aeson.String . T.pack . BS8.unpack . unRequestId
 
@@ -163,24 +164,17 @@ run = runCommand . redisConnection
 run_ :: MonadCommand m => RedisInfo -> CommandRequest a -> m ()
 run_ = runCommand_ . redisConnection
 
--- * Binary utilities
+-- * Serialize utilities
 
 -- | Attempt to decode the given 'ByteString'.  If this fails, then
 -- throw a 'DecodeError' tagged with a 'String' indicating the source
 -- of the decode error.
-decodeOrThrow :: forall m a. (MonadIO m, Binary a, Typeable a)
+decodeOrThrow :: forall m a. (MonadIO m, Serialize a, Typeable a)
               => String -> ByteString -> m a
 decodeOrThrow src lbs =
-    case decodeOrFail (fromStrict lbs) of
-        Left (_, _, err) -> throwErr err
-        Right (remaining, _, x) ->
-            if null remaining
-                then return x
-                else throwErr $ unwords
-                    [ "Expected end of binary data."
-                    , show (length remaining)
-                    , "bytes remain."
-                    ]
+    case C.runGet (C.get <* (guard =<< C.isEmpty)) lbs of
+        Left err -> throwErr err
+        Right x -> return x
   where
     throwErr = liftIO . throwIO . DecodeError src typ
     typ = show (typeRep (Proxy :: Proxy a))

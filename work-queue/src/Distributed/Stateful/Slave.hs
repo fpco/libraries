@@ -16,8 +16,7 @@ import           ClassyPrelude
 import           Control.DeepSeq (force, NFData)
 import           Control.Exception (evaluate, AsyncException)
 import           Control.Monad.Logger (runLoggingT, logDebugNS)
-import qualified Data.Binary as B
-import           Data.Binary.Orphans ()
+import qualified Data.Serialize as B
 import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -50,7 +49,7 @@ instance Exception SlaveException
 -- | Runs a stateful slave, and never returns (though may throw
 -- exceptions).
 runSlave :: forall state context input output a.
-     ( B.Binary state, NFData state, B.Binary context, B.Binary input, B.Binary output, NFData output
+     ( B.Serialize state, NFData state, B.Serialize context, B.Serialize input, B.Serialize output, NFData output
      )
   => SlaveArgs state context input output -> IO a
 runSlave SlaveArgs{..} =

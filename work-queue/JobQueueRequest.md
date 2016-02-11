@@ -41,7 +41,7 @@ checkForResponse :: _ => RedisInfo -> RequestId -> m (Maybe (Either DistributedJ
 
 When a request is initially made, the following occurs:
 
-(0) The request's Binary representation is hashed to get its `RequestID`.
+(0) The request's Serialize representation is hashed to get its `RequestID`.
 
 (1) It checks if there is already a cached response, and returns it if it finds
 one (computations must be deterministic to enable this caching!)
