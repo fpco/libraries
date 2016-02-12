@@ -1,3 +1,9 @@
+-- Taken from:
+-- * <https://www.stackage.org/lts-5.2/package/binary-orphans-0.1.4.0> (BSD3 license)
+-- * <https://www.stackage.org/lts-5.2/package/text-binary-0.2.1> (BSD3 license)
+-- * <https://www.stackage.org/lts-5.2/package/vector-binary-instances-0.2.1.1> (BSD3 license)
+--
+-- See URLs for licensing and copyright info.
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Data.Serialize.Orphans () where
 

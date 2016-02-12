@@ -1,3 +1,6 @@
+-- Taken from <https://www.stackage.org/lts-5.2/package/cereal-conduit-0.7.2.5> (BSD3 license),
+-- see URL for additional license and copyright info.
+
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
