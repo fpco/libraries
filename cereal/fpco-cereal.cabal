@@ -69,7 +69,7 @@ test-suite test-cereal
                                 QuickCheck,
                                 test-framework,
                                 test-framework-quickcheck2,
-                                cereal
+                                fpco-cereal
 
         main-is:                Main.hs
         other-modules:          RoundTrip
