@@ -38,9 +38,6 @@ module Data.Serialize (
     , module Data.Serialize.Get
     , module Data.Serialize.Put
     , module Data.Serialize.IEEE754
-
-    -- * Generic
-    , GSerialize(..)
     ) where
 
 import Data.Serialize.Put

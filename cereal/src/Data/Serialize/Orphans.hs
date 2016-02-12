@@ -13,14 +13,11 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import           Control.Monad (liftM, liftM2, liftM3)
 import qualified Data.Aeson as A
-import           Data.Serialize
 import qualified Data.Fixed as Fixed
 import qualified Data.HashMap.Lazy as HM
 import qualified Data.HashSet as HS
 import           Data.Hashable (Hashable)
 import qualified Data.List.NonEmpty as NE
-import qualified Data.Monoid as Monoid
-import qualified Data.Semigroup as Semigroup
 import qualified Data.Tagged as Tagged
 import qualified Data.Time as Time
 import qualified Data.Time.Clock.TAI as Time
