@@ -33,6 +33,7 @@ module Data.Serialize (
     -- * Serialize serialisation
     , encode, encodeLazy
     , decode, decodeLazy
+    , decodeEof, decodeEofLazy
 
     , expect
     , module Data.Serialize.Get
@@ -107,16 +108,34 @@ encode = runPut . put
 encodeLazy :: Serialize a => a -> L.ByteString
 encodeLazy  = runPutLazy . put
 
+
 -- | Decode a value from a strict ByteString, reconstructing the original
 -- structure.
+{-# DEPRECATED decode "Use `decodeEof' instead, or `runGet get' if you want to throw away leftovers." #-}
 decode :: Serialize a => ByteString -> Either String a
 decode = runGet get
 
 -- | Decode a value from a lazy ByteString, reconstructing the original
 -- structure.
+{-# DEPRECATED decodeEof "Use `decodeEof' instead, or `runGetLazy get' if you want to throw away leftovers." #-}
 decodeLazy :: Serialize a => L.ByteString -> Either String a
 decodeLazy  = runGetLazy get
 
+-- | Decode a value from a strict ByteString, reconstructing the original
+-- structure. Fails if the is a leftover.
+decodeEof :: Serialize a => ByteString -> Either String a
+decodeEof = runGet $ do
+  x <- get
+  guard =<< isEmpty
+  return x
+
+-- | Decode a value from a lazy ByteString, reconstructing the original
+-- structure. Fails if there is a leftover.
+decodeEofLazy :: Serialize a => L.ByteString -> Either String a
+decodeEofLazy  = runGetLazy $ do
+  x <- get
+  guard =<< isEmpty
+  return x
 
 ------------------------------------------------------------------------
 -- Combinators
