@@ -22,7 +22,8 @@ import Test.QuickCheck as QC
 
 import Test.Framework (Test(),testGroup)
 import Test.Framework.Providers.QuickCheck2 (testProperty)
-
+import qualified Test.HUnit as HUnit
+import qualified Test.Framework.Providers.HUnit as HUnit
 
 roundTrip :: Eq a => Putter a -> Get a -> a -> Bool
 roundTrip p g a = res == Right a
@@ -32,6 +33,16 @@ roundTrip p g a = res == Right a
 isSuccess :: QC.Result -> Bool
 isSuccess (Success _ _ _) = True
 isSuccess _ = False
+
+nanInftyRoundTrip :: (Eq a, RealFloat a, Show a) => Putter a -> Get a -> HUnit.Assertion
+nanInftyRoundTrip p g = do
+  assertRoundTrip "Infty" (1/0)
+  assertRoundTrip "-Infty" (-1/0)
+  HUnit.assertBool "NaN" $ case runGet g (runPut (p (0/0))) of
+    Left _ -> False
+    Right x -> isNaN x
+  where
+    assertRoundTrip s x = HUnit.assertEqual s (Right x) (runGet g (runPut (p x)))
 
 tests :: Test
 tests  = testGroup "Round Trip"
@@ -49,6 +60,10 @@ tests  = testGroup "Round Trip"
   , testProperty "Float32be    Round Trip" $ roundTrip putFloat32be  getFloat32be
   , testProperty "Float64le    Round Trip" $ roundTrip putFloat64le  getFloat64le
   , testProperty "Float64be    Round Trip" $ roundTrip putFloat64be  getFloat64be
+  , HUnit.testCase "Float32le (Infty/NaN) Round Trip" $ nanInftyRoundTrip putFloat32le  getFloat32le
+  , HUnit.testCase "Float32be (Infty/NaN) Round Trip" $ nanInftyRoundTrip putFloat32be  getFloat32be
+  , HUnit.testCase "Float64le (Infty/NaN) Round Trip" $ nanInftyRoundTrip putFloat64le  getFloat64le
+  , HUnit.testCase "Float64be (Infty/NaN) Round Trip" $ nanInftyRoundTrip putFloat64be  getFloat64be
 
     -- Containers
   , testProperty "(Word8,Word8) Round Trip"

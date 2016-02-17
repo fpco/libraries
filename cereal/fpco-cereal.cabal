@@ -69,6 +69,8 @@ test-suite test-cereal
                                 QuickCheck,
                                 test-framework,
                                 test-framework-quickcheck2,
+                                HUnit,
+                                test-framework-hunit,
                                 fpco-cereal
 
         main-is:                Main.hs
