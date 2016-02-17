@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable, GeneralizedNewtypeDeriving, CPP #-}
 
 {- |
-This module defines 'Binary' and 'Hashable' instances for 'TypeRep'. These are defined on a newtype of 'TypeRep', namely 'ConcreteTypeRep', for two purposes:
+This module defines 'Serialize' and 'Hashable' instances for 'TypeRep'. These are defined on a newtype of 'TypeRep', namely 'ConcreteTypeRep', for two purposes:
 
   * to avoid making orphan instances
 
@@ -27,7 +27,7 @@ import Data.Typeable
 import Data.Typeable.Internal
 #endif
 
-import Data.Binary
+import Data.Serialize
 import Data.Hashable
 
 -- | Abstract type providing the functionality of 'TypeRep', but additionally supporting hashing and serialization.
@@ -77,7 +77,7 @@ toTyConRep = tyConString
 fromTyConRep = mkTyCon
 #endif
 
-newtype SerialRep = SR (TyConRep, [SerialRep]) deriving(Binary)
+newtype SerialRep = SR (TyConRep, [SerialRep]) deriving(Serialize)
 
 toSerial :: ConcreteTypeRep -> SerialRep
 toSerial (CTR t) =
@@ -87,6 +87,6 @@ toSerial (CTR t) =
 fromSerial :: SerialRep -> ConcreteTypeRep
 fromSerial (SR (con, args)) = CTR $ mkTyConApp (fromTyConRep con) (map (unCTR . fromSerial) args)
 
-instance Binary ConcreteTypeRep where
+instance Serialize ConcreteTypeRep where
   put = put . toSerial
   get = fromSerial <$> get

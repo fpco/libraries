@@ -9,7 +9,8 @@ import Data.Proxy (Proxy(..))
 import Distributed.JobQueue.Client
 import Distributed.RedisQueue
 import Distributed.RedisQueue.Internal
-import Distributed.WorkQueueSpec (forkMasterSlave, redisTestPrefix)
+import Distributed.WorkQueueSpec (forkMasterSlave)
+import Distributed.TestUtil (redisTestPrefix)
 import FP.Redis
 
 main :: IO ()

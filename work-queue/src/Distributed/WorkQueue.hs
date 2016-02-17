@@ -32,7 +32,7 @@ module Distributed.WorkQueue
 import ClassyPrelude                 hiding ((<>))
 import Control.Concurrent.Async      (withAsync)
 import Control.Monad.Trans.Control
-import Data.Binary                   (Binary)
+import Data.Serialize                   (Serialize)
 import Data.Function                 (fix)
 import Data.Streaming.Network
 import Data.Streaming.NetworkMessage
@@ -45,7 +45,7 @@ data ToSlave initialData payload
     | TSPayload payload
     | TSDone
     deriving (Generic, Typeable)
-instance (Binary a, Binary b) => Binary (ToSlave a b)
+instance (Serialize a, Serialize b) => Serialize (ToSlave a b)
 
 
 data RunMode

@@ -9,20 +9,20 @@ module Distributed.Stateful.Internal where
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger
-import qualified Data.Binary as B
-import           Data.Binary.Orphans ()
+import qualified Data.Serialize as B
+import           Data.Serialize.Orphans ()
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Text.Printf (PrintfArg(..))
 
 newtype SlaveId = SlaveId {unSlaveId :: Int}
-  deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Binary)
+  deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Serialize)
 instance PrintfArg SlaveId where
   formatArg = formatArg . unSlaveId
   parseFormat = parseFormat . unSlaveId
 
 newtype StateId = StateId {unStateId :: Int}
-  deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Binary)
+  deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Serialize)
 instance PrintfArg StateId where
   formatArg = formatArg . unStateId
   parseFormat = parseFormat . unStateId
@@ -42,7 +42,7 @@ data SlaveReq state context input
       -- provides the new StateIds, and the inputs which should be
       -- provided to 'saUpdate'.
   | SReqGetStates
-  deriving (Generic, Eq, Show, NFData, B.Binary)
+  deriving (Generic, Eq, Show, NFData, B.Serialize)
 
 data SlaveResp state output
   = SRespResetState
@@ -53,7 +53,7 @@ data SlaveResp state output
   | SRespUpdate !(HMS.HashMap StateId (HMS.HashMap StateId output)) -- TODO consider making this a simple list -- we don't really need it to be a HMS.
   | SRespGetStates !(HMS.HashMap StateId state)
   | SRespError Text
-  deriving (Generic, Eq, Show, NFData, B.Binary)
+  deriving (Generic, Eq, Show, NFData, B.Serialize)
 
 displayReq :: SlaveReq state context input -> Text
 displayReq (SReqResetState mp) = "SReqResetState (" <> pack (show (HMS.keys mp)) <> ")"

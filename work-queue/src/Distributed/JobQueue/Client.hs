@@ -38,7 +38,7 @@ import           ClassyPrelude
 import           Control.Concurrent.Async (race)
 import           Control.Monad.Logger (MonadLogger, logErrorS, logDebugS)
 import           Control.Monad.Trans.Control (liftBaseWith, restoreM)
-import           Data.Binary (encode)
+import           Data.Serialize (encode)
 import           Data.ConcreteTypeRep (fromTypeRep)
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Data.Streaming.NetworkMessage (Sendable)
@@ -302,11 +302,11 @@ encodeRequest
     -> Proxy response
     -> ByteString
 encodeRequest request _ =
-    toStrict $ encode JobRequest
+    encode JobRequest
         { jrRequestType = fromTypeRep (typeRep (Proxy :: Proxy request))
         , jrResponseType = fromTypeRep (typeRep (Proxy :: Proxy response))
         , jrSchema = redisSchemaVersion
-        , jrBody = toStrict (encode request)
+        , jrBody = encode request
         }
 
 -- Internal function to send a request without checking redis for an

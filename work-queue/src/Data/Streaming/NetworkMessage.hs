@@ -16,7 +16,7 @@
 -- sides of the connection intend to send the same type of data.
 --
 -- Note that if the two sides of your connection are compiled against different
--- versions of libraries, it's entirely possible that 'Typeable' and 'Binary'
+-- versions of libraries, it's entirely possible that 'Typeable' and 'Serialize'
 -- instances may be incompatible, in which cases guarantees provided by the
 -- handshake will not be accurate.
 module Data.Streaming.NetworkMessage
@@ -48,13 +48,11 @@ import           Control.Concurrent.STM      (retry)
 import           Control.Exception           (AsyncException(ThreadKilled))
 import           Control.Monad.Base          (liftBase)
 import           Control.Monad.Trans.Control (MonadBaseControl, control)
-import qualified Data.Binary                 as B
-import qualified Data.Binary.Get             as B
+import qualified Data.Serialize                 as B
 import           Data.ConcreteTypeRep        (ConcreteTypeRep, fromTypeRep)
 import           Data.Function               (fix)
 import           Data.Streaming.Network      (AppData, appRead, appWrite)
 import           Data.Typeable               (Proxy(..), typeRep)
-import           Data.Vector.Binary          () -- commonly needed orphans
 import           Data.Void                   (absurd)
 import           GHC.IO.Exception            (IOException(ioe_type), IOErrorType(ResourceVanished))
 import           System.Executable.Hash      (executableHash)
@@ -69,7 +67,7 @@ import qualified Data.ByteString             as BS
 -- application (@a@). Restrictions on these types:
 --
 -- * @iSend@ and @youSend@ must both be instances of 'Sendable'.  In
--- other words, they must both implement 'Typeable' and 'Binary'.
+-- other words, they must both implement 'Typeable' and 'Serialize'.
 --
 -- * @m@ must be an instance of 'MonadBaseControl' 'IO'.
 --
@@ -86,7 +84,7 @@ type NMApp iSend youSend m a = NMAppData iSend youSend -> m a
 
 -- | Constraint synonym for the constraints required to send data from
 -- / to an 'NMApp'.
-type Sendable a = (B.Binary a, Typeable a)
+type Sendable a = (B.Serialize a, Typeable a)
 
 -- | Provides an 'NMApp' with a means of communicating with the other side of a
 -- connection. See other functions provided by this module.
@@ -135,7 +133,7 @@ data Handshake = Handshake
     , hsExeHash   :: Maybe ByteString
     }
     deriving (Generic, Show, Eq, Typeable)
-instance B.Binary Handshake
+instance B.Serialize Handshake
 
 mkHandshake :: forall iSend youSend m a.
        (Proxy iSend -> TypeFingerprint)
@@ -153,7 +151,7 @@ mkHandshake fingerprintISend fingerprintYouSend _ hb eh = Handshake
 -- we're sending. 'runNMApp' uses 'Typeable' to do that, but this might not be
 -- convenient or possible if the types involved are not 'Typeable'.
 generalRunNMApp :: forall iSend youSend m a.
-       (MonadBaseControl IO m, B.Binary iSend, B.Binary youSend)
+       (MonadBaseControl IO m, B.Serialize iSend, B.Serialize youSend)
     => NMSettings
     -> (Proxy iSend -> TypeFingerprint)
     -> (Proxy youSend -> TypeFingerprint)
@@ -163,7 +161,7 @@ generalRunNMApp :: forall iSend youSend m a.
 generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSend nmApp ad = do
     (yourHS, leftover) <- liftBase $ do
         let myHS = mkHandshake fingerprintISend fingerprintYouSend nmApp heartbeat exeHash
-        forM_ (toChunks $ B.encode myHS) (appWrite ad)
+        forM_ (toChunks $ B.encodeLazy myHS) (appWrite ad)
         mgot <- appGet mempty (appRead ad)
         case mgot of
             Just (yourHS, leftover) -> do
@@ -223,7 +221,7 @@ generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSe
                             return (Just (Left err))
                 }
             sendSTM :: Message iSend -> STM ()
-            sendSTM x = writeTChan outgoing $! toStrict (B.encode x)
+            sendSTM x = writeTChan outgoing $! B.encode x
             send :: Message iSend -> IO ()
             send = atomically . sendSTM
         -- Ping / heartbeat are managed by withAsync, so that they're
@@ -302,7 +300,7 @@ generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSe
         -- receive small chunks of it.  This means that 'appRead'
         -- won't block for very long, and the heartbeat code will
         -- function properly.
-        if bs == toStrict (B.encode (Complete :: Message iSend))
+        if bs == B.encode (Complete :: Message iSend)
             then do
                 appWrite ad bs `catch` \ex ->
                     -- Ignore resource vanished if the connection is done.
@@ -349,32 +347,32 @@ runNMApp nms = generalRunNMApp nms typeableFingerprint typeableFingerprint
     typeableFingerprint _proxy = let
         ty :: ConcreteTypeRep
         ty = fromTypeRep (typeRep (Proxy :: Proxy b))
-        in SHA512.hashlazy $ B.encode ty
+        in SHA512.hashlazy (B.encodeLazy ty)
 
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and
 -- 'Nothing' is returned.
-appGet :: B.Binary a
+appGet :: B.Serialize a
        => ByteString -- ^ leftover bytes from previous parse.
        -> IO ByteString -- ^ function to get more bytes
        -> IO (Maybe (a, ByteString)) -- ^ result and leftovers
 appGet bs0 readChunk =
-    loop (B.runGetIncremental B.get `B.pushChunk` bs0)
+    loop (B.runGetPartial B.get bs0)
   where
-    loop (B.Fail _ _ str) = throwIO (NMDecodeFailure str)
+    loop (B.Fail str _) = throwIO (NMDecodeFailure str)
     loop (B.Partial f) = do
         bs <- readChunk
         if null bs
             then return Nothing
-            else loop (f (Just bs))
-    loop (B.Done bs _ res) = return (Just (res, bs))
+            else loop (f bs)
+    loop (B.Done res bs) = return (Just (res, bs))
 
 data Message payload
     = Ping
     | Payload payload
     | Complete
     deriving (Generic, Typeable)
-instance B.Binary payload => B.Binary (Message payload)
+instance B.Serialize payload => B.Serialize (Message payload)
 
 data NetworkMessageException
     -- | This is thrown by 'runNMApp', during the initial handshake,
@@ -397,7 +395,7 @@ data NetworkMessageException
     | NMDecodeFailure String
     deriving (Show, Typeable, Eq, Generic)
 instance Exception NetworkMessageException
-instance B.Binary NetworkMessageException
+instance B.Serialize NetworkMessageException
 
 -- | Settings to be used by 'runNMApp'. Use 'defaultNMSettings' and modify with
 -- setter functions.

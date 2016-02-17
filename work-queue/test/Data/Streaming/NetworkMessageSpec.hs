@@ -81,7 +81,7 @@ spec = do
             client app = void $ nmRead app
             server app = appWrite (nmAppData app) "bogus data"
         res <- try $ runClientAndServer client server
-        res `shouldBe` Left (NMDecodeFailure "Unknown encoding for constructor")
+        res `shouldBe` Left (NMDecodeFailure "Failed reading: Unknown encoding for constructor\nEmpty call stack\n")
     it "throws HeartbeatFailure when heartbeat intervals are too small" $ do
         exitedLateRef <- newIORef False
         settings <- setNMHeartbeat 10 <$> defaultNMSettings

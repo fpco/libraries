@@ -25,7 +25,7 @@ import           Control.Monad.Base (MonadBase)
 import           Control.Monad.Logger
 import           Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import           Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
-import           Data.Binary (encode)
+import           Data.Serialize (encode)
 import           Data.Bits (shiftL)
 import           Data.List.NonEmpty (NonEmpty(..))
 import           Data.List.Split (chunksOf)
@@ -393,7 +393,7 @@ clearSlaveRequests =
 enqueueSlaveRequest :: MonadIO m => MasterConnectInfo -> m ()
 enqueueSlaveRequest mci =
     liftIO $ runThreadFileLoggingT $ logNest "enqueueSlaveRequest" $ withRedis redisTestPrefix localhost $ \r -> do
-        let encoded = toStrict (encode mci)
+        let encoded = encode mci
         run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
 
 -- Keeping track of requests which have been sent, haven't yet been

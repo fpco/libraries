@@ -14,7 +14,7 @@ import           Control.Concurrent.STM (retry, check)
 import           Control.DeepSeq (NFData)
 import           Control.Exception (BlockedIndefinitelyOnSTM(..))
 import           Control.Monad.Logger
-import           Data.Binary (Binary)
+import           Data.Serialize (Serialize)
 import           Data.Bits
 import           Data.Conduit.Network (serverSettings, clientSettings)
 import qualified Data.Conduit.Network as CN
@@ -154,7 +154,7 @@ simpleInitialStates = map ((:[]) . Left) [1..4]
 
 runMasterAndSlaves
     :: forall state context input output a.
-       (NFData state, Binary state, Binary context, Binary input, NFData output, Binary output, Show state)
+       (NFData state, Serialize state, Serialize context, Serialize input, NFData output, Serialize output, Show state)
     => Int
     -> Int
     -> (context -> input -> state -> IO (state, output))
@@ -197,10 +197,10 @@ runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
         putMVar doneVar ()
         return r
 
-newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq)
-newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq)
-newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq, NFData)
-newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Binary, Eq, NFData)
+newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
+newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
+newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq, NFData)
+newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq, NFData)
 
 data PureState state = PureState
     { pureStates :: HMS.HashMap StateId state

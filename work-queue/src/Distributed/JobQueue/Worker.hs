@@ -36,7 +36,7 @@ import Control.Concurrent.Async (Async, async, withAsync, cancel, cancelWith, wa
 import Control.Exception (BlockedIndefinitelyOnMVar(..))
 import Control.Monad.Logger (logErrorS, logInfoS, logDebugS, logWarnS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
-import Data.Binary (Binary, encode)
+import Data.Serialize (Serialize, encode)
 import Data.Bits (xor)
 import Data.ConcreteTypeRep (fromTypeRep)
 import Data.List.NonEmpty (NonEmpty((:|)))
@@ -340,7 +340,7 @@ jobQueueWorkerInternal params@WorkerParams{..} slave master = do
         addRequestEvent wpRedis k (RequestWorkFinished wpId)
       where
         expiry = workerResponseDataExpiry wpConfig
-        encoded = toStrict (encode result)
+        encoded = encode result
     -- Heartbeats get their own redis connection, as this way it's
     -- less likely that they'll fail due to the main redis connection
     -- transferring lots of data.
@@ -476,7 +476,7 @@ unsubscribeToRequests (WithSubscription _ unsub) = liftIO unsub
 -- * Slave Requests
 
 -- | Hostname and port of the master the slave should connect to.  The
--- 'Binary' instance for this is used to serialize this info to the
+-- 'Serialize' instance for this is used to serialize this info to the
 -- list stored at 'slaveRequestsKey'.
 data MasterConnectInfo = MasterConnectInfo
     { mciHost :: ByteString
@@ -484,7 +484,7 @@ data MasterConnectInfo = MasterConnectInfo
     }
     deriving (Generic, Show, Typeable)
 
-instance Binary MasterConnectInfo
+instance Serialize MasterConnectInfo
 
 -- | This command is used by the master to request that a slave
 -- connect to it.
@@ -519,7 +519,7 @@ requestSlave
     -> MasterConnectInfo
     -> m ()
 requestSlave r mci = do
-    let encoded = toStrict (encode mci)
+    let encoded = encode mci
     run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
     notifyRequestAvailable r
 
