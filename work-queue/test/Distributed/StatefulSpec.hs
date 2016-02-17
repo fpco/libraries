@@ -163,7 +163,7 @@ runMasterAndSlaves
     -> IO a
 runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
     nms <- nmsSettings
-    logFunc <- runStdoutLoggingT askLoggerIO
+    logFunc <- getLogFunc
     -- Running slaves
     let slaveArgs = SlaveArgs
             { saUpdate = slaveUpdate
