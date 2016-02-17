@@ -31,4 +31,4 @@ before_script:
  - redis-server &
 
 script:
- - stack --no-terminal $ARGS test --haddock --no-haddock-deps
+ - stack --no-terminal $ARGS test --haddock
