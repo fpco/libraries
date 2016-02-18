@@ -8,6 +8,9 @@ packages:
   - ./work-queue
   - ./hpc-manager
   - ./th-relative-paths
+  - location:
+      git: https://github.com/fpco/fpco-cereal.git
+      commit: 0b9059f3d1ff5e286b36bc21d654af30d4218ea6
 
 image:
   container:
