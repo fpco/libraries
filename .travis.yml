@@ -31,4 +31,5 @@ before_script:
  - redis-server &
 
 script:
- - stack --no-terminal $ARGS test --haddock
+ - stack --no-terminal $ARGS test --haddock th-relative-paths json-conduit redis-fp hpc-manager thread-file-logger
+ - stack --no-terminal $ARGS test --haddock --test-arguments='--skip Stateful' work-queue
