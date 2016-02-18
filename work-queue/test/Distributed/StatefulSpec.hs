@@ -34,7 +34,7 @@ import           Test.Hspec (shouldBe, shouldThrow)
 import qualified Test.Hspec as Hspec
 import           Test.QuickCheck hiding (output)
 
-skip :: m () -> m ()
+skip :: Monad m => m () -> m ()
 skip _ = return ()
 
 spec :: Hspec.Spec
