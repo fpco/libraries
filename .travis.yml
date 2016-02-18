@@ -31,4 +31,4 @@ before_script:
  - redis-server &
 
 script:
- - stack --no-terminal $ARGS test --haddock
+ - stack --no-terminal $ARGS test --haddock  --test-arguments='--skip Stateful'
