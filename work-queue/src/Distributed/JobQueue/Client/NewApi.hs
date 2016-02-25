@@ -19,16 +19,18 @@ module Distributed.JobQueue.Client.NewApi
     , DistributedJobQueueException(..)
     ) where
 
-import ClassyPrelude
-import Control.Concurrent.Async (async, cancel)
-import Control.Monad.Logger
-import Control.Retry (RetryPolicy)
-import Data.Streaming.NetworkMessage (Sendable)
-import Data.Void (absurd)
-import Distributed.JobQueue.Client hiding (checkForResponse)
+import           ClassyPrelude
+import           Control.Concurrent.Async (async, cancel)
+import           Control.Concurrent.STM (check)
+import           Control.Monad.Logger
+import           Control.Retry (RetryPolicy)
+import           Data.Streaming.NetworkMessage (Sendable)
+import           Data.Void (absurd)
 import qualified Distributed.JobQueue.Client as Client
-import Distributed.RedisQueue.Internal
-import FP.Redis
+import           Distributed.JobQueue.Client hiding (checkForResponse)
+import           Distributed.RedisQueue.Internal
+import           FP.Redis
+import qualified STMContainers.Map as SM
 
 data JobClientConfig = JobClientConfig
     { jccRedisHost :: ByteString
@@ -113,8 +115,10 @@ newJobClient logFunc JobClientConfig{..} = liftIO $ do
     -- and weak pointer business business
     keepRunning <- newIORef ()
     _ <- mkWeakIORef keepRunning $ do
-        flip runLoggingT logFunc $ $logInfoS "JobClient"
-            "Detected JobClient no longer used, killing jobQueueClient thread"
+        let logi = flip runLoggingT logFunc . $logInfoS "JobClient"
+        logi "Detected JobClient no longer used, checking / waiting for there to be no callbacks"
+        atomically $ check =<< SM.null (clientDispatch cvs)
+        logi "Detected JobClient no longer used, and no longer has any callbacks, killing jobQueueClient thread"
         cancel jobQueueClientAsync
 
     conn <- runLoggingT (connect ci) logFunc
