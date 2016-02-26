@@ -60,11 +60,12 @@ data ClientVars m response = ClientVars
       -- ^ A map between 'RequestId's and their associated handlers.
       -- 'jobQueueClient' uses this to invoke the handlers inserted by
       -- 'jobQueueRequest'.
+    , clientDispatchInFlightCount :: TVar Int
     } deriving (Typeable)
 
 -- | Create a new 'ClientVars' value.
 newClientVars :: IO (ClientVars m response)
-newClientVars = ClientVars <$> SM.newIO
+newClientVars = ClientVars <$> SM.newIO <*> newTVarIO 0
 
 -- | Configuration used for running the client functions of job-queue.
 data ClientConfig = ClientConfig
@@ -155,9 +156,12 @@ jobQueueClient config cvs redis = do
         -- Lookup the handler before fetching / deleting the response,
         -- as the message may get delivered to multiple clients.
         let lookupAndRemove handler = return (handler, Remove)
-        mhandler <- atomically $
-            SM.focus lookupAndRemove rid (clientDispatch cvs)
-        forM_ mhandler $ \handler -> do
+        mhandler <- atomically $ do
+            res <- SM.focus lookupAndRemove rid (clientDispatch cvs)
+            when (isJust res) (modifyTVar' (clientDispatchInFlightCount cvs) (subtract 1))
+            return res
+        let decrement = atomically (modifyTVar' (clientDispatchInFlightCount cvs) (+ 1))
+        forM_ mhandler $ \handler -> (`finally` decrement) $ do
             mresponse <- readResponse redis rid
             case mresponse of
                 Nothing -> handler (Left (ResponseMissingException rid))

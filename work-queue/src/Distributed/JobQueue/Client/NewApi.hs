@@ -117,7 +117,9 @@ newJobClient logFunc JobClientConfig{..} = liftIO $ do
     _ <- mkWeakIORef keepRunning $ do
         let logi = flip runLoggingT logFunc . $logInfoS "JobClient"
         logi "Detected JobClient no longer used, checking / waiting for there to be no callbacks"
-        atomically $ check =<< SM.null (clientDispatch cvs)
+        atomically $ do
+            check =<< SM.null (clientDispatch cvs)
+            check . (0 ==) =<< readTVar (clientDispatchInFlightCount cvs)
         logi "Detected JobClient no longer used, and no longer has any callbacks, killing jobQueueClient thread"
         cancel jobQueueClientAsync
 
