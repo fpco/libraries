@@ -48,10 +48,11 @@ instance Exception SlaveException
 
 -- | Runs a stateful slave, and never returns (though may throw
 -- exceptions).
-runSlave :: forall state context input output a.
+runSlave :: forall state context input output void.
      ( B.Serialize state, NFData state, B.Serialize context, B.Serialize input, B.Serialize output, NFData output
      )
-  => SlaveArgs state context input output -> IO a
+  => SlaveArgs state context input output
+  -> IO void
 runSlave SlaveArgs{..} =
     CN.runTCPClient saClientSettings $
     NM.generalRunNMApp saNMSettings (const "") (const "") $ \nm -> do
@@ -60,11 +61,10 @@ runSlave SlaveArgs{..} =
   where
     throw = throwAndLog saLogFunc
     debug msg = runLoggingT (logDebugNS "Distributed.Stateful.Slave" msg) saLogFunc
-    go :: forall b.
-         IO (SlaveReq state context input)
+    go :: IO (SlaveReq state context input)
       -> (SlaveResp state output -> IO ())
       -> (HMS.HashMap StateId state)
-      -> IO b
+      -> IO void
     go recv send states = do
       req <- recv
       debug (displayReq req)
