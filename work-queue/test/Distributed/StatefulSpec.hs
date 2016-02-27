@@ -245,7 +245,8 @@ nmsSettings = do
     nms <- defaultNMSettings
     return $ setNMHeartbeat 5000000 nms -- 5 seconds
 
-getLogFunc = runStdoutLoggingT (filterLogger (\_ l -> l > LevelDebug) askLoggerIO)
+getLogFunc :: IO (Loc -> LogSource -> LogLevel -> LogStr -> IO ())
+getLogFunc = runStdoutLoggingT (filterLogger (\_ l -> True) askLoggerIO)
 
 {- Utility for doing a quickcheck replay
 
