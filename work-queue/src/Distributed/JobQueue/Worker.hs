@@ -26,6 +26,8 @@ module Distributed.JobQueue.Worker
     , WorkerParams(..)
     -- * Exceptions
     , DistributedJobQueueException(..)
+    -- * Utility
+    , slaveHandleNMExceptions
     -- * For internal usage by tests
     , slaveRequestsKey
     ) where
@@ -33,15 +35,14 @@ module Distributed.JobQueue.Worker
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async, withAsync, cancel, cancelWith, waitEither)
-import Control.Exception (BlockedIndefinitelyOnMVar(..))
-import Control.Monad.Logger (logErrorS, logInfoS, logDebugS, logWarnS)
+import Control.Monad.Logger (MonadLogger, logErrorS, logInfoS, logDebugS, logWarnS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import Data.Serialize (Serialize, encode)
 import Data.Bits (xor)
 import Data.ConcreteTypeRep (fromTypeRep)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Streaming.Network (ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
-import Data.Streaming.NetworkMessage (NMSettings, Sendable, defaultNMSettings, setNMHeartbeat, NetworkMessageException(NMConnectionDropped))
+import Data.Streaming.NetworkMessage (NMSettings, Sendable, defaultNMSettings, setNMHeartbeat, NetworkMessageException(..))
 import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
@@ -162,31 +163,47 @@ jobQueueWorker config calc distribute =
     slave' WorkerParams{..} mci init = do
         $logInfoS "JobQueue" (tshow wpId ++ " becoming slave of " ++ tshow mci)
         let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
-        eres <- try $ runSlave settings wpNMSettings (\() -> init) (\() -> calc)
-        case eres of
-            -- This indicates that the slave couldn't connect.
-            Left (fromException -> Just err@(IOError {})) ->
-                $logInfoS "JobQueue" $
-                    "Failed to connect to master, with " <>
-                    tshow mci <>
-                    ".  This probably isn't an issue - the master likely " <>
-                    "already finished or died.  Here's the exception: " <>
-                    tshow err
-            Left (fromException -> Just NMConnectionDropped) ->
-                $logWarnS "JobQueue" $ "Ignoring NMConnectionDropped in slave"
-            Left err -> do
-                $logErrorS "JobQueue" $ "Unexpected exception in slave: " ++ tshow err
-                liftIO $ throwIO err
-            Right (Right ()) ->
-                $logInfoS "JobQueue" (tshow wpId ++ " done being slave of " ++ tshow mci)
-            Right (Left err) -> do
-                $logErrorS "JobQueue" $ "Slave threw exception: " ++ tshow err
+        meres <- slaveHandleNMExceptions mci $
+            runSlave settings wpNMSettings (\() -> init) (\() -> calc)
+        case meres of
+            Nothing -> return ()
+            Just (Right x) -> $logInfoS "runSlave" (tshow wpId ++ " done being slave of " ++ tshow mci)
+            Just (Left err) -> do
+                $logErrorS "runSlave" $ "Slave threw exception: " ++ tshow err
                 liftIO $ throwIO err
     master' WorkerParams{..} ss k req getMci = do
         withMaster (runTCPServer ss) wpNMSettings () $ \queue -> do
             mci <- getMci
             withLocalSlaves queue (workerMasterLocalSlaves wpConfig) calc $
                 liftIO $ distribute wpRedis mci k req queue
+
+-- TODO: figure out better place to put this utility, or better way to
+-- factor this out.
+slaveHandleNMExceptions
+     :: (MonadLogger m, MonadIO m, MonadBaseControl IO m)
+     => MasterConnectInfo -> m a -> m (Maybe a)
+slaveHandleNMExceptions mci f = do
+    eres <- try f
+    case eres of
+        Right x -> return (Just x)
+        -- This indicates that the slave couldn't connect.
+        Left (fromException -> Just err@(IOError {})) -> do
+            $logInfoS "runSlave" $
+                "Failed to connect to master " <>
+                tshow mci <>
+                ".  This probably isn't an issue - the master likely " <>
+                "already finished or died.  Here's the exception: " <>
+              tshow err
+            return Nothing
+        Left (fromException -> Just NMConnectionDropped) -> do
+            $logWarnS "runSlave" $ "Ignoring NMConnectionDropped in slave"
+            return Nothing
+        Left (fromException -> Just NMConnectionClosed) -> do
+            $logWarnS "runSlave" $ "Ignoring NMConnectionClosed in slave"
+            return Nothing
+        Left err -> do
+            $logErrorS "runSlave" $ "Unexpected exception in slave: " ++ tshow err
+            liftIO $ throwIO err
 
 -- | Runs a job-queue worker where it's up to the invoker to handle
 -- communication amongst the workers.

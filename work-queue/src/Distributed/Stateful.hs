@@ -85,7 +85,7 @@ runWorker WorkerArgs {..} logFunc slave master =
   where
     runLogger f = runLoggingT f logFunc
     slave' :: WorkerParams -> MasterConnectInfo -> IO () -> LoggingT IO ()
-    slave' wp mci onInit = liftIO $ runSlave SlaveArgs
+    slave' wp mci onInit = void $ slaveHandleNMExceptions mci $ liftIO $ runSlave SlaveArgs
       { saUpdate = slave
       , saInit = onInit
       , saClientSettings = CN.clientSettings (mciPort mci) (mciHost mci)
