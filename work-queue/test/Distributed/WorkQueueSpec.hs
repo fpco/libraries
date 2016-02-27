@@ -301,11 +301,12 @@ cancelProcess (Right a) = liftIO $ cancel a
 
 useForkIO :: Bool
 useForkIO =
-#if COVERAGE
+-- TODO: re-enable multi process test (see #122)
+-- #if COVERAGE
     True
-#else
-    False
-#endif
+-- #else
+--    False
+-- #endif
 
 processPid :: Process -> IO (Maybe Int32)
 processPid (Left ph) = processHandlePid ph
