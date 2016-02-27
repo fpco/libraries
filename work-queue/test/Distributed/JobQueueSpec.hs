@@ -118,7 +118,7 @@ spec = do
                     randomJobRequester "job-requester-2" sets 255
                 -- Give some more time for the job requesters to do their thing.
                 threadDelay (1000 * 1000 * 10)
-                checkRequestsAnswered (== 0) sets 60)
+                checkRequestsAnswered (== 0) sets 120)
     {-  Commented out because this is a bit of a weird thing to test
     jqit "Sends requests despite a bunch of other redis connections" $ do
         (sets :: RequestSets Int) <- mkRequestSets
