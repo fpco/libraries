@@ -34,6 +34,7 @@ import           System.Posix.Types (CPid(..))
 import           System.Process (runProcess, waitForProcess, terminateProcess, ProcessHandle)
 import           System.Process.Internals (ProcessHandle(..), ProcessHandle__(..))
 import           System.Random (randomRIO)
+import           System.Timeout (timeout)
 import           Test.Hspec (Spec, it, shouldBe)
 
 data Config
@@ -71,7 +72,7 @@ spec = do
         forkMasterSlave "xor4"
 
 defaultXorConfig :: Int -> SharedConfig -> Config
-defaultXorConfig n c = XorConfig n 12 100 c { expectedOutput = Just (show n) }
+defaultXorConfig n c = XorConfig n 18 100 c { expectedOutput = Just (show n) }
 
 defaultSharedConfig :: SharedConfig
 defaultSharedConfig = SharedConfig 1 True True True id f Nothing
@@ -100,11 +101,13 @@ getConfig "xor4" = defaultXorConfig 4 defaultSharedConfig
     , checkMasterRan = False
     , checkAllSlavesRan = False
     , whileRunning = \startSlave -> do
-        let randomSlaveSpawner = forever $ do
-                pid <- startSlave
-                ms <- randomRIO (150, 300)
-                threadDelay (1000 * ms)
-                cancelProcess pid
+        let randomSlaveSpawner = do
+                mres <- timeout (1000 * 1000 * 5) $ forever $ do
+                    pid <- startSlave
+                    ms <- randomRIO (150, 1000)
+                    threadDelay (1000 * ms)
+                    cancelProcess pid
+                when (isNothing mres) (fail "Test timed out")
         void $ randomSlaveSpawner `race` randomSlaveSpawner
     }
 getConfig "bench0" = defaultXorConfig 0 (benchConfig 0) { checkSlaveRan = False}
@@ -138,30 +141,29 @@ forkMasterSlave which = do
             removeFileIfExists seenPidsPath
             removeFileIfExists resultsPath
         startSlave = do
-            pid <- execProcessOrFork ["work-queue", unpack which, "slave", "localhost", "2015"]
+            pid <- execProcessOrFork ["work-queue", unpack which, "slave", "localhost", show port]
             mpid' <- processPid pid
             forM_ mpid' $ \pid' -> modifyIORef slavesRef (pid':)
             return pid
         go = do
-            master <- execProcessOrFork ["work-queue", unpack which, "master", show (masterJobs config), "2015"]
+            master <- execProcessOrFork ["work-queue", unpack which, "master", show (masterJobs config), show port]
             mmasterPid <- processPid master
             waitForSocket
             whileRunningThread <- async $ whileRunning config startSlave
-            waitForExit master
-            -- Ensure that both the master and slave processes have
-            -- performed calculation.
-            seenPids <- ordNub . map read . lines <$> readFile seenPidsPath
-            slavePids <- readIORef slavesRef
-            case (useForkIO, mmasterPid) of
-                (False, Just masterPid) -> do
-                    when (checkMasterRan config && masterPid `onotElem` seenPids) $
-                        fail "Master never ran"
-                    when (checkAllSlavesRan config) $
-                        sort (delete masterPid seenPids) `shouldBe` sort slavePids
-                    when (checkSlaveRan config && null (intersect seenPids slavePids)) $
-                        fail "No slave ran"
-                _ -> return ()
-            cancel whileRunningThread
+            (do waitForExit master
+                -- Ensure that both the master and slave processes have
+                -- performed calculation.
+                seenPids <- ordNub . map read . lines <$> readFile seenPidsPath
+                slavePids <- readIORef slavesRef
+                case (useForkIO, mmasterPid) of
+                    (False, Just masterPid) -> do
+                        when (checkMasterRan config && masterPid `onotElem` seenPids) $
+                            fail "Master never ran"
+                        when (checkAllSlavesRan config) $
+                            sort (delete masterPid seenPids) `shouldBe` sort slavePids
+                        when (checkSlaveRan config && null (intersect seenPids slavePids)) $
+                            fail "No slave ran"
+                    _ -> return ()) `finally` cancel whileRunningThread
             -- Read out the results file.
             result <- readFile resultsPath
             return result
@@ -273,7 +275,7 @@ waitForSocket = loop (100 :: Int)
   where
     loop 0 = fail "Ran out of waitForSocket retries."
     loop n = do
-        eres <- tryAny $ getSocketFamilyTCP "localhost" 2015 NS.AF_UNSPEC
+        eres <- tryAny $ getSocketFamilyTCP "localhost" port NS.AF_UNSPEC
         case eres of
             Left _ -> do
                 threadDelay (20 * 1000)
@@ -301,12 +303,11 @@ cancelProcess (Right a) = liftIO $ cancel a
 
 useForkIO :: Bool
 useForkIO =
--- TODO: re-enable multi process test (see #122)
--- #if COVERAGE
+#if COVERAGE
     True
--- #else
---    False
--- #endif
+#else
+    False
+#endif
 
 processPid :: Process -> IO (Maybe Int32)
 processPid (Left ph) = processHandlePid ph
@@ -318,3 +319,7 @@ processHandlePid (ProcessHandle var _) = do
     return $ case mpid of
         Just (OpenHandle (CPid pid)) -> Just pid
         _ -> Nothing
+
+-- Picked by human random number generator
+port :: Int
+port = 38490
