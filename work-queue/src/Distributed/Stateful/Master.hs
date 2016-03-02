@@ -347,7 +347,7 @@ getStateIds ::
 getStateIds = fmap (fold . siStates) . readIORef . mhSlaveInfoRef
 
 -- | Fetches current states stored in the slaves.
-getStates :: Show state =>
+getStates ::
      MasterHandle state context input output
   -> IO (HMS.HashMap StateId state)
 getStates MasterHandle{..} = do
