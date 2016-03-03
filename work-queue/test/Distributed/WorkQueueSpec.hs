@@ -60,12 +60,8 @@ data SharedConfig = SharedConfig
 
 spec :: Spec
 spec = do
-    it "can run tasks on master and slave server" $
-        forkMasterSlave "xor0"
     it "can run tasks on just the master server" $
         forkMasterSlave "xor1"
-    it "can run tasks on master and two slave servers" $
-        forkMasterSlave "xor2"
     it "can run tasks only on slaves" $
         forkMasterSlave "xor3"
     it "preserves data despite slaves being started and killed periodically" $
@@ -83,14 +79,11 @@ defaultSharedConfig = SharedConfig 1 True True True id f Nothing
 -- in their respective Spec modules?
 
 getConfig :: Text -> Config
-getConfig "xor0" = defaultXorConfig 0 defaultSharedConfig
 getConfig "xor1" = defaultXorConfig 1 defaultSharedConfig
     { checkSlaveRan = False
     , checkAllSlavesRan = False
     , whileRunning = \_ -> return ()
     }
-getConfig "xor2" = defaultXorConfig 2 defaultSharedConfig
-    { whileRunning = \startSlave -> startSlave >> startSlave >> return () }
 getConfig "xor3" = defaultXorConfig 3 defaultSharedConfig
     { masterJobs = 0
     , checkMasterRan = False
