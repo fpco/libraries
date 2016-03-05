@@ -23,9 +23,9 @@ Flag long-tests
 
 library
   exposed-modules:     Data.WorkQueue
-                       Data.WrappedSerialize
                        Data.SimpleSupply
                        Data.Streaming.NetworkMessage
+                       Data.TypeFingerprint
                        Distributed.JobQueue
                        Distributed.JobQueue.Client
                        Distributed.JobQueue.Client.NewApi
@@ -43,7 +43,6 @@ library
                        -- Exposed for testing purposes
                        Distributed.JobQueue.Heartbeat
   other-modules:       Distributed.JobQueue.Shared
-                       Data.ConcreteTypeRep
   build-depends:       base
                      , aeson
                      , async
@@ -75,6 +74,8 @@ library
                      , stm-containers
                      , streaming-commons
                      , text
+                     , template-haskell
+                     , th-type-hash
                      , thread-file-logger
                      , time
                      , transformers

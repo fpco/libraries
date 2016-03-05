@@ -31,9 +31,6 @@ module Data.Streaming.NetworkMessage
     , nmRead
     , nmReadSelect
     , nmAppData
-      -- ** General runNMApp
-    , TypeFingerprint
-    , generalRunNMApp
       -- * Settings
     , NMSettings
     , defaultNMSettings
@@ -42,22 +39,22 @@ module Data.Streaming.NetworkMessage
     ) where
 
 import           ClassyPrelude
-import           Control.Concurrent          (threadDelay, myThreadId, throwTo)
-import qualified Control.Concurrent.Async    as A
-import           Control.Concurrent.STM      (retry)
-import           Control.Exception           (AsyncException(ThreadKilled))
-import           Control.Monad.Base          (liftBase)
+import           Control.Concurrent (threadDelay, myThreadId, throwTo)
+import qualified Control.Concurrent.Async as A
+import           Control.Concurrent.STM (retry)
+import           Control.DeepSeq (NFData)
+import           Control.Exception (AsyncException(ThreadKilled))
+import           Control.Monad.Base (liftBase)
 import           Control.Monad.Trans.Control (MonadBaseControl, control)
-import qualified Data.Serialize                 as B
-import           Data.ConcreteTypeRep        (ConcreteTypeRep, fromTypeRep)
-import           Data.Function               (fix)
-import           Data.Streaming.Network      (AppData, appRead, appWrite)
-import           Data.Typeable               (Proxy(..), typeRep)
-import           Data.Void                   (absurd)
-import           GHC.IO.Exception            (IOException(ioe_type), IOErrorType(ResourceVanished))
-import           System.Executable.Hash      (executableHash)
-import qualified Crypto.Hash.SHA512          as SHA512
-import qualified Data.ByteString             as BS
+import qualified Data.ByteString as BS
+import           Data.Function (fix)
+import qualified Data.Serialize as B
+import           Data.Streaming.Network (AppData, appRead, appWrite)
+import           Data.TypeFingerprint
+import           Data.Typeable (Proxy(..), typeRep)
+import           Data.Void (absurd)
+import           GHC.IO.Exception (IOException(ioe_type), IOErrorType(ResourceVanished))
+import           System.Executable.Hash (executableHash)
 
 -- | A network message application.
 --
@@ -84,7 +81,7 @@ type NMApp iSend youSend m a = NMAppData iSend youSend -> m a
 
 -- | Constraint synonym for the constraints required to send data from
 -- / to an 'NMApp'.
-type Sendable a = (B.Serialize a, Typeable a)
+type Sendable a = (B.Serialize a, HasTypeFingerprint a)
 
 -- | Provides an 'NMApp' with a means of communicating with the other side of a
 -- connection. See other functions provided by this module.
@@ -124,8 +121,6 @@ nmReadSelect nm select = liftIO $ do
         Right x -> return x
         Left err -> throwIO err
 
-type TypeFingerprint = BS.ByteString
-
 data Handshake = Handshake
     { hsISend     :: TypeFingerprint
     , hsYouSend   :: TypeFingerprint
@@ -135,32 +130,26 @@ data Handshake = Handshake
     deriving (Generic, Show, Eq, Typeable)
 instance B.Serialize Handshake
 
-mkHandshake :: forall iSend youSend m a.
-       (Proxy iSend -> TypeFingerprint)
-    -> (Proxy youSend -> TypeFingerprint)
-    -> NMApp iSend youSend m a -> Int -> Maybe ByteString -> Handshake
-mkHandshake fingerprintISend fingerprintYouSend _ hb eh = Handshake
-    { hsISend = fingerprintISend (Proxy :: Proxy iSend)
-    , hsYouSend = fingerprintYouSend (Proxy :: Proxy youSend)
+mkHandshake
+    :: forall iSend youSend m a. (HasTypeFingerprint iSend, HasTypeFingerprint youSend)
+    => NMApp iSend youSend m a -> Int -> Maybe ByteString -> Handshake
+mkHandshake _ hb eh = Handshake
+    { hsISend = typeFingerprint (Proxy :: Proxy iSend)
+    , hsYouSend = typeFingerprint (Proxy :: Proxy youSend)
     , hsHeartbeat = hb
     , hsExeHash = eh
     }
 
--- | More general version of 'runNMApp', that removes the 'Typeable' constraint.
--- The two 'TypeFingerprint' function can be used to provide a way to mark the types
--- we're sending. 'runNMApp' uses 'Typeable' to do that, but this might not be
--- convenient or possible if the types involved are not 'Typeable'.
-generalRunNMApp :: forall iSend youSend m a.
-       (MonadBaseControl IO m, B.Serialize iSend, B.Serialize youSend)
+-- | Convert an 'NMApp' into a "Data.Streaming.Network" application.
+runNMApp :: forall iSend youSend m a.
+       (MonadBaseControl IO m, Sendable iSend, Sendable youSend)
     => NMSettings
-    -> (Proxy iSend -> TypeFingerprint)
-    -> (Proxy youSend -> TypeFingerprint)
     -> NMApp iSend youSend m a
     -> AppData
     -> m a
-generalRunNMApp (NMSettings heartbeat exeHash) fingerprintISend fingerprintYouSend nmApp ad = do
+runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
     (yourHS, leftover) <- liftBase $ do
-        let myHS = mkHandshake fingerprintISend fingerprintYouSend nmApp heartbeat exeHash
+        let myHS = mkHandshake nmApp heartbeat exeHash
         forM_ (toChunks $ B.encodeLazy myHS) (appWrite ad)
         mgot <- appGet mempty (appRead ad)
         case mgot of
@@ -333,21 +322,6 @@ mailboxReadTChan chan select = go []
             Just x -> case select x of
                 Nothing -> go (x : discarded)
                 Just y -> finish (Just y)
-
--- | Convert an 'NMApp' into an "Data.Streaming.Network" application.
-runNMApp :: forall iSend youSend m a.
-       (MonadBaseControl IO m, Sendable iSend, Sendable youSend)
-    => NMSettings
-    -> NMApp iSend youSend m a
-    -> AppData
-    -> m a
-runNMApp nms = generalRunNMApp nms typeableFingerprint typeableFingerprint
-  where
-    typeableFingerprint :: forall b. (Typeable b) => Proxy b -> BS.ByteString
-    typeableFingerprint _proxy = let
-        ty :: ConcreteTypeRep
-        ty = fromTypeRep (typeRep (Proxy :: Proxy b))
-        in SHA512.hashlazy (B.encodeLazy ty)
 
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and

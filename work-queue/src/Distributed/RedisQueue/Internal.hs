@@ -169,22 +169,20 @@ run_ = runCommand_ . redisConnection
 -- | Attempt to decode the given 'ByteString'.  If this fails, then
 -- throw a 'DecodeError' tagged with a 'String' indicating the source
 -- of the decode error.
-decodeOrThrow :: forall m a. (MonadIO m, Serialize a, Typeable a)
+decodeOrThrow :: forall m a. (MonadIO m, Serialize a)
               => String -> ByteString -> m a
 decodeOrThrow src lbs =
     case C.runGet (C.get <* (guard =<< C.isEmpty)) lbs of
         Left err -> throwErr err
         Right x -> return x
   where
-    throwErr = liftIO . throwIO . DecodeError src typ
-    typ = show (typeRep (Proxy :: Proxy a))
+    throwErr = liftIO . throwIO . DecodeError src
 
 -- | Since the users of 'decodeOrThrow' attempt to ensure that types
 -- and executable hashes match up, the occurance of this exception
 -- indicates a bug in the library.
 data DecodeError = DecodeError
     { deLoc :: String
-    , deTyp :: String
     , deErr :: String
     }
     deriving (Show, Typeable)

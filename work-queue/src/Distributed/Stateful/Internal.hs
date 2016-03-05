@@ -9,11 +9,13 @@ module Distributed.Stateful.Internal where
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger
-import qualified Data.Serialize as B
-import           Data.Serialize.Orphans ()
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
+import qualified Data.Serialize as B
+import           Data.Serialize.Orphans ()
+import           Data.TypeFingerprint
 import           Text.Printf (PrintfArg(..))
+import           Data.Proxy (Proxy(..))
 
 newtype SlaveId = SlaveId {unSlaveId :: Int}
   deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Serialize)
@@ -44,6 +46,9 @@ data SlaveReq state context input
   | SReqGetStates
   deriving (Generic, Eq, Show, NFData, B.Serialize)
 
+instance (HasTypeFingerprint state, HasTypeFingerprint context, HasTypeFingerprint input) => HasTypeFingerprint (SlaveReq state context input) where
+    typeFingerprint _ = typeFingerprint (Proxy :: Proxy (state, context, input))
+
 data SlaveResp state output
   = SRespResetState
   | SRespAddStates
@@ -54,6 +59,9 @@ data SlaveResp state output
   | SRespGetStates !(HMS.HashMap StateId state)
   | SRespError Text
   deriving (Generic, Eq, Show, NFData, B.Serialize)
+
+instance (HasTypeFingerprint state, HasTypeFingerprint output) => HasTypeFingerprint (SlaveResp state output) where
+    typeFingerprint _ = typeFingerprint (Proxy :: Proxy (state, output))
 
 displayReq :: SlaveReq state context input -> Text
 displayReq (SReqResetState mp) = "SReqResetState (" <> pack (show (HMS.keys mp)) <> ")"

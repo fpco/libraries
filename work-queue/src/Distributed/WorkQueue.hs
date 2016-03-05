@@ -7,6 +7,7 @@
 {-# LANGUAGE TemplateHaskell  #-}
 {-# LANGUAGE TypeFamilies     #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 -- | Distribute a "Data.WorkQueue" queue over a network via
 -- "Data.Streaming.NetworkMessage".
 --
@@ -29,16 +30,18 @@ module Distributed.WorkQueue
     , generalRunSlave
     ) where
 
-import ClassyPrelude                 hiding ((<>))
-import Control.Concurrent.Async      (withAsync)
+import ClassyPrelude hiding ((<>))
+import Control.Concurrent.Async (withAsync)
 import Control.Monad.Trans.Control
-import Data.Serialize                   (Serialize)
-import Data.Function                 (fix)
+import Data.Function (fix)
+import Data.Serialize (Serialize)
 import Data.Streaming.Network
 import Data.Streaming.NetworkMessage
+import Data.TypeFingerprint
 import Data.WorkQueue
-import FP.ThreadFileLogger           (logIODebugS, logExceptions)
+import FP.ThreadFileLogger (logIODebugS, logExceptions)
 import Options.Applicative
+import Data.Proxy (Proxy(..))
 
 data ToSlave initialData payload
     = TSInit initialData
@@ -47,6 +50,8 @@ data ToSlave initialData payload
     deriving (Generic, Typeable)
 instance (Serialize a, Serialize b) => Serialize (ToSlave a b)
 
+instance (HasTypeFingerprint initialData, HasTypeFingerprint payload) => HasTypeFingerprint (ToSlave initialData payload) where
+    typeFingerprint _ = typeFingerprint (Proxy :: Proxy (initialData, payload))
 
 data RunMode
     = DevMode
@@ -172,7 +177,10 @@ withMaster
 withMaster runApp nmSettings = generalWithMaster (runApp . runNMApp nmSettings)
 
 generalWithMaster
-    :: (MonadBaseControl IO m)
+    :: ( MonadBaseControl IO m
+       , Sendable (ToSlave initialData payload)
+       , Sendable result
+       )
     => (forall a. NMApp (ToSlave initialData payload) result IO () -> IO a)
     -- ^ Function to run the server.
     -> initialData

@@ -6,6 +6,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Distributed.StatefulSpec (spec) where
 
 import           ClassyPrelude
@@ -14,14 +15,16 @@ import           Control.Concurrent.STM (retry, check)
 import           Control.DeepSeq (NFData)
 import           Control.Exception (BlockedIndefinitelyOnSTM(..))
 import           Control.Monad.Logger
-import           Data.Serialize (Serialize)
 import           Data.Bits
 import           Data.Conduit.Network (serverSettings, clientSettings)
 import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
+import           Data.Serialize (Serialize)
 import           Data.Streaming.NetworkMessage
 import qualified Data.Streaming.NetworkMessage as NM
+import           Data.TypeFingerprint (mkManyHasTypeFingerprint)
+import           Data.TypeFingerprintSpec ()
 import           Distributed.JobQueue.Client.NewApi
 import           Distributed.RedisQueue (RedisInfo)
 import           Distributed.Stateful
@@ -33,6 +36,18 @@ import           FP.Redis
 import           Test.Hspec (shouldBe, shouldThrow)
 import qualified Test.Hspec as Hspec
 import           Test.QuickCheck hiding (output)
+
+newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
+newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
+newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq, NFData)
+newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq, NFData)
+
+$(mkManyHasTypeFingerprint
+    [ [t| Context |]
+    , [t| Input |]
+    , [t| State |]
+    , [t| Output |]
+    ])
 
 spec :: Hspec.Spec
 spec = do
@@ -154,7 +169,7 @@ simpleInitialStates = map ((:[]) . Left) [1..4]
 
 runMasterAndSlaves
     :: forall state context input output a.
-       (NFData state, Serialize state, Serialize context, Serialize input, NFData output, Serialize output, Show state)
+       (NFData state, Sendable state, Sendable context, Sendable input, NFData output, Sendable output)
     => Int
     -> Int
     -> (context -> input -> state -> IO (state, output))
@@ -185,7 +200,7 @@ runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
     let ss = CN.setAfterBind (\_ -> tryPutMVar masterReady () >> return ()) (serverSettings port "*")
     let acceptConns =
             -- timeout (1000 * 1000 * 2) $
-            CN.runGeneralTCPServer ss $ NM.generalRunNMApp nms (const "") (const "") $ \nm -> do
+            CN.runGeneralTCPServer ss $ NM.runNMApp nms $ \nm -> do
                 addSlaveConnection mh nm
                 void $ tryPutMVar someConnected ()
                 readMVar doneVar
@@ -196,11 +211,6 @@ runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
         r <- inner mh
         putMVar doneVar ()
         return r
-
-newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
-newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
-newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq, NFData)
-newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq, NFData)
 
 data PureState state = PureState
     { pureStates :: HMS.HashMap StateId state

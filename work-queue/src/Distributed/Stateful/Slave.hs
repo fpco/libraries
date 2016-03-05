@@ -5,6 +5,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ViewPatterns #-}
 module Distributed.Stateful.Slave
   ( SlaveArgs(..)
@@ -16,11 +17,12 @@ import           ClassyPrelude
 import           Control.DeepSeq (force, NFData)
 import           Control.Exception (evaluate, AsyncException)
 import           Control.Monad.Logger (runLoggingT, logDebugNS)
-import qualified Data.Serialize as B
 import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
+import qualified Data.Serialize as B
 import qualified Data.Streaming.NetworkMessage as NM
+import           Data.TypeFingerprint
 import           Distributed.Stateful.Internal
 
 -- | Arguments for 'runSlave'.
@@ -49,13 +51,14 @@ instance Exception SlaveException
 -- | Runs a stateful slave, and never returns (though may throw
 -- exceptions).
 runSlave :: forall state context input output void.
-     ( B.Serialize state, NFData state, B.Serialize context, B.Serialize input, B.Serialize output, NFData output
+     ( NM.Sendable (SlaveReq state context input), NM.Sendable (SlaveResp state output)
+     , NFData state, NFData output
      )
   => SlaveArgs state context input output
   -> IO void
 runSlave SlaveArgs{..} =
     CN.runTCPClient saClientSettings $
-    NM.generalRunNMApp saNMSettings (const "") (const "") $ \nm -> do
+    NM.runNMApp saNMSettings $ \nm -> do
       saInit
       go (NM.nmRead nm) (NM.nmWrite nm) HMS.empty
   where

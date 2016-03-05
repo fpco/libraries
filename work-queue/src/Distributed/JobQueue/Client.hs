@@ -38,10 +38,10 @@ import           ClassyPrelude
 import           Control.Concurrent.Async (race)
 import           Control.Monad.Logger (MonadLogger, logErrorS, logDebugS)
 import           Control.Monad.Trans.Control (liftBaseWith, restoreM)
-import           Data.Serialize (encode)
-import           Data.ConcreteTypeRep (fromTypeRep)
 import           Data.List.NonEmpty (NonEmpty((:|)))
+import           Data.Serialize (encode)
 import           Data.Streaming.NetworkMessage (Sendable)
+import           Data.TypeFingerprint
 import           Data.Typeable (typeRep, Proxy(..))
 import           Data.Void (absurd, Void)
 import           Distributed.JobQueue.Heartbeat (checkHeartbeats)
@@ -307,8 +307,8 @@ encodeRequest
     -> ByteString
 encodeRequest request _ =
     encode JobRequest
-        { jrRequestType = fromTypeRep (typeRep (Proxy :: Proxy request))
-        , jrResponseType = fromTypeRep (typeRep (Proxy :: Proxy response))
+        { jrRequestTypeFingerprint = typeFingerprint (Proxy :: Proxy request)
+        , jrResponseTypeFingerprint = typeFingerprint (Proxy :: Proxy response)
         , jrSchema = redisSchemaVersion
         , jrBody = encode request
         }

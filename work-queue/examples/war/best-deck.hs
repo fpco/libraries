@@ -1,21 +1,30 @@
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE DeriveGeneric      #-}
-{-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleInstances #-}
 -- | Generate some random competitor decks, and use random mutation to find
 -- players that get the highest scores against them.
-import           Control.Concurrent.STM       (atomically)
-import           Data.Vector                  (Vector)
+import           Control.Concurrent.STM (atomically)
+import           Data.Vector (Vector)
 import           Data.Vector.Algorithms.Merge (sortBy)
-import qualified Data.Vector.Generic          as V
-import qualified Data.Vector.Generic.Mutable  as VM
-import qualified Data.Vector.Hybrid           as VH
-import qualified Data.Vector.Unboxed          as U
+import qualified Data.Vector.Generic as V
+import qualified Data.Vector.Generic.Mutable as VM
+import qualified Data.Vector.Hybrid as VH
+import qualified Data.Vector.Unboxed as U
 import           Data.War
 import           Data.WorkQueue
-import           Prelude                      hiding (round)
+import           Prelude hiding (round)
 import           System.Random.MWC
 import           Data.Serialize.Orphans ()
-import Distributed.WorkQueue
+import           Distributed.WorkQueue
+import           Data.TypeFingerprint (mkManyHasTypeFingerprint)
+
+$(mkManyHasTypeFingerprint
+    [ [t| Int |]
+    , [t| Deck |]
+    , [t| Vector Deck |]
+    ])
 
 competitorCount :: Int
 competitorCount = 80

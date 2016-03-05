@@ -1,12 +1,16 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 module Main where
 
 import           Control.Concurrent.MVar (newEmptyMVar, takeMVar, putMVar)
 import           Control.Concurrent.STM (atomically)
 import           Control.Monad
 import           Data.IORef (newIORef, atomicModifyIORef', readIORef)
+import           Data.TypeFingerprint (mkHasTypeFingerprint)
 import           Data.WorkQueue (queueItem)
 import qualified Distributed.WorkQueue as WQ
 
+$(mkHasTypeFingerprint =<< [t| Int |])
 
 -- | Some function that workers can run.
 fact :: Int -> Int

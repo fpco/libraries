@@ -1,3 +1,4 @@
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -8,9 +9,12 @@ import           Data.Foldable (fold)
 import qualified Data.HashMap.Strict as HMS
 import           Data.List (sort)
 import           Data.Monoid ((<>))
+import           Data.TypeFingerprint (mkHasTypeFingerprint)
 import           Distributed.RedisQueue (RedisInfo, RequestId)
 import           Distributed.Stateful
 import           FP.Redis (connectInfo, Seconds(..))
+
+$(mkHasTypeFingerprint =<< [t| ByteString |])
 
 main :: IO ()
 main = do

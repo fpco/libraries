@@ -14,6 +14,7 @@ import           Data.IORef
 import           Data.Maybe (isNothing)
 import           Data.Streaming.Network
 import           Data.Streaming.NetworkMessage
+import           Data.TypeFingerprintSpec ()
 import           System.IO.Unsafe (unsafePerformIO)
 import           System.Timeout (timeout)
 import           Test.Hspec

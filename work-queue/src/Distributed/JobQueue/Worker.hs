@@ -37,12 +37,12 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async, withAsync, cancel, cancelWith, waitEither)
 import Control.Monad.Logger (MonadLogger, logErrorS, logInfoS, logDebugS, logWarnS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
-import Data.Serialize (Serialize, encode)
 import Data.Bits (xor)
-import Data.ConcreteTypeRep (fromTypeRep)
 import Data.List.NonEmpty (NonEmpty((:|)))
+import Data.Serialize (Serialize, encode)
 import Data.Streaming.Network (ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
 import Data.Streaming.NetworkMessage (NMSettings, Sendable, defaultNMSettings, setNMHeartbeat, NetworkMessageException(..))
+import Data.TypeFingerprint
 import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
@@ -385,16 +385,16 @@ becomeMaster params@WorkerParams{..} k req master = do
     $logInfoS "JobQueue" (tshow wpId ++ " becoming master, for " ++ tshow k)
     eres <- tryAny $ do
         addRequestEvent wpRedis k (RequestWorkStarted wpId)
-        let requestType = fromTypeRep (typeRep (Proxy :: Proxy request))
-            responseType = fromTypeRep (typeRep (Proxy :: Proxy response))
+        let requestTypeFingerprint = typeFingerprint (Proxy :: Proxy request)
+            responseTypeFingerprint = typeFingerprint (Proxy :: Proxy response)
         JobRequest{..} <- decodeOrThrow "jobQueueWorker" req
-        when (jrRequestType /= requestType ||
-              jrResponseType /= responseType) $ do
+        when (jrRequestTypeFingerprint /= requestTypeFingerprint ||
+              jrResponseTypeFingerprint /= responseTypeFingerprint) $ do
             liftIO $ throwIO TypeMismatch
-                { expectedResponseType = responseType
-                , actualResponseType = jrResponseType
-                , expectedRequestType = requestType
-                , actualRequestType = jrRequestType
+                { expectedResponseTypeFingerprint = responseTypeFingerprint
+                , actualResponseTypeFingerprint = jrResponseTypeFingerprint
+                , expectedRequestTypeFingerprint = requestTypeFingerprint
+                , actualRequestTypeFingerprint = jrRequestTypeFingerprint
                 }
         when (jrSchema /= redisSchemaVersion) $ do
             liftIO $ throwIO MismatchedRequestRedisSchemaVersion

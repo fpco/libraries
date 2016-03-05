@@ -1,5 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Main where
 
@@ -8,11 +10,18 @@ import Control.Concurrent (threadDelay)
 import Data.Bits (xor, zeroBits)
 import Data.List.NonEmpty (nonEmpty)
 import Data.List.Split (chunksOf)
+import Data.TypeFingerprint (mkManyHasTypeFingerprint)
 import Distributed.JobQueue
 import Distributed.RedisQueue (withRedis)
 import Distributed.WorkQueue (mapQueue)
 import FP.Redis
 import FP.ThreadFileLogger
+
+$(mkManyHasTypeFingerprint
+    [ [t| Int |]
+    , [t| [Int] |]
+    , [t| Vector [Int] |]
+    ])
 
 main :: IO ()
 main = do

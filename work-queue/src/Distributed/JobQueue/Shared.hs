@@ -38,12 +38,12 @@ import           Control.Exception (BlockedIndefinitelyOnMVar(..))
 import           Control.Monad.Logger (MonadLogger, logInfo, logWarn)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy as LBS
+import           Data.List.NonEmpty
 import           Data.Serialize (Serialize, encode)
 import           Data.Serialize.Orphans ()
-import qualified Data.ByteString.Lazy as LBS
-import           Data.ConcreteTypeRep (ConcreteTypeRep)
-import           Data.List.NonEmpty
 import           Data.Streaming.NetworkMessage (NetworkMessageException)
+import           Data.TypeFingerprint
 import           Data.Typeable (typeOf)
 import           Distributed.RedisQueue
 import           Distributed.RedisQueue.Internal
@@ -52,7 +52,7 @@ import           FP.Redis
 -- * Requests
 
 data JobRequest = JobRequest
-    { jrRequestType, jrResponseType :: ConcreteTypeRep
+    { jrRequestTypeFingerprint, jrResponseTypeFingerprint :: TypeFingerprint
     , jrSchema :: ByteString
     , jrBody :: ByteString
     } deriving (Generic, Show, Typeable)
@@ -131,7 +131,7 @@ getRequestEvents r k =
 -- * Schema version
 
 redisSchemaVersion :: ByteString
-redisSchemaVersion = "2"
+redisSchemaVersion = "3"
 
 redisSchemaKey :: RedisInfo -> VKey
 redisSchemaKey r = VKey $ Key $ redisKeyPrefix r <> "version"
@@ -174,10 +174,10 @@ data DistributedJobQueueException
     -- body. This means that the response body expired in redis
     -- (alternatively, it could indicate a bug in this library).
     | TypeMismatch
-        { expectedRequestType :: ConcreteTypeRep
-        , actualRequestType :: ConcreteTypeRep
-        , expectedResponseType :: ConcreteTypeRep
-        , actualResponseType :: ConcreteTypeRep
+        { expectedRequestTypeFingerprint :: TypeFingerprint
+        , actualRequestTypeFingerprint :: TypeFingerprint
+        , expectedResponseTypeFingerprint :: TypeFingerprint
+        , actualResponseTypeFingerprint :: TypeFingerprint
         }
     -- ^ Thrown when the client makes a request with the wrong request
     -- / response types.
@@ -231,10 +231,10 @@ instance Show DistributedJobQueueException where
         ") {- This likely means that the response body expired in redis. -}"
     show (TypeMismatch {..}) =
         "TypeMismatch " ++
-        "{ expectedResponseType = " ++ show expectedResponseType ++
-        ", actualResponseType = " ++ show actualResponseType ++
-        ", expectedRequestType = " ++ show expectedRequestType ++
-        ", actualRequestType = " ++ show actualRequestType ++
+        "{ expectedResponseTypeFingerprint = " ++ show expectedResponseTypeFingerprint ++
+        ", actualResponseTypeFingerprint = " ++ show actualResponseTypeFingerprint ++
+        ", expectedRequestTypeFingerprint = " ++ show expectedRequestTypeFingerprint ++
+        ", actualRequestTypeFingerprint = " ++ show actualRequestTypeFingerprint ++
         "}"
     show (RequestCanceledException rid) =
         "RequestCanceledException (" ++

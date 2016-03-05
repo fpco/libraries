@@ -1,3 +1,4 @@
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 import Control.Concurrent.STM
@@ -7,7 +8,10 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Char8 (pack)
 import Data.Maybe
 import Data.Time
+import Data.TypeFingerprint (mkHasTypeFingerprint)
 import Distributed.JobQueue.Client.NewApi
+
+$(mkHasTypeFingerprint =<< [t| ByteString |])
 
 type Request = ByteString
 type Response = ByteString

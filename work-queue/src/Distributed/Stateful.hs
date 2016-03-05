@@ -7,7 +7,6 @@
 module Distributed.Stateful
   ( WorkerArgs(..)
   , runWorker
-  , generalRunWorker
     -- * Re-exports
   , MasterArgs(..)
   , WorkerConfig(..)
@@ -28,7 +27,6 @@ import           Control.Monad.Logger (LoggingT, runLoggingT, logErrorN)
 import qualified Data.Serialize as B
 import qualified Data.Conduit.Network as CN
 import           Data.Streaming.NetworkMessage
-import           Data.WrappedSerialize
 import           Distributed.JobQueue.Worker hiding (MasterFunc, SlaveFunc)
 import           Distributed.RedisQueue
 import           Distributed.Stateful.Internal
@@ -57,9 +55,8 @@ data WorkerArgs = WorkerArgs
 -- computation.
 runWorker
     :: forall state context input output request response.
-     ( Typeable request, Typeable response
-     , NFData state, NFData output
-     , B.Serialize state, B.Serialize context, B.Serialize input, B.Serialize output, B.Serialize request, B.Serialize response
+     ( NFData state, NFData output
+     , Sendable state, Sendable context, Sendable input, Sendable output, Sendable request, Sendable response
      )
     => WorkerArgs
     -- ^ Settings to use to run the worker.
@@ -98,7 +95,7 @@ runWorker WorkerArgs {..} logFunc slave master =
       nms <- liftIO nmsSettings
       doneVar <- newEmptyMVar
       let acceptConns =
-            CN.runGeneralTCPServer ss $ generalRunNMApp nms (const "") (const "") $ \nm -> do
+            CN.runGeneralTCPServer ss $ runNMApp nms $ \nm -> do
               addSlaveConnection mh nm
               readMVar doneVar
       let runMaster = do
@@ -120,20 +117,3 @@ nmsSettings :: IO NMSettings
 nmsSettings = do
     nms <- defaultNMSettings
     return $ setNMHeartbeat 5000000 nms -- 5 seconds
-
--- | Like 'runWorker', but doesn't require that request and response be Typeable.
-generalRunWorker
-    :: forall state context input output request response.
-     ( NFData state, NFData output
-     , B.Serialize state, B.Serialize context, B.Serialize input, B.Serialize output, B.Serialize request, B.Serialize response
-     )
-    => WorkerArgs
-    -> LogFunc
-    -> (context -> input -> state -> IO (state, output))
-    -> (RedisInfo -> RequestId -> request -> MasterHandle state context input output -> IO response)
-    -> IO ()
-generalRunWorker wa logFunc slave master =
-    runWorker wa logFunc slave master'
-  where
-    master' :: RedisInfo -> RequestId -> WrappedSerialize -> MasterHandle state context input output -> IO WrappedSerialize
-    master' redis rid r mh = wrapSerialize <$> master redis rid (unwrapSerialize r) mh
