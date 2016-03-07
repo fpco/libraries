@@ -7,6 +7,7 @@
 module Distributed.Stateful
   ( WorkerArgs(..)
   , runWorker
+  , runMaster
     -- * Re-exports
   , MasterArgs(..)
   , WorkerConfig(..)
@@ -26,6 +27,7 @@ import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger (LoggingT, runLoggingT, logErrorN)
 import qualified Data.Serialize as B
 import qualified Data.Conduit.Network as CN
+import           Data.Streaming.Network (serverSettingsTCP, setAfterBind)
 import           Data.Streaming.NetworkMessage
 import           Distributed.JobQueue.Worker hiding (MasterFunc, SlaveFunc)
 import           Distributed.RedisQueue
@@ -33,6 +35,7 @@ import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
 import           Distributed.Stateful.Slave
 import           FP.Redis
+import           Network.Socket (socketPort)
 import           System.Timeout (timeout)
 
 data WorkerArgs = WorkerArgs
@@ -98,7 +101,7 @@ runWorker WorkerArgs {..} logFunc slave master =
             CN.runGeneralTCPServer ss $ runNMApp nms $ \nm -> do
               addSlaveConnection mh nm
               readMVar doneVar
-      let runMaster = do
+      let runMaster' = do
             res <- timeout (1000 * 1000 * fromIntegral (unSeconds waMasterWaitTime)) $
               atomically (check . (== waRequestSlaveCount) =<< getSlaveCount mh)
             slaveCount <- atomically (getSlaveCount mh)
@@ -111,7 +114,68 @@ runWorker WorkerArgs {..} logFunc slave master =
       let requestSlaves = runLogger $
             mapM_ (\_ -> requestSlave (wpRedis wp) =<< getMci) [1..waRequestSlaveCount]
       liftIO $ withAsync (requestSlaves `concurrently` acceptConns) $ \_ ->
-        runMaster `finally` putMVar doneVar ()
+        runMaster' `finally` putMVar doneVar ()
+
+-- | Runs a job-queue master computation which will recruit slaves to perform
+-- subtasks. The provided master computation is guaranteed to run locally, and
+-- can take advantage of shared memory primitive and already captured closures
+-- (unlike 'runWorker', where the master function will run remotely).
+runMaster
+    :: forall state context input output response.
+     ( NFData state, NFData output
+     , Sendable state, Sendable context, Sendable input, Sendable output, Sendable response
+     )
+    => WorkerArgs
+    -- ^ Settings to use to run the worker.
+    -> LogFunc
+    -- ^ Logger function
+    -> (RedisInfo -> MasterHandle state context input output -> IO response)
+    -- ^ This function runs locally after some slaves have connected. The
+    -- function is expected to use functions which take 'MasterHandle' to send
+    -- work to its slaves. In particular:
+    --
+    -- 'resetStates' should be used to initialize the states.
+    --
+    -- 'update' should be invoked in order to execute the computation.
+    --
+    -- 'getStates' should be used to fetch result states (if necessary).
+    -> IO response
+runMaster WorkerArgs {..} logFunc master =
+    runLoggingT master' logFunc
+  where
+    runLogger f = runLoggingT f logFunc
+    master' :: LoggingT IO response
+    master' = withRedis' waConfig $ \redisInfo -> do
+      mh <- mkMasterHandle waMasterArgs logFunc
+      nms <- liftIO nmsSettings
+      doneVar <- newEmptyMVar
+      boundPort <- newEmptyMVar
+
+      let ss = setAfterBind
+                (putMVar boundPort . fromIntegral <=< socketPort)
+                (serverSettingsTCP (workerPort waConfig) "*")
+          getMci = do
+            port <- readMVar boundPort
+            return $ MasterConnectInfo (workerHostName waConfig) port
+
+      let acceptConns =
+            CN.runGeneralTCPServer ss $ runNMApp nms $ \nm -> do
+              addSlaveConnection mh nm
+              readMVar doneVar
+      let runMaster' = do
+            res <- timeout (1000 * 1000 * fromIntegral (unSeconds waMasterWaitTime)) $
+              atomically (check . (== waRequestSlaveCount) =<< getSlaveCount mh)
+            slaveCount <- atomically (getSlaveCount mh)
+            case (res, slaveCount) of
+              (Nothing, 0) -> do
+                runLogger $ logErrorN "Timed out waiting for slaves to connect"
+                -- FIXME: need a way to cancel being a master.
+                fail "Timed out waiting for slaves to connect. (see FIXME comment in code)"
+              _ -> liftIO $ master redisInfo mh
+      let requestSlaves = runLogger $
+            mapM_ (\_ -> requestSlave redisInfo =<< getMci) [1..waRequestSlaveCount]
+      liftIO $ withAsync (requestSlaves `concurrently` acceptConns) $ \_ ->
+        runMaster' `finally` putMVar doneVar ()
 
 nmsSettings :: IO NMSettings
 nmsSettings = do

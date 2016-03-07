@@ -30,6 +30,9 @@ module Distributed.JobQueue.Worker
     , slaveHandleNMExceptions
     -- * For internal usage by tests
     , slaveRequestsKey
+    , withRedis'
+    , LogTag (..)
+    , withLogTag
     ) where
 
 import ClassyPrelude
