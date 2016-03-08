@@ -125,7 +125,7 @@ runSlave WorkerArgs {..} logFunc slave nms mci onInit = void $ do
 runMaster
     :: forall state context input output response.
      ( NFData state, NFData output
-     , Sendable state, Sendable context, Sendable input, Sendable output, Sendable response
+     , Sendable state, Sendable context, Sendable input, Sendable output
      )
     => WorkerArgs
     -> LogFunc
