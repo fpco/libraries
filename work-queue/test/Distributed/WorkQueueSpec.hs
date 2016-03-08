@@ -265,7 +265,7 @@ runArgs' config initialData calc' inner' = do
 -- Wait for a connection to the test socket to succeed, indicating
 -- that the master is accepting connections.
 waitForSocket :: IO ()
-waitForSocket = loop (100 :: Int)
+waitForSocket = loop (400 :: Int)
   where
     loop 0 = fail "Ran out of waitForSocket retries."
     loop n = do
