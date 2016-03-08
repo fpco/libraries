@@ -36,6 +36,8 @@ module Data.Streaming.NetworkMessage
     , defaultNMSettings
     , setNMHeartbeat
     , getNMHeartbeat
+      -- * Util
+    , getPortAfterBind
     ) where
 
 import           ClassyPrelude
@@ -43,17 +45,20 @@ import           Control.Concurrent (threadDelay, myThreadId, throwTo)
 import qualified Control.Concurrent.Async as A
 import           Control.Concurrent.STM (retry)
 import           Control.DeepSeq (NFData)
-import           Control.Exception (AsyncException(ThreadKilled))
+import           Control.Exception (AsyncException(ThreadKilled), BlockedIndefinitelyOnMVar(..))
 import           Control.Monad.Base (liftBase)
 import           Control.Monad.Trans.Control (MonadBaseControl, control)
 import qualified Data.ByteString as BS
+import qualified Data.Conduit.Network as CN
 import           Data.Function (fix)
 import qualified Data.Serialize as B
 import           Data.Streaming.Network (AppData, appRead, appWrite)
+import           Data.Streaming.Network (ServerSettings, serverSettingsTCP, setAfterBind)
 import           Data.TypeFingerprint
 import           Data.Typeable (Proxy(..), typeRep)
 import           Data.Void (absurd)
 import           GHC.IO.Exception (IOException(ioe_type), IOErrorType(ResourceVanished))
+import           Network.Socket (socketPort)
 import           System.Executable.Hash (executableHash)
 
 -- | A network message application.
@@ -410,3 +415,18 @@ setNMHeartbeat x y = y { _nmHeartbeat = x }
 -- | Gets the heartbeat time, in microseconds.
 getNMHeartbeat :: NMSettings -> Int
 getNMHeartbeat = _nmHeartbeat
+
+-- | Creates a new 'ServerSettings', which will populate an 'MVar' with
+-- the bound port. An action is returned which will unblock once there's
+-- a result.
+getPortAfterBind :: ServerSettings -> IO (ServerSettings, IO Int)
+getPortAfterBind ss = do
+    boundPortVar <- newEmptyMVar
+    let ss' = setAfterBind
+            (putMVar boundPortVar . fromIntegral <=< socketPort)
+            ss
+    return
+        ( ss'
+        , readMVar boundPortVar `catch` \BlockedIndefinitelyOnMVar ->
+            error "Port will never get bound, thread got blocked indefinitely."
+        )

@@ -7,6 +7,9 @@
 module Distributed.Stateful
   ( WorkerArgs(..)
   , runWorker
+    -- * Run Master and Slave without job-queue
+  , runSlave
+  , runMaster
     -- * Re-exports
   , MasterArgs(..)
   , WorkerConfig(..)
@@ -23,7 +26,7 @@ import           ClassyPrelude
 import           Control.Concurrent.Async (withAsync, concurrently)
 import           Control.Concurrent.STM (check)
 import           Control.DeepSeq (NFData)
-import           Control.Monad.Logger (LoggingT, runLoggingT, logErrorN)
+import           Control.Monad.Logger (LoggingT(..), runLoggingT, logErrorN)
 import qualified Data.Serialize as B
 import qualified Data.Conduit.Network as CN
 import           Data.Streaming.NetworkMessage
@@ -31,7 +34,8 @@ import           Distributed.JobQueue.Worker hiding (MasterFunc, SlaveFunc)
 import           Distributed.RedisQueue
 import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
-import           Distributed.Stateful.Slave
+import           Distributed.Stateful.Slave hiding (runSlave)
+import qualified Distributed.Stateful.Slave as Slave
 import           FP.Redis
 import           System.Timeout (timeout)
 
@@ -49,6 +53,8 @@ data WorkerArgs = WorkerArgs
     -- ^ How long to wait for slaves to connect (if no slaves connect in
     -- this time, then the work gets aborted). If all the requested
     -- slaves connect, then waiting is aborted.
+  -- TODO
+  -- , waLogFunc :: LogFunc
   }
 
 -- | Runs a job-queue worker which implements a stateful distributed
@@ -77,41 +83,93 @@ runWorker
     --
     -- 'getStates' should be used to fetch result states (if necessary).
     -> IO ()
-runWorker WorkerArgs {..} logFunc slave master =
-    runLoggingT (jobQueueNode waConfig slave' master') logFunc
+runWorker wa@WorkerArgs {..} logFunc slave master =
+    runLogger (jobQueueNode waConfig slave' master')
   where
     runLogger f = runLoggingT f logFunc
-    slave' :: WorkerParams -> MasterConnectInfo -> IO () -> LoggingT IO ()
-    slave' wp mci onInit = void $ slaveHandleNMExceptions mci $ liftIO $ runSlave SlaveArgs
-      { saUpdate = slave
-      , saInit = onInit
-      , saClientSettings = CN.clientSettings (mciPort mci) (mciHost mci)
-      , saNMSettings = wpNMSettings wp
-      , saLogFunc = logFunc
-      }
+    slave' wp mci onInit = runSlave wa logFunc slave (wpNMSettings wp) mci onInit
     master' :: WorkerParams -> CN.ServerSettings -> RequestId -> request -> LoggingT IO MasterConnectInfo -> LoggingT IO response
-    master' wp ss rid r getMci = do
-      mh <- mkMasterHandle waMasterArgs logFunc
-      nms <- liftIO nmsSettings
-      doneVar <- newEmptyMVar
-      let acceptConns =
-            CN.runGeneralTCPServer ss $ runNMApp nms $ \nm -> do
-              addSlaveConnection mh nm
-              readMVar doneVar
-      let runMaster = do
-            res <- timeout (1000 * 1000 * fromIntegral (unSeconds waMasterWaitTime)) $
-              atomically (check . (== waRequestSlaveCount) =<< getSlaveCount mh)
-            slaveCount <- atomically (getSlaveCount mh)
-            case (res, slaveCount) of
-              (Nothing, 0) -> do
-                runLogger $ logErrorN "Timed out waiting for slaves to connect"
-                -- FIXME: need a way to cancel being a master.
-                fail "Timed out waiting for slaves to connect. (see FIXME comment in code)"
-              _ -> liftIO $ master (wpRedis wp) rid r mh
-      let requestSlaves = runLogger $
-            mapM_ (\_ -> requestSlave (wpRedis wp) =<< getMci) [1..waRequestSlaveCount]
-      liftIO $ withAsync (requestSlaves `concurrently` acceptConns) $ \_ ->
-        runMaster `finally` putMVar doneVar ()
+    master' wp ss rid r getMci = LoggingT $ \_ -> do
+        let requestSlaves = mapM_ (\_ -> requestSlave (wpRedis wp) =<< getMci) [1..waRequestSlaveCount]
+        withAsync (runLogger requestSlaves) $ \_ ->
+            runMasterImpl wa logFunc (master (wpRedis wp) rid r) ss
+
+-- | Runs a slave worker, which connects to the specified master.
+runSlave
+    :: forall state context input output.
+     ( NFData state, NFData output
+     , Sendable state, Sendable context, Sendable input, Sendable output
+     )
+    => WorkerArgs
+    -> LogFunc
+    -> (context -> input -> state -> IO (state, output))
+       -- ^ Computation function
+    -> NMSettings
+    -> MasterConnectInfo
+    -> IO ()
+       -- ^ Init action - run once connection is established.
+    -> LoggingT IO ()
+runSlave WorkerArgs {..} logFunc slave nms mci onInit = void $ do
+  let runLogger f = runLoggingT f logFunc
+  slaveHandleNMExceptions mci $ liftIO $ Slave.runSlave SlaveArgs
+    { saUpdate = slave
+    , saInit = onInit
+    , saClientSettings = CN.clientSettings (mciPort mci) (mciHost mci)
+    , saNMSettings = nms
+    , saLogFunc = logFunc
+    }
+
+-- | Runs a master worker, which delegates work to slaves. It is the
+-- responsiblity of the user to tell the slaves to connect with this
+-- master.
+runMaster
+    :: forall state context input output response.
+     ( NFData state, NFData output
+     , Sendable state, Sendable context, Sendable input, Sendable output, Sendable response
+     )
+    => WorkerArgs
+    -> LogFunc
+    -> (IO MasterConnectInfo -> MasterHandle state context input output -> IO response)
+    -> CN.ServerSettings
+    -> IO response
+runMaster wa logFunc master ss = do
+    (ss', getPort) <- getPortAfterBind ss
+    let getMci = do
+            port <- getPort
+            return $ MasterConnectInfo (workerHostName (waConfig wa)) port
+    runMasterImpl wa logFunc (master getMci) ss'
+
+runMasterImpl
+    :: forall state context input output response.
+     ( NFData state, NFData output
+     , Sendable state, Sendable context, Sendable input, Sendable output
+     )
+    => WorkerArgs
+    -> LogFunc
+    -> (MasterHandle state context input output -> IO response)
+    -> CN.ServerSettings
+    -> IO response
+runMasterImpl WorkerArgs{..} logFunc master ss = do
+    let runLogger f = runLoggingT f logFunc
+    mh <- mkMasterHandle waMasterArgs logFunc
+    nms <- liftIO nmsSettings
+    doneVar <- newEmptyMVar
+    let acceptConns =
+          CN.runGeneralTCPServer ss $ runNMApp nms $ \nm -> do
+            addSlaveConnection mh nm
+            readMVar doneVar
+    let runMaster' = do
+          res <- timeout (1000 * 1000 * fromIntegral (unSeconds waMasterWaitTime)) $
+            atomically (check . (== waRequestSlaveCount) =<< getSlaveCount mh)
+          slaveCount <- atomically (getSlaveCount mh)
+          case (res, slaveCount) of
+            (Nothing, 0) -> do
+              runLogger $ logErrorN "Timed out waiting for slaves to connect"
+              -- FIXME: need a way to cancel being a master.
+              fail "Timed out waiting for slaves to connect. (see FIXME comment in code)"
+            _ -> liftIO $ master mh
+    liftIO $ withAsync acceptConns $ \_ ->
+        runMaster' `finally` putMVar doneVar ()
 
 nmsSettings :: IO NMSettings
 nmsSettings = do

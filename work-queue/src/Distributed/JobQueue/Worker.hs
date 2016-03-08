@@ -40,8 +40,8 @@ import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import Data.Bits (xor)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Serialize (Serialize, encode)
-import Data.Streaming.Network (ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP, setAfterBind)
-import Data.Streaming.NetworkMessage (NMSettings, Sendable, defaultNMSettings, setNMHeartbeat, NetworkMessageException(..))
+import Data.Streaming.Network (ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP)
+import Data.Streaming.NetworkMessage
 import Data.TypeFingerprint
 import Data.Typeable (Proxy(..), typeRep)
 import Data.UUID as UUID
@@ -55,7 +55,6 @@ import Distributed.WorkQueue
 import FP.Redis
 import FP.ThreadFileLogger
 import GHC.IO.Exception (IOException(IOError))
-import Network.Socket (socketPort)
 import System.Posix.Process (getProcessID)
 
 -- | Configuration of a 'jobQueueWorker'.
@@ -405,12 +404,10 @@ becomeMaster params@WorkerParams{..} k req master = do
         decoded <- decodeOrThrow "jobQueueWorker" jrBody
         let WorkerConfig{..} = wpConfig
         watchForCancel wpRedis k workerCancellationCheckIvl $ do
+            (ss, getPort) <- liftIO $ getPortAfterBind (serverSettingsTCP workerPort "*")
             boundPort <- newEmptyMVar
-            let ss = setAfterBind
-                    (putMVar boundPort . fromIntegral <=< socketPort)
-                    (serverSettingsTCP workerPort "*")
             master params ss k decoded $ do
-                port <- readMVar boundPort
+                port <- liftIO getPort
                 return $ MasterConnectInfo workerHostName port
     case eres of
         Left err -> do
