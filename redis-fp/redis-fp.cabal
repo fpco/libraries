@@ -47,6 +47,7 @@ library
                       ,conduit-extra
                       ,containers
                       ,data-default-class
+                      ,deepseq
                       ,exceptions
                       ,dlist
                       ,lifted-base

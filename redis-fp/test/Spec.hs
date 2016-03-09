@@ -1,14 +1,17 @@
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
 import ClassyPrelude
 import Control.Concurrent.Async (Async, async, waitCatch, cancel, poll)
 import Control.Concurrent.Lifted (threadDelay, fork, killThread)
 import Control.Concurrent.STM (check)
+import Control.Exception (throw)
 import Control.Monad.Logger (runStdoutLoggingT, LoggingT)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import FP.Redis
@@ -118,6 +121,13 @@ spec = do
         count `shouldBe` (cnt * cnt)
         -- Kill all the listeners
         mapM_ (cancel . snd) listeners
+    it "evaluates exceptions when enqueing" $ do
+        (eres :: Either RedisTestException (IO Bool)) <-
+            try $ withRedis $ \redis ->
+                sendCommand redis (set "testkey" (throw RedisTestException) [])
+        case eres of
+            Left RedisTestException -> return ()
+            _ -> fail $ "Expected RedisTestException"
 
 skip :: Monad m => m () -> m ()
 skip _ = return ()

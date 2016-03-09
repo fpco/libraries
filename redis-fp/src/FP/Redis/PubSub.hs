@@ -1,6 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude, OverloadedStrings, ScopedTypeVariables, TypeFamilies,
              DeriveDataTypeable, FlexibleContexts, FlexibleInstances, RankNTypes, GADTs,
-             ConstraintKinds, NamedFieldPuns #-}
+             ConstraintKinds, NamedFieldPuns, BangPatterns #-}
 
 -- | Redis publish/subscribe.
 -- See <http://redis.io/commands#pubsub>.
@@ -24,6 +24,7 @@ module FP.Redis.PubSub
 --TODO SHOULD: use a connection pool, and re-use a single connection for all subscriptions
 
 import ClassyPrelude.Conduit hiding (connect)
+import Control.DeepSeq (deepseq)
 import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..))
 import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty)
@@ -196,5 +197,6 @@ punsubscribe channelPatterns = makeSubscription "PUNSUBSCRIBE" (fmap encodeArg c
 
 -- | Make a subscription request
 makeSubscription :: ByteString -> [ByteString] -> SubscriptionRequest
-makeSubscription cmd args =
+makeSubscription !cmd !args =
+    deepseq args $
     SubscriptionRequest (Subscription (renderRequest (encodeArg cmd:(toList args))))

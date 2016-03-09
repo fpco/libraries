@@ -1,6 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude, OverloadedStrings, ScopedTypeVariables, TypeFamilies,
              DeriveDataTypeable, FlexibleContexts, FlexibleInstances, RankNTypes, GADTs,
-             ConstraintKinds, NamedFieldPuns, ViewPatterns #-}
+             ConstraintKinds, NamedFieldPuns, ViewPatterns, BangPatterns #-}
 
 -- | Redis internal utilities.
 
@@ -13,6 +13,7 @@ import ClassyPrelude.Conduit hiding (Builder)
 import Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.Async as Async
 import Control.Concurrent.STM (retry)
+import Control.DeepSeq (deepseq)
 import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..), BlockedIndefinitelyOnSTM(..))
 import Control.Monad.Catch (Handler(Handler))
 import Control.Retry (RetryPolicy(RetryPolicy))
@@ -30,7 +31,8 @@ takeMVarE exception mvar =
 
 -- | Make a command request
 makeCommand :: (Result a) => ByteString -> [ByteString] -> CommandRequest a
-makeCommand cmd args =
+makeCommand !cmd !args =
+    deepseq args $
     CommandRequest (Command (renderRequest (encodeArg cmd:args)))
 
 -- | Add a request to the requests queue.  Blocks if waiting for too many responses.
