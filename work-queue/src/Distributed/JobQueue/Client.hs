@@ -42,7 +42,7 @@ import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Data.Serialize (encode)
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.TypeFingerprint
-import           Data.Typeable (typeRep, Proxy(..))
+import           Data.Typeable (Proxy(..))
 import           Data.Void (absurd, Void)
 import           Distributed.JobQueue.Heartbeat (checkHeartbeats)
 import           Distributed.JobQueue.Shared

@@ -20,9 +20,7 @@ import           Control.Monad.Logger (runLoggingT, logDebugNS)
 import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
-import qualified Data.Serialize as B
 import qualified Data.Streaming.NetworkMessage as NM
-import           Data.TypeFingerprint
 import           Distributed.Stateful.Internal
 
 -- | Arguments for 'runSlave'.

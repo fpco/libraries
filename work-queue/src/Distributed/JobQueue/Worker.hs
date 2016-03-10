@@ -34,16 +34,15 @@ module Distributed.JobQueue.Worker
 
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (Async, async, withAsync, cancel, cancelWith, waitEither)
+import Control.Concurrent.Async (Async, cancel, cancelWith, waitEither)
 import Control.Monad.Logger (MonadLogger, logErrorS, logInfoS, logDebugS, logWarnS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import Data.Bits (xor)
-import Data.List.NonEmpty (NonEmpty((:|)))
-import Data.Serialize (Serialize, encode)
+import Data.Serialize (encode)
 import Data.Streaming.Network (ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP)
 import Data.Streaming.NetworkMessage
 import Data.TypeFingerprint
-import Data.Typeable (Proxy(..), typeRep)
+import Data.Typeable (Proxy(..))
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
 import Data.WorkQueue
@@ -166,7 +165,7 @@ jobQueueWorker config calc distribute =
             runSlave settings wpNMSettings (\() -> init) (\() -> calc)
         case meres of
             Nothing -> return ()
-            Just (Right x) -> $logInfoS "runSlave" (tshow wpId ++ " done being slave of " ++ tshow mci)
+            Just (Right ()) -> $logInfoS "runSlave" (tshow wpId ++ " done being slave of " ++ tshow mci)
             Just (Left err) -> do
                 $logErrorS "runSlave" $ "Slave threw exception: " ++ tshow err
                 liftIO $ throwIO err
@@ -405,7 +404,6 @@ becomeMaster params@WorkerParams{..} k req master = do
         let WorkerConfig{..} = wpConfig
         watchForCancel wpRedis k workerCancellationCheckIvl $ do
             (ss, getPort) <- liftIO $ getPortAfterBind (serverSettingsTCP workerPort "*")
-            boundPort <- newEmptyMVar
             master params ss k decoded $ do
                 port <- liftIO getPort
                 return $ MasterConnectInfo workerHostName port

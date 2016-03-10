@@ -44,18 +44,15 @@ import           ClassyPrelude
 import           Control.Concurrent (threadDelay, myThreadId, throwTo)
 import qualified Control.Concurrent.Async as A
 import           Control.Concurrent.STM (retry)
-import           Control.DeepSeq (NFData)
 import           Control.Exception (AsyncException(ThreadKilled), BlockedIndefinitelyOnMVar(..))
 import           Control.Monad.Base (liftBase)
 import           Control.Monad.Trans.Control (MonadBaseControl, control)
-import qualified Data.ByteString as BS
-import qualified Data.Conduit.Network as CN
 import           Data.Function (fix)
 import qualified Data.Serialize as B
 import           Data.Streaming.Network (AppData, appRead, appWrite)
-import           Data.Streaming.Network (ServerSettings, serverSettingsTCP, setAfterBind)
+import           Data.Streaming.Network (ServerSettings, setAfterBind)
 import           Data.TypeFingerprint
-import           Data.Typeable (Proxy(..), typeRep)
+import           Data.Typeable (Proxy(..))
 import           Data.Void (absurd)
 import           GHC.IO.Exception (IOException(ioe_type), IOErrorType(ResourceVanished))
 import           Network.Socket (socketPort)

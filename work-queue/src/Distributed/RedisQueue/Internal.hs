@@ -26,7 +26,6 @@ import qualified Data.ByteString.Char8 as BS8
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import qualified Data.Text as T
 import           Data.Time.Clock.POSIX
-import           Data.Typeable (Proxy(..), typeRep)
 import           FP.Redis
 import           FP.Redis.Internal (recoveringWithReset)
 

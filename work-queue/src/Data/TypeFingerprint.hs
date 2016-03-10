@@ -5,7 +5,6 @@
 
 module Data.TypeFingerprint where
 
-import qualified Data.ByteString as BS
 import           Data.Hashable (Hashable(hash))
 import qualified Data.Serialize as B
 import           Data.Typeable.Internal

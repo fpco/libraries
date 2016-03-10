@@ -16,7 +16,7 @@ import           Data.List (intersect, delete)
 import           Data.List.Split (chunksOf)
 import           Data.Streaming.Network (getSocketFamilyTCP)
 import           Data.Streaming.NetworkMessage (Sendable)
-import           Data.TypeFingerprintSpec
+import           Data.TypeFingerprintSpec ()
 import           Distributed.JobQueue
 import           Distributed.RedisQueue
 import           Distributed.TestUtil

@@ -27,7 +27,7 @@ import           Data.TypeFingerprint (mkManyHasTypeFingerprint)
 import           Data.TypeFingerprintSpec ()
 import           Distributed.JobQueue.Client.NewApi
 import           Distributed.RedisQueue (RedisInfo)
-import           Distributed.Stateful hiding (runSlave)
+import           Distributed.Stateful
 import           Distributed.Stateful.Internal (StateId(..))
 import           Distributed.Stateful.Master
 import           Distributed.Stateful.Slave
