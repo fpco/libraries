@@ -4,12 +4,13 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Distributed.Stateful
   ( WorkerArgs(..)
   , runWorker
     -- * Run Master and Slave without job-queue
-  , runSlave
-  , runMaster
+  , runSlaveRedis
+  , runMasterRedis
     -- * Re-exports
   , MasterArgs(..)
   , WorkerConfig(..)
@@ -20,22 +21,23 @@ module Distributed.Stateful
   , resetStates
   , getStateIds
   , getStates
+  , requestSlave
   ) where
 
 import           ClassyPrelude
-import           Control.Concurrent.Async (withAsync, concurrently)
+import           Control.Concurrent.Async (withAsync)
 import           Control.Concurrent.STM (check)
 import           Control.DeepSeq (NFData)
-import           Control.Monad.Logger (LoggingT(..), runLoggingT, logErrorN)
-import qualified Data.Serialize as B
+import           Control.Monad.Logger
 import qualified Data.Conduit.Network as CN
 import           Data.Streaming.NetworkMessage
 import           Distributed.JobQueue.Worker hiding (MasterFunc, SlaveFunc)
+import           Distributed.JobQueue.Shared (popSlaveRequest, takeMVarE)
 import           Distributed.RedisQueue
 import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
 import           Distributed.Stateful.Slave hiding (runSlave)
-import qualified Distributed.Stateful.Slave as Slave
+import           Distributed.Stateful.Slave
 import           FP.Redis
 import           System.Timeout (timeout)
 
@@ -87,15 +89,46 @@ runWorker wa@WorkerArgs {..} logFunc slave master =
     runLogger (jobQueueNode waConfig slave' master')
   where
     runLogger f = runLoggingT f logFunc
-    slave' wp mci onInit = runSlave wa logFunc slave (wpNMSettings wp) mci onInit
+    slave' wp mci onInit = liftIO $ runSlaveImpl wa logFunc slave (wpNMSettings wp) mci onInit
     master' :: WorkerParams -> CN.ServerSettings -> RequestId -> request -> LoggingT IO MasterConnectInfo -> LoggingT IO response
     master' wp ss rid r getMci = LoggingT $ \_ -> do
         let requestSlaves = mapM_ (\_ -> requestSlave (wpRedis wp) =<< getMci) [1..waRequestSlaveCount]
         withAsync (runLogger requestSlaves) $ \_ ->
             runMasterImpl wa logFunc (master (wpRedis wp) rid r) ss
 
--- | Runs a slave worker, which connects to the specified master.
-runSlave
+-- | Runs a slave worker, which connects to the specified master.  Redis is used
+-- to inform the slaves of how to connect to the master.
+runSlaveRedis
+    :: forall state context input output void.
+     ( NFData state, NFData output
+     , Sendable state, Sendable context, Sendable input, Sendable output
+     )
+    => WorkerArgs
+    -> LogFunc
+    -> (RedisInfo -> context -> input -> state -> IO (state, output))
+       -- ^ Computation function
+    -> NMSettings
+    -> IO ()
+       -- ^ Init action - run once connection is established.
+    -> IO void
+runSlaveRedis wa logFunc slave nms onInit = do
+    let runLogger f = runLoggingT f logFunc
+    runLogger $ withWorkerRedis (waConfig wa) $ \redis -> do
+        (notifiedMVar, unsub) <- subscribeToRequests redis
+        (`finally` liftIO unsub) $ forever $ do
+            mmci <- popSlaveRequest redis
+            case mmci of
+                Nothing -> do
+                    $logDebugS "runSlaveRedis" "Waiting for request notification"
+                    takeMVarE notifiedMVar NoLongerWaitingForRequest
+                    $logDebugS "runSlaveRedis" "Got request notification"
+                Just mci -> do
+                    $logDebugS "runSlaveRedis" ("Got slave request: " <> tshow mci)
+                    void $ slaveHandleNMExceptions mci $ do
+                        liftIO $ runSlaveImpl wa logFunc (slave redis) nms mci onInit
+                        $logDebugS "runSlaveRedis" ("Done being a slave of " <> tshow mci)
+
+runSlaveImpl
     :: forall state context input output.
      ( NFData state, NFData output
      , Sendable state, Sendable context, Sendable input, Sendable output
@@ -108,21 +141,22 @@ runSlave
     -> MasterConnectInfo
     -> IO ()
        -- ^ Init action - run once connection is established.
-    -> LoggingT IO ()
-runSlave WorkerArgs {..} logFunc slave nms mci onInit = void $ do
-  let runLogger f = runLoggingT f logFunc
-  slaveHandleNMExceptions mci $ liftIO $ Slave.runSlave SlaveArgs
-    { saUpdate = slave
-    , saInit = onInit
-    , saClientSettings = CN.clientSettings (mciPort mci) (mciHost mci)
-    , saNMSettings = nms
-    , saLogFunc = logFunc
-    }
+    -> IO ()
+runSlaveImpl WorkerArgs {..} logFunc slave nms mci onInit = do
+    let runLogger f = runLoggingT f logFunc
+    void $ runLogger $ slaveHandleNMExceptions mci $ liftIO $ runSlave SlaveArgs
+        { saUpdate = slave
+        , saInit = onInit
+        , saClientSettings = CN.clientSettings (mciPort mci) (mciHost mci)
+        , saNMSettings = nms
+        , saLogFunc = logFunc
+        }
 
--- | Runs a master worker, which delegates work to slaves. It is the
--- responsiblity of the user to tell the slaves to connect with this
--- master.
-runMaster
+-- | Runs a master worker, which delegates work to slaves. Redis is used
+-- to inform the slaves of how to connect to the master.
+--
+-- Use 'requestSlave' to request that slaves connect and take work.
+runMasterRedis
     :: forall state context input output response.
      ( NFData state, NFData output
      , Sendable state, Sendable context, Sendable input, Sendable output
@@ -132,7 +166,7 @@ runMaster
     -> (IO MasterConnectInfo -> MasterHandle state context input output -> IO response)
     -> CN.ServerSettings
     -> IO response
-runMaster wa logFunc master ss = do
+runMasterRedis wa logFunc master ss = do
     (ss', getPort) <- getPortAfterBind ss
     let getMci = do
             port <- getPort

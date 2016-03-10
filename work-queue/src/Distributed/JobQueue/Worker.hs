@@ -28,8 +28,8 @@ module Distributed.JobQueue.Worker
     , DistributedJobQueueException(..)
     -- * Utility
     , slaveHandleNMExceptions
-    -- * For internal usage by tests
-    , slaveRequestsKey
+    , withWorkerRedis
+    , subscribeToRequests
     ) where
 
 import ClassyPrelude
@@ -213,7 +213,7 @@ jobQueueNode
 jobQueueNode wpConfig slave master = do
     wpId <- liftIO getWorkerId
     let wpName = "worker-" ++ tshow (unWorkerId wpId)
-    withLogTag (LogTag wpName) $ withRedis' wpConfig $ \wpRedis -> do
+    withLogTag (LogTag wpName) $ withWorkerRedis wpConfig $ \wpRedis -> do
         wpNMSettings <-
             setNMHeartbeat (workerConnectionHeartbeatIvlMicros wpConfig )  <$>
             liftIO defaultNMSettings
@@ -363,7 +363,7 @@ jobQueueWorkerInternal params@WorkerParams{..} slave master = do
     withHeartbeats inner = do
         heartbeatSentVar <- newEmptyMVar
         let logTag = LogTag (wpName <> "-heartbeat")
-            runHeartbeats = withLogTag logTag $ withRedis' wpConfig $ \r ->
+            runHeartbeats = withLogTag logTag $ withWorkerRedis wpConfig $ \r ->
                 sendHeartbeats r (workerHeartbeatSendIvl wpConfig) wpId heartbeatSentVar
         withAsyncLifted runHeartbeats $ \heartbeatThread -> do
             takeMVarE heartbeatSentVar $ InternalJobQueueException $ concat
@@ -445,113 +445,14 @@ watchForCancel r k ivl f = do
                 "Unexpected BlockedIndefinitelyOnMVar exception in watchForCancel"
         Right () -> liftIO $ throwIO (RequestCanceledException k)
 
--- | This subscribes to the requests notification channel. The yielded
--- @MVar ()@ is filled when we receive a notification. The yielded @IO
--- ()@ action unsubscribes from the channel.
---
--- When the connection is lost, at reconnect, the notification MVar is
--- also filled. This way, things will still work even if we missed a
--- notification.
-subscribeToRequests
-    :: MonadConnect m
-    => RedisInfo
-    -> m (MVar (), IO ())
-subscribeToRequests redis = do
-    -- When filled, 'ready' indicates that the subscription has been established.
-    ready <- newEmptyMVar
-    -- This is the MVar yielded by the function. It gets filled when a
-    -- message is received on the channel.
-    notified <- newEmptyMVar
-    -- This stores the disconnection action provided by
-    -- 'withSubscription'.
-    disconnectVar <- newIORef (error "impossible: disconnectVar not initialized.")
-    let handleConnect dc = do
-            writeIORef disconnectVar dc
-            void $ tryPutMVar notified ()
-            void $ tryPutMVar ready ()
-    void $ asyncLifted $ logNest "subscribeToRequests" $
-        withSubscription redis (requestChannel redis) handleConnect $ \_ ->
-            void $ tryPutMVar notified ()
-    -- Wait for the subscription to connect before returning.
-    takeMVarE ready NoLongerWaitingForRequest
-    -- 'notified' also gets filled by 'handleConnect', since this is
-    -- needed when a reconnection occurs. We don't want it to be filled
-    -- for the initial connection, though, so we take it.
-    takeMVarE notified NoLongerWaitingForRequest
-    -- Since we waited for ready to be filled, disconnectVar must no
-    -- longer contains its error value.
-    unsub <- readIORef disconnectVar
-    return (notified, unsub)
-
 unsubscribeToRequests :: MonadConnect m => MaybeWithSubscription -> m ()
 unsubscribeToRequests NoSubscription = return ()
 unsubscribeToRequests (WithSubscription _ unsub) = liftIO unsub
 
--- * Slave Requests
-
--- | Hostname and port of the master the slave should connect to.  The
--- 'Serialize' instance for this is used to serialize this info to the
--- list stored at 'slaveRequestsKey'.
-data MasterConnectInfo = MasterConnectInfo
-    { mciHost :: ByteString
-    , mciPort :: Int
-    }
-    deriving (Generic, Show, Typeable)
-
-instance Serialize MasterConnectInfo
-
--- | This command is used by the master to request that a slave
--- connect to it.
---
--- This currently has the following caveats:
---
---   (1) The slave request is not guaranteed to be fulfilled, for
---   multiple reasons:
---
---       - All workers may be busy doing other work.
---
---       - The queue of slave requests might already be long.
---
---       - A worker might pop the slave request and then shut down
---       before establishing a connection to the master.
---
---   (2) A master may get slaves connecting to it that it didn't
---   request.  Here's why:
---
---       - When a worker stops being a master, it does not remove its
---       pending slave requests from the list.  This means they can
---       still be popped by workers.  Usually this means that the
---       worker will attempt to connect, fail, and find something else
---       to do.  However, in the case that the server becomes a master
---       again, it's possible that a slave will pop its request.
---
--- These caveats are not necessitated by any aspect of the overall
--- design, and may be resolved in the future.
-requestSlave
-    :: MonadCommand m
-    => RedisInfo
-    -> MasterConnectInfo
-    -> m ()
-requestSlave r mci = do
-    let encoded = encode mci
-    run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
-    notifyRequestAvailable r
-
--- | This command is used by a worker to fetch a 'MasterConnectInfo', if
--- one is available.
-popSlaveRequest :: MonadCommand m => RedisInfo -> m (Maybe MasterConnectInfo)
-popSlaveRequest r =
-    run r (rpop (slaveRequestsKey r)) >>=
-    mapM (decodeOrThrow "popSlaveRequest")
-
--- | Key used to for storing requests for slaves.
-slaveRequestsKey :: RedisInfo -> LKey
-slaveRequestsKey r = LKey $ Key $ redisKeyPrefix r <> "slave-requests"
-
 -- * Utilities
 
-withRedis' :: MonadConnect m => WorkerConfig -> (RedisInfo -> m a) -> m a
-withRedis' config = withRedis (workerKeyPrefix config) (workerConnectInfo config)
+withWorkerRedis :: MonadConnect m => WorkerConfig -> (RedisInfo -> m a) -> m a
+withWorkerRedis config = withRedis (workerKeyPrefix config) (workerConnectInfo config)
 
 getWorkerId :: IO WorkerId
 getWorkerId = do
@@ -559,9 +460,3 @@ getWorkerId = do
     (w1, w2, w3, w4) <- toWords <$> UUID.nextRandom
     let w1' = w1 `xor` fromIntegral pid
     return $ WorkerId $ UUID.toASCIIBytes $ UUID.fromWords w1' w2 w3 w4
-
-asyncLifted :: MonadBaseControl IO m => m () -> m (Async ())
-asyncLifted f = liftBaseWith $ \restore -> async (void (restore f))
-
-withAsyncLifted :: MonadBaseControl IO m => m () -> (Async () -> m ()) -> m ()
-withAsyncLifted f g = liftBaseWith $ \restore -> withAsync (void (restore f)) (void . restore . g)

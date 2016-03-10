@@ -42,7 +42,7 @@ library
                        Control.Exception.Mask
                        -- Exposed for testing purposes
                        Distributed.JobQueue.Heartbeat
-  other-modules:       Distributed.JobQueue.Shared
+                       Distributed.JobQueue.Shared
   build-depends:       base
                      , aeson
                      , async

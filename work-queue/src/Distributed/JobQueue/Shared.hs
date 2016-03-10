@@ -18,11 +18,16 @@ module Distributed.JobQueue.Shared
     , requestChannel
     , cancelKey
     , cancelValue
+    , subscribeToRequests
     -- * Request events
     , RequestEvent(..)
     , addRequestEvent
     , addRequestEnqueuedEvent
     , getRequestEvents
+    -- * Slave requests
+    , MasterConnectInfo(..)
+    , requestSlave
+    , popSlaveRequest
     -- * Schema version
     , redisSchemaVersion
     , setRedisSchemaVersion
@@ -31,12 +36,18 @@ module Distributed.JobQueue.Shared
     , DistributedJobQueueException(..)
     , wrapException
     , takeMVarE
+    -- * Misc utilities
+    , asyncLifted
+    , withAsyncLifted
+    -- * Exported for test
+    , slaveRequestsKey
     ) where
 
 import           ClassyPrelude
+import           Control.Concurrent.Async (Async, async, withAsync)
 import           Control.Exception (BlockedIndefinitelyOnMVar(..))
 import           Control.Monad.Logger (MonadLogger, logInfo, logWarn)
-import           Control.Monad.Trans.Control (MonadBaseControl)
+import           Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LBS
 import           Data.List.NonEmpty
@@ -48,6 +59,7 @@ import           Data.Typeable (typeOf)
 import           Distributed.RedisQueue
 import           Distributed.RedisQueue.Internal
 import           FP.Redis
+import           FP.ThreadFileLogger
 
 -- * Requests
 
@@ -78,6 +90,44 @@ cancelKey r k = VKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k <> 
 -- just the string @"cancel"@.
 cancelValue :: ByteString
 cancelValue = "cancel"
+
+-- | This subscribes to the requests notification channel. The yielded
+-- @MVar ()@ is filled when we receive a notification. The yielded @IO
+-- ()@ action unsubscribes from the channel.
+--
+-- When the connection is lost, at reconnect, the notification MVar is
+-- also filled. This way, things will still work even if we missed a
+-- notification.
+subscribeToRequests
+    :: MonadConnect m
+    => RedisInfo
+    -> m (MVar (), IO ())
+subscribeToRequests redis = do
+    -- When filled, 'ready' indicates that the subscription has been established.
+    ready <- newEmptyMVar
+    -- This is the MVar yielded by the function. It gets filled when a
+    -- message is received on the channel.
+    notified <- newEmptyMVar
+    -- This stores the disconnection action provided by
+    -- 'withSubscription'.
+    disconnectVar <- newIORef (error "impossible: disconnectVar not initialized.")
+    let handleConnect dc = do
+            writeIORef disconnectVar dc
+            void $ tryPutMVar notified ()
+            void $ tryPutMVar ready ()
+    void $ asyncLifted $ logNest "subscribeToRequests" $
+        withSubscription redis (requestChannel redis) handleConnect $ \_ ->
+            void $ tryPutMVar notified ()
+    -- Wait for the subscription to connect before returning.
+    takeMVarE ready NoLongerWaitingForRequest
+    -- 'notified' also gets filled by 'handleConnect', since this is
+    -- needed when a reconnection occurs. We don't want it to be filled
+    -- for the initial connection, though, so we take it.
+    takeMVarE notified NoLongerWaitingForRequest
+    -- Since we waited for ready to be filled, disconnectVar must no
+    -- longer contains its error value.
+    unsub <- readIORef disconnectVar
+    return (notified, unsub)
 
 -- * Request Events
 
@@ -127,6 +177,67 @@ getRequestEvents :: MonadCommand m => RedisInfo -> RequestId -> m [(UTCTime, Req
 getRequestEvents r k =
     run r (lrange (requestEventsKey r k) 0 (-1)) >>=
     mapM (decodeOrThrow "getRequestEvents")
+
+-- * Slave Requests
+
+-- | Hostname and port of the master the slave should connect to.  The
+-- 'Serialize' instance for this is used to serialize this info to the
+-- list stored at 'slaveRequestsKey'.
+data MasterConnectInfo = MasterConnectInfo
+    { mciHost :: ByteString
+    , mciPort :: Int
+    }
+    deriving (Generic, Show, Typeable)
+
+instance Serialize MasterConnectInfo
+
+-- | This command is used by the master to request that a slave
+-- connect to it.
+--
+-- This currently has the following caveats:
+--
+--   (1) The slave request is not guaranteed to be fulfilled, for
+--   multiple reasons:
+--
+--       - All workers may be busy doing other work.
+--
+--       - The queue of slave requests might already be long.
+--
+--       - A worker might pop the slave request and then shut down
+--       before establishing a connection to the master.
+--
+--   (2) A master may get slaves connecting to it that it didn't
+--   request.  Here's why:
+--
+--       - When a worker stops being a master, it does not remove its
+--       pending slave requests from the list.  This means they can
+--       still be popped by workers.  Usually this means that the
+--       worker will attempt to connect, fail, and find something else
+--       to do.  However, in the case that the server becomes a master
+--       again, it's possible that a slave will pop its request.
+--
+-- These caveats are not necessitated by any aspect of the overall
+-- design, and may be resolved in the future.
+requestSlave
+    :: MonadCommand m
+    => RedisInfo
+    -> MasterConnectInfo
+    -> m ()
+requestSlave r mci = do
+    let encoded = encode mci
+    run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
+    notifyRequestAvailable r
+
+-- | This command is used by a worker to fetch a 'MasterConnectInfo', if
+-- one is available.
+popSlaveRequest :: MonadCommand m => RedisInfo -> m (Maybe MasterConnectInfo)
+popSlaveRequest r =
+    run r (rpop (slaveRequestsKey r)) >>=
+    mapM (decodeOrThrow "popSlaveRequest")
+
+-- | Key used to for storing requests for slaves.
+slaveRequestsKey :: RedisInfo -> LKey
+slaveRequestsKey r = LKey $ Key $ redisKeyPrefix r <> "slave-requests"
 
 -- * Schema version
 
@@ -281,3 +392,9 @@ wrapException ex =
 -- | Like 'takeMVar', but convert wrap 'BlockedIndefinitelyOnMVar' exception in other exception.
 takeMVarE :: (MonadBaseControl IO m, Exception ex) => MVar a -> ex -> m a
 takeMVarE mvar exception = takeMVar mvar `catch` \BlockedIndefinitelyOnMVar -> throwIO exception
+
+asyncLifted :: MonadBaseControl IO m => m () -> m (Async ())
+asyncLifted f = liftBaseWith $ \restore -> async (void (restore f))
+
+withAsyncLifted :: MonadBaseControl IO m => m () -> (Async () -> m ()) -> m ()
+withAsyncLifted f g = liftBaseWith $ \restore -> withAsync (void (restore f)) (void . restore . g)

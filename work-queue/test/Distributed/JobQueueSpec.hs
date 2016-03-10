@@ -35,6 +35,7 @@ import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.Time.Clock (diffUTCTime)
 import           Distributed.JobQueue
 import           Distributed.JobQueue.Status
+import           Distributed.JobQueue.Shared
 import           Distributed.RedisQueue
 import           Distributed.RedisQueue.Internal (run_)
 import           Distributed.TestUtil
