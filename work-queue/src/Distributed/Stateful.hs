@@ -25,7 +25,7 @@ module Distributed.Stateful
   ) where
 
 import           ClassyPrelude
-import           Control.Concurrent.Async (withAsync)
+import           Control.Concurrent.Async (withAsync, concurrently)
 import           Control.Concurrent.STM (check)
 import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger
@@ -91,10 +91,8 @@ runWorker wa@WorkerArgs {..} logFunc slave master =
     runLogger f = runLoggingT f logFunc
     slave' wp mci onInit = liftIO $ runSlaveImpl wa logFunc slave (wpNMSettings wp) mci onInit
     master' :: WorkerParams -> CN.ServerSettings -> RequestId -> request -> LoggingT IO MasterConnectInfo -> LoggingT IO response
-    master' wp ss rid r getMci = LoggingT $ \_ -> do
-        let requestSlaves = mapM_ (\_ -> requestSlave (wpRedis wp) =<< getMci) [1..waRequestSlaveCount]
-        withAsync (runLogger requestSlaves) $ \_ ->
-            runMasterImpl wa logFunc (master (wpRedis wp) rid r) ss
+    master' wp ss rid r getMci = LoggingT $ \_ ->
+        runMasterImpl wa logFunc (master (wpRedis wp) rid r) ss (runLogger getMci)
 
 -- | Runs a slave worker, which connects to the specified master.  Redis is used
 -- to inform the slaves of how to connect to the master.
@@ -163,7 +161,7 @@ runMasterRedis
      )
     => WorkerArgs
     -> LogFunc
-    -> (IO MasterConnectInfo -> MasterHandle state context input output -> IO response)
+    -> (MasterHandle state context input output -> IO response)
     -> CN.ServerSettings
     -> IO response
 runMasterRedis wa logFunc master ss = do
@@ -171,7 +169,7 @@ runMasterRedis wa logFunc master ss = do
     let getMci = do
             port <- getPort
             return $ MasterConnectInfo (workerHostName (waConfig wa)) port
-    runMasterImpl wa logFunc (master getMci) ss'
+    runMasterImpl wa logFunc master ss' getMci
 
 runMasterImpl
     :: forall state context input output response.
@@ -182,8 +180,9 @@ runMasterImpl
     -> LogFunc
     -> (MasterHandle state context input output -> IO response)
     -> CN.ServerSettings
+    -> IO MasterConnectInfo
     -> IO response
-runMasterImpl WorkerArgs{..} logFunc master ss = do
+runMasterImpl WorkerArgs{..} logFunc master ss getMci = do
     let runLogger f = runLoggingT f logFunc
     mh <- mkMasterHandle waMasterArgs logFunc
     nms <- liftIO nmsSettings
@@ -202,7 +201,9 @@ runMasterImpl WorkerArgs{..} logFunc master ss = do
               -- FIXME: need a way to cancel being a master.
               fail "Timed out waiting for slaves to connect. (see FIXME comment in code)"
             _ -> liftIO $ master mh
-    liftIO $ withAsync acceptConns $ \_ ->
+    let requestSlaves = withWorkerRedis waConfig $ \redis ->
+            mapM_ (\_ -> requestSlave redis =<< liftIO getMci) [1..waRequestSlaveCount]
+    liftIO $ withAsync (runLogger requestSlaves `concurrently` acceptConns) $ \_ ->
         runMaster' `finally` putMVar doneVar ()
 
 nmsSettings :: IO NMSettings
