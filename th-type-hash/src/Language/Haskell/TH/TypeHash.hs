@@ -8,17 +8,19 @@ module Language.Haskell.TH.TypeHash
 
 import Control.Monad ((<=<))
 import Data.Generics (listify)
-import Data.Hashable (Hashable(hash))
+import qualified Data.Serialize as C
+import qualified Crypto.Hash.SHA1 as SHA1
 import Data.List (sortBy)
 import Data.Ord (comparing)
 import Language.Haskell.TH
 import Language.Haskell.TH.Instances ()
 import Language.Haskell.TH.ReifyMany (reifyMany, reifyManyWithoutInstances)
 import Language.Haskell.TH.Syntax (lift)
+import qualified Data.ByteString as BS
 
 -- TODO: move into th-orphans, particularly if this library gets released.
-$(reifyManyWithoutInstances ''Hashable [''Info, ''Loc] (const True) >>=
-  mapM (\name -> return (InstanceD [] (AppT (ConT ''Hashable) (ConT name)) [])))
+$(reifyManyWithoutInstances ''C.Serialize [''Info, ''Loc] (const True) >>=
+  mapM (\name -> return (InstanceD [] (AppT (ConT ''C.Serialize) (ConT name)) [])))
 
 -- TODO: move into th-reify-many, particularly if this library gets released.
 reifyManyTyDecls :: ((Name, Info) -> Q (Bool, [Name]))
@@ -41,16 +43,18 @@ reifyManyTyDecls f = reifyMany go
 --
 -- The resulting expression is a literal of type 'Int'.
 thTypeHashForNames :: [Name] -> Q Exp
-thTypeHashForNames = lift . hash <=< getTypeInfosRecursively
+thTypeHashForNames ns = do
+    infos <- getTypeInfosRecursively ns
+    [| BS.pack $(lift (BS.unpack (SHA1.hash (C.encode infos)))) |]
 
--- | At compiletime, this yields a hash of the specified 'Type',
+-- | At compiletime, this yields a cryptographic hash of the specified 'Type',
 -- including the definition of things it references (transitively).
 --
 -- The resulting expression is a literal of type 'Int'.
 thTypeHash :: Type -> Q Exp
 thTypeHash ty = do
     infos <- getTypeInfosRecursively (listify (\_ -> True) ty)
-    lift (hash (ty, infos))
+    [| BS.pack $(lift (BS.unpack (SHA1.hash (C.encode (ty, infos))))) |]
 
 getTypeInfosRecursively :: [Name] -> Q [(Name, Info)]
 getTypeInfosRecursively names = do
