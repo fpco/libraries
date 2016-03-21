@@ -89,7 +89,7 @@ runWorker wa@WorkerArgs {..} logFunc slave master =
     runLogger (jobQueueNode waConfig slave' master')
   where
     runLogger f = runLoggingT f logFunc
-    slave' wp mci onInit = liftIO $ runSlaveImpl wa logFunc slave (wpNMSettings wp) mci onInit
+    slave' wp mci onInit = liftIO $ runSlaveImpl logFunc slave (wpNMSettings wp) mci onInit
     master' :: WorkerParams -> CN.ServerSettings -> RequestId -> request -> LoggingT IO MasterConnectInfo -> LoggingT IO response
     master' wp ss rid r getMci = LoggingT $ \_ ->
         runMasterImpl wa logFunc (master (wpRedis wp) rid r) ss (runLogger getMci)
@@ -101,7 +101,7 @@ runSlaveRedis
      ( NFData state, NFData output
      , Sendable state, Sendable context, Sendable input, Sendable output
      )
-    => WorkerArgs
+    => WorkerConfig
     -> LogFunc
     -> (RedisInfo -> context -> input -> state -> IO (state, output))
        -- ^ Computation function
@@ -109,9 +109,9 @@ runSlaveRedis
     -> IO ()
        -- ^ Init action - run once connection is established.
     -> IO void
-runSlaveRedis wa logFunc slave nms onInit = do
+runSlaveRedis wacfg logFunc slave nms onInit = do
     let runLogger f = runLoggingT f logFunc
-    runLogger $ withWorkerRedis (waConfig wa) $ \redis -> do
+    runLogger $ withWorkerRedis wacfg $ \redis -> do
         (notifiedMVar, unsub) <- subscribeToRequests redis
         (`finally` liftIO unsub) $ forever $ do
             mmci <- popSlaveRequest redis
@@ -123,7 +123,7 @@ runSlaveRedis wa logFunc slave nms onInit = do
                 Just mci -> do
                     $logDebugS "runSlaveRedis" ("Got slave request: " <> tshow mci)
                     void $ slaveHandleNMExceptions mci $ do
-                        liftIO $ runSlaveImpl wa logFunc (slave redis) nms mci onInit
+                        liftIO $ runSlaveImpl logFunc (slave redis) nms mci onInit
                         $logDebugS "runSlaveRedis" ("Done being a slave of " <> tshow mci)
 
 runSlaveImpl
@@ -131,8 +131,7 @@ runSlaveImpl
      ( NFData state, NFData output
      , Sendable state, Sendable context, Sendable input, Sendable output
      )
-    => WorkerArgs
-    -> LogFunc
+    => LogFunc
     -> (context -> input -> state -> IO (state, output))
        -- ^ Computation function
     -> NMSettings
@@ -140,7 +139,7 @@ runSlaveImpl
     -> IO ()
        -- ^ Init action - run once connection is established.
     -> IO ()
-runSlaveImpl WorkerArgs {..} logFunc slave nms mci onInit = do
+runSlaveImpl logFunc slave nms mci onInit = do
     let runLogger f = runLoggingT f logFunc
     void $ runLogger $ slaveHandleNMExceptions mci $ liftIO $ runSlave SlaveArgs
         { saUpdate = slave
