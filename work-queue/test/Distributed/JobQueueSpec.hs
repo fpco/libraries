@@ -1,94 +1,201 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE ViewPatterns #-}
 
-module Distributed.JobQueueSpec
-    ( spec
-    -- Used by PeriodicSpec
-    , jqit
-    , allocateAsync
-    , randomDelay
-    ) where
+module Distributed.JobQueueSpec (spec) where
 
 import           ClassyPrelude hiding (keys)
 import           Control.Concurrent (forkIO, myThreadId, ThreadId)
-import           Control.Concurrent.Async (Async, race, async, cancel, waitCatch)
+import           Control.Concurrent.Async (Async, race, async, cancel, waitCatch, cancel)
 import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Exception (AsyncException(ThreadKilled), throwTo)
 import           Control.Monad.Base (MonadBase)
 import           Control.Monad.Logger
 import           Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
-import           Control.Monad.Trans.Resource (ResourceT, runResourceT, allocate)
-import           Data.Serialize (encode)
-import           Data.Bits (shiftL)
+import           Control.Monad.Trans.Resource (MonadResource, ResourceT, runResourceT, register, allocate)
+import           Data.Bits (shiftL, xor, zeroBits)
 import           Data.List.NonEmpty (NonEmpty(..))
 import           Data.List.Split (chunksOf)
 import           Data.Proxy (Proxy(..))
+import           Data.Serialize (Serialize)
+import           Data.Serialize (encode)
 import qualified Data.Set as S
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.Time.Clock (diffUTCTime)
-import           Distributed.JobQueue
-import           Distributed.JobQueue.Status
-import           Distributed.JobQueue.Shared
-import           Distributed.RedisQueue
-import           Distributed.RedisQueue.Internal (run_)
+import           Data.TypeFingerprint
+import qualified Distributed.JobQueue.Client.Internal as JQ
+import           Distributed.JobQueue.Internal
+import           Distributed.JobQueue.Worker
 import           Distributed.TestUtil
-import           Distributed.WorkQueueSpec (forkWorker, cancelProcess)
-import           FP.Redis
+import           Distributed.Types
+import           FP.Redis hiding (Response)
 import           FP.ThreadFileLogger
+import           System.Mem.Weak
 import           System.Random (randomRIO)
 import           System.Timeout.Lifted (timeout)
-import           Test.Hspec (Spec, it, shouldBe)
+import           Test.Hspec (Spec, it)
+import           Test.Hspec.Expectations.Lifted (shouldBe, shouldReturn)
+
+data Request = Request (Vector [Int])
+    deriving (Eq, Show, Generic, Typeable)
+
+instance Serialize Request
+
+data Response = Response Int
+    deriving (Eq, Show, Generic, Typeable)
+
+instance Serialize Response
+
+$(mkManyHasTypeFingerprint [ [t| Request |], [t| Response |] ])
 
 spec :: Spec
 spec = do
-    jqit "Runs enqueued computations" $ do
-        _ <- forkWorker "redis" 0
-        _ <- forkWorker "redis" 0
-        forM_ [0..3] $ \n -> do
-            resultVar <- forkDispatcher' (mkRequest n)
-            checkResult 5 resultVar 0
-    jqit "Doesn't lose data when master fails" $ do
-        -- This worker will take the request and become a master.
-        master <- forkWorker "redis" 0
-        resultVar <- forkDispatcher
+    testcase "Runs an enqueued computation" $ do
+        (_, respStm) <- runJobClientAndRequest
+        _ <- runXorWorker
+        JQ.atomicallyReturnOrThrow respStm `shouldReturn` Response 0
+    testcase "Doesn't yield a value when there are no workers" $ do
+        (_, respStm) <- runJobClientAndRequest
+        threadDelay (200 * 1000)
+        liftIO (atomically respStm) `shouldReturn` (Nothing :: Maybe (Either DistributedException Response))
+    testcase "Doesn't lose data when worker fails" $ do
+        (_, respStm) <- runJobClientAndRequest
+        worker <- runDelayWorker
         threadDelay (100 * 1000)
-        -- Expect no results, because there are no slaves.
-        noResult <- tryTakeMVar resultVar
-        liftIO $ do
-            isNothing noResult `shouldBe` True
-            putStrLn "Cancelling worker"
-            cancelProcess master
-        -- One of these will become a master and one will become a
-        -- slave.
-        --
-        -- This also tests the property that if there are stale
-        -- slave requests, they get ignored because the connection
-        -- fails.
-        _ <- forkWorker "redis" 0
-        _ <- forkWorker "redis" 0
-        checkResult 10 resultVar 0
-        putStrLn "Successfully received result"
-    jqit "Long tasks complete" $ do
-        _ <- forkWorker "redis-long" 0
-        _ <- forkWorker "redis-long" 0
-        resultVar <- forkDispatcher' (fromList [[5 * 1000]] :: Vector [Int])
-        checkResult 15 resultVar 0
-    jqit "Non-existent slave request is ignored" $ do
-        -- Enqueue an erroneous slave request
-        enqueueSlaveRequest (MasterConnectInfo "localhost" 1337)
-        -- One worker will become a master, the other will get the
-        -- erroneous slave request.
-        _ <- forkWorker "redis" 0
-        _ <- forkWorker "redis" 0
-        resultVar <- forkDispatcher
-        checkResult 5 resultVar 0
+        liftIO $ cancel worker
+        threadDelay (500 * 1000)
+        liftIO (atomically respStm) `shouldReturn` (Nothing :: Maybe (Either DistributedException Response))
+        worker <- runXorWorker
+        JQ.atomicallyReturnOrThrow respStm `shouldReturn` Response 0
+    testcase "Sends an exception to the client on type mismatch" $ do
+        (_, respStm) <- runJobClientAndRequest
+        worker <- runWorker $ \_ _ () -> return ()
+        JQ.atomicallyReturnOrThrow respStm `shouldThrow` \ex ->
+            case ex of
+                TypeMismatch {} -> True
+                _ -> False
+    -- FIXME: return to this part of the test-suite.
+    --
+    -- In the old implementation, there's some pretty complicated sanity
+    -- checking. I think it makes sense to turn as much of that as
+    -- possible into a library feature. The library should record enough
+    -- information that various invariants can be checked. Then, the
+    -- clients can periodically run sanity checks.
+    testcase "Preserves data despite slaves being started and killed periodically (different requests)" $ do
+        fail "FIXME: implement"
+    testcase "Multiple clients can make requests to multiple workers" $ do
+        fail "FIXME: implement"
+    testcase "Can cancel active requests" $ do
+        fail "FIXME: implement"
+
+-- Maximum test time of 2 minutes.  Individual tests can of course further restrict this
+testcase :: String -> ResourceT IO () -> Spec
+testcase = testcaseTimeout (Seconds 120)
+
+testcaseTimeout :: Seconds -> String -> ResourceT IO () -> Spec
+testcaseTimeout (Seconds s) name f = it name $ do
+    mres <- timeout (fromIntegral s * 1000 * 1000) $ clearRedisKeys >> runResourceT f
+    case mres of
+        Nothing -> fail "Timed out waiting for test to finish"
+        Just _ -> return ()
+
+runJobClientAndRequest
+    :: (MonadCommand m, MonadResource m, Sendable response)
+    => m (JQ.JobClient response, STM (Maybe (Either DistributedException response)))
+runJobClientAndRequest = do
+    jc <- newJobClient config
+    respStm <- JQ.submitRequestAndWaitForResponse jc r0 (mkRequest 0)
+    return (jc, respStm)
+
+newJobClient
+    :: (MonadCommand m, MonadResource m, Sendable response)
+    => JobQueueConfig -> m (JQ.JobClient response)
+newJobClient config = do
+    logFunc <- runThreadFileLoggingT $ withLogTag "jobClient" askLoggerIO
+    jc <- JQ.newJobClient logFunc config
+    wp <- liftIO $ mkWeakPtr jc Nothing
+    _ <- register $ do
+        let loop ix | ix <= 0 = fail "Timed out waiting for job client to be garbage collected"
+            loop ix = do
+                mjc <- deRefWeak wp
+                case mjc of
+                    Nothing -> return ()
+                    Just _ -> do
+                        threadDelay (100 * 1000)
+                        loop (ix - 1)
+        loop 100
+    return jc
+
+runXorWorker :: ResourceT IO (Async ())
+runXorWorker = runWorker $ \_ _ (Request xs) -> return $ Response $ foldl' (foldl' xor) zeroBits xs
+
+-- Delays half a second and returns 42
+runDelayWorker :: ResourceT IO (Async ())
+runDelayWorker = runWorker $ \_ _ (Request _) -> do
+    liftIO $ threadDelay (1000 * 500)
+    return $ Response 42
+
+runWorker
+    :: (Sendable request, Sendable response)
+    => (Redis -> RequestId -> request -> LoggingT IO response)
+    -> ResourceT IO (Async ())
+runWorker = allocateAsync . runThreadFileLoggingT . jobWorker config
+
+config :: JobQueueConfig
+config = defaultJobQueueConfig
+    { jqcRedisConfig = defaultRedisConfig { rcKeyPrefix = redisTestPrefix } }
+
+r0 :: RequestId
+r0 = RequestId "0"
+
+-- These lists always xor together to 0
+mkRequest :: Int -> Request
+mkRequest offset = Request $ fromList $ chunksOf 10 $ map (`shiftL` offset) [1..(2^(8 :: Int))-1]
+
+allocateAsync :: IO a -> ResourceT IO (Async a)
+allocateAsync f = fmap snd $ allocate linkedAsync cancel
+  where
+    linkedAsync = do
+        thread <- async f
+        linkIgnoreThreadKilled thread
+        return thread
+
+-- Something that gives a capability like this should be in the async
+-- library...
+linkIgnoreThreadKilled :: Async a -> IO ()
+linkIgnoreThreadKilled a = do
+    me <- myThreadId
+    void $ forkRepeat $ do
+        eres <- waitCatch a
+        case eres of
+            Left (fromException -> Just ThreadKilled) -> return ()
+            Left err -> throwTo me err
+            Right _ -> return ()
+
+-- Copied from async library
+
+-- | Fork a thread that runs the supplied action, and if it raises an
+-- exception, re-runs the action.  The thread terminates only when the
+-- action runs to completion without raising an exception.
+forkRepeat :: IO a -> IO ThreadId
+forkRepeat action =
+  mask $ \restore ->
+    let go = do r <- try (restore action)
+                case r of
+                  Left (_ :: SomeException) -> go
+                  _                         -> return ()
+    in forkIO go
+
+{-
+spec :: Spec
+spec = do
     jqit "Preserves data despite slaves being started and killed periodically (all using the same request)" $ do
         resultVars <- replicateM 10 forkDispatcher
         liftIO $ void $
@@ -120,25 +227,11 @@ spec = do
                 -- Give some more time for the job requesters to do their thing.
                 threadDelay (1000 * 1000 * 10)
                 checkRequestsAnswered (== 0) sets 120)
-    {-  Commented out because this is a bit of a weird thing to test
-    jqit "Sends requests despite a bunch of other redis connections" $ do
-        (sets :: RequestSets Int) <- mkRequestSets
-        forM_ [0..100] $ \ix -> void $ allocateAsync $ runThreadFileLoggingT $ do
-            withRedis redisTestPrefix localhost $ \r -> forM_ [0..] $ \jx -> do
-                let msg = pack $ encodeUtf8 $ "hi" ++ show (ix, jx)
-                run_ r $ set (VKey (Key (redisTestPrefix <> ":test-key"))) msg []
-                threadDelay (10 * 1000)
-        void $ liftIO $ timeout (1000 * 1000 * 10) $
-            randomJobRequester sets 254
-        threadDelay (1000 * 1000 * 10)
-        sent <- liftIO $ readIORef (sentRequests sets)
-        liftIO $ length sent `shouldSatisfy` (>0)
-    -}
     jqit "Sends an exception to the client on type mismatch" $ do
         resultVar <- forkDispatcher' defaultRequest
         _ <- forkWorker "redis" 0
         _ <- forkWorker "redis" 0
-        ex <- getException 5 (resultVar :: MVar (Either DistributedJobQueueException Bool))
+        ex <- getException 5 (resultVar :: MVar (Either DistributedException Bool))
         case ex of
             TypeMismatch {} -> return ()
             _ -> fail $ "Expected TypeMismatch, but got " <> show ex
@@ -183,12 +276,12 @@ spec = do
         case mresult' of
             Left (RequestCanceledException {}) -> return ()
             _ -> fail $ "Instead of canceled exception, got " ++
-                show (mresult' :: Either DistributedJobQueueException Int)
+                show (mresult' :: Either DistributedException Int)
 
 jqit :: String -> ResourceT IO () -> Spec
 jqit name f = it name $ clearRedisKeys >> runResourceT f
 
-forkDispatcher :: ResourceT IO (MVar (Either DistributedJobQueueException Int))
+forkDispatcher :: ResourceT IO (MVar (Either DistributedException Int))
 forkDispatcher = forkDispatcher' defaultRequest
 
 defaultRequest :: Vector [Int]
@@ -200,7 +293,7 @@ mkRequest offset = fromList $ chunksOf 10 $ map (`shiftL` offset) [1..(2^(8 :: I
 
 forkDispatcher'
     :: (Sendable request, Sendable response)
-    => request -> ResourceT IO (MVar (Either DistributedJobQueueException response))
+    => request -> ResourceT IO (MVar (Either DistributedException response))
 forkDispatcher' request = do
     resultVar <- newEmptyMVar
     void $ allocateAsync $ runDispatcher request resultVar
@@ -208,7 +301,7 @@ forkDispatcher' request = do
 
 runDispatcher
     :: (Sendable request, Sendable response)
-    => request -> MVar (Either DistributedJobQueueException response) -> IO ()
+    => request -> MVar (Either DistributedException response) -> IO ()
 runDispatcher request resultVar =
     runThreadFileLoggingT $ logNest "dispatcher" $ withRedis redisTestPrefix localhost $ \redis ->
         withJobQueueClient clientConfig redis $ \cvs -> do
@@ -252,7 +345,7 @@ forkResponseWaiter tag sets = allocateAsync responseWaiter
                 foldl' raceLifted
                        (forever $ threadDelay maxBound)
                        (replicate 5 (waitForResponse cvs redis) :: [LoggingT IO ()])
-    waitForResponse :: ClientVars (LoggingT IO) response -> RedisInfo -> LoggingT IO ()
+    waitForResponse :: ClientVars (LoggingT IO) response -> Redis -> LoggingT IO ()
     waitForResponse cvs redis = forever $ do
         withItem (unwatchedRequests sets) $ \rid -> do
             resultVar <- newEmptyMVar
@@ -363,10 +456,10 @@ randomDelay minMillis maxMillis = do
     ms <- liftIO $ randomRIO (minMillis, maxMillis)
     threadDelay (1000 * ms)
 
-checkResult :: MonadIO m => Int -> MVar (Either DistributedJobQueueException Int) -> Int -> m ()
+checkResult :: MonadIO m => Int -> MVar (Either DistributedException Int) -> Int -> m ()
 checkResult seconds resultVar expected = checkResults seconds [resultVar] [expected]
 
-checkResults :: MonadIO m => Int -> [MVar (Either DistributedJobQueueException Int)] -> [Int] -> m ()
+checkResults :: MonadIO m => Int -> [MVar (Either DistributedException Int)] -> [Int] -> m ()
 checkResults seconds resultVars expecteds = liftIO $ do
     mresults <- timeout (seconds * 1000 * 1000) $ mapM takeMVar resultVars
     case mresults of
@@ -377,19 +470,13 @@ checkResults seconds resultVars expecteds = liftIO $ do
                     Left ex -> liftIO $ throwIO ex
                     Right x -> x `shouldBe` expected
 
-getException :: (Show r, MonadIO m) => Int -> MVar (Either DistributedJobQueueException r) -> m DistributedJobQueueException
+getException :: (Show r, MonadIO m) => Int -> MVar (Either DistributedException r) -> m DistributedException
 getException seconds resultVar = liftIO $ do
     result <- timeout (seconds * 1000 * 1000) $ takeMVar resultVar
     case result of
         Nothing -> fail "Timed out waiting for exception"
         Just (Right n) -> fail $ "Expected exception, but got " ++ show n
         Just (Left err) -> return err
-{-
-clearSlaveRequests :: MonadIO m => m ()
-clearSlaveRequests =
-    liftIO $ runThreadFileLoggingT $ logNest "clearSlaveRequests" $ withRedis redisTestPrefix localhost $ \r -> do
-        run_ r $ del (unLKey (slaveRequestsKey r) :| [])
--}
 
 enqueueSlaveRequest :: MonadIO m => MasterConnectInfo -> m ()
 enqueueSlaveRequest mci =
@@ -427,42 +514,4 @@ withItem ref f = do
         case mx of
             Nothing -> return ()
             Just x -> restore (f x) `onException` atomicInsert x ref
-
-allocateAsync :: IO a -> ResourceT IO (Async a)
-allocateAsync f = fmap snd $ allocate linkedAsync cancel
-  where
-    linkedAsync = do
-        thread <- async f
-        linkIgnoreThreadKilled thread
-        return thread
-
--- Something that gives a capability like this should be in the async
--- library...
-linkIgnoreThreadKilled :: Async a -> IO ()
-linkIgnoreThreadKilled a = do
-    me <- myThreadId
-    void $ forkRepeat $ do
-        eres <- waitCatch a
-        case eres of
-            Left (fromException -> Just ThreadKilled) -> return ()
-            Left err -> throwTo me err
-            Right _ -> return ()
-
-raceLifted :: MonadBaseControl IO m => m a -> m b -> m ()
-raceLifted f g =
-    liftBaseWith $ \restore ->
-        void $ restore f `race` restore g
-
--- Copied from async library
-
--- | Fork a thread that runs the supplied action, and if it raises an
--- exception, re-runs the action.  The thread terminates only when the
--- action runs to completion without raising an exception.
-forkRepeat :: IO a -> IO ThreadId
-forkRepeat action =
-  mask $ \restore ->
-    let go = do r <- try (restore action)
-                case r of
-                  Left (_ :: SomeException) -> go
-                  _                         -> return ()
-    in forkIO go
+-}

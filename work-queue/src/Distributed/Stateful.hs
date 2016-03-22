@@ -32,8 +32,6 @@ import           Control.Monad.Logger
 import qualified Data.Conduit.Network as CN
 import           Data.Streaming.NetworkMessage
 import           Distributed.JobQueue.Worker hiding (MasterFunc, SlaveFunc)
-import           Distributed.JobQueue.Shared (popSlaveRequest, takeMVarE)
-import           Distributed.RedisQueue
 import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
 import           Distributed.Stateful.Slave hiding (runSlave)
@@ -73,7 +71,7 @@ runWorker
     -> (context -> input -> state -> IO (state, output))
     -- ^ This function is run on the slave, to perform a unit of work.
     -- See 'saUpdate'.
-    -> (RedisInfo -> RequestId -> request -> MasterHandle state context input output -> IO response)
+    -> (Redis -> RequestId -> request -> MasterHandle state context input output -> IO response)
     -- ^ This function runs on the master after it's received a
     -- reqeuest, and after some slaves have connected. The function is
     -- expected to use functions which take 'MasterHandle' to send work
@@ -103,7 +101,7 @@ runSlaveRedis
      )
     => WorkerConfig
     -> LogFunc
-    -> (RedisInfo -> context -> input -> state -> IO (state, output))
+    -> (Redis -> context -> input -> state -> IO (state, output))
        -- ^ Computation function
     -> NMSettings
     -> IO ()

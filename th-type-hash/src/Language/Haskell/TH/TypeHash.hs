@@ -41,7 +41,7 @@ reifyManyTyDecls f = reifyMany go
 -- Not only does this cover the datatypes themselves, but also all
 -- transitive dependencies.
 --
--- The resulting expression is a literal of type 'Int'.
+-- The resulting expression is a literal of type 'ByteString'.
 thTypeHashForNames :: [Name] -> Q Exp
 thTypeHashForNames ns = do
     infos <- getTypeInfosRecursively ns
@@ -50,7 +50,7 @@ thTypeHashForNames ns = do
 -- | At compiletime, this yields a cryptographic hash of the specified 'Type',
 -- including the definition of things it references (transitively).
 --
--- The resulting expression is a literal of type 'Int'.
+-- The resulting expression is a literal of type 'ByteString'.
 thTypeHash :: Type -> Q Exp
 thTypeHash ty = do
     infos <- getTypeInfosRecursively (listify (\_ -> True) ty)

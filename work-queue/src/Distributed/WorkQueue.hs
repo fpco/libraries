@@ -13,6 +13,9 @@
 --
 -- Run 'withMaster' on the master node, and then 'runSlave' on slaves. Use the
 -- operations in "Data.WorkQueue" to assign items that will be performed.
+--
+-- Note that despite being the eponymous module of this package, the
+-- focus has shifted to "Distributed.Stateful".
 module Distributed.WorkQueue
     ( withMaster
     , runSlave
@@ -51,7 +54,11 @@ data ToSlave initialData payload
 instance (Serialize a, Serialize b) => Serialize (ToSlave a b)
 
 instance (HasTypeFingerprint initialData, HasTypeFingerprint payload) => HasTypeFingerprint (ToSlave initialData payload) where
-    typeFingerprint _ = typeFingerprint (Proxy :: Proxy (initialData, payload))
+    typeFingerprint _ = combineTypeFingerprints
+        [ typeFingerprint (Proxy :: Proxy initialData)
+        , typeFingerprint (Proxy :: Proxy payload)
+        ]
+    showType _ = "ToSlave (" ++ showType (Proxy :: Proxy initialData) ++ ") (" ++ showType (Proxy :: Proxy payload) ++ ")"
 
 data RunMode
     = DevMode

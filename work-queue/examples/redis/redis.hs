@@ -4,16 +4,19 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE FlexibleInstances #-}
 
+-- Example of combining job-queue with work-queue
 module Main where
 
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
+import Control.Monad.Logger (askLoggerIO)
 import Data.Bits (xor, zeroBits)
 import Data.List.NonEmpty (nonEmpty)
 import Data.List.Split (chunksOf)
 import Data.TypeFingerprint (mkManyHasTypeFingerprint)
-import Distributed.JobQueue
-import Distributed.RedisQueue (withRedis)
+import Distributed.JobQueue.Client
+import Distributed.JobQueue.Worker
+import Distributed.Types
 import Distributed.WorkQueue (mapQueue)
 import FP.Redis
 import FP.ThreadFileLogger
@@ -34,24 +37,21 @@ main = do
 dispatcher :: IO ()
 dispatcher = do
     clearData
-    let config = defaultClientConfig
-    runThreadFileLoggingT $ withRedis prefix localhost $ \redis ->
-        -- Run the client heartbeat checker and back channel
-        -- subscription.
-        withJobQueueClient config redis $ \cvs -> do
-             -- Push a single set of work requests.
-             let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
-             response <- jobQueueRequest config cvs redis workItems
-             liftIO $ do
-                 putStrLn "================"
-                 putStrLn $ "Received result: " ++ tshow (response :: Int)
-                 putStrLn "================"
+    logFunc <- runThreadFileLoggingT askLoggerIO
+    jc <- newJobClient logFunc
+    let workItems = fromList (chunksOf 100 [1..(2^(8 :: Int))-1]) :: Vector [Int]
+    respStm <- submitRequestAndWaitForResponse jc (RequestId "0") workItems
+    resp <- atomicallyReturnOrThrow respStm
+    putStrLn "================"
+    putStrLn $ "Received result: " ++ tshow (resp :: Int)
+    putStrLn "================"
 
 masterOrSlave :: IO ()
 masterOrSlave =
-    runThreadFileLoggingT $ jobQueueWorker config calc inner
+    runThreadFileLoggingT $
+        jobWorker config $ \redis _rid request -> do
+        undefined
   where
-    config = defaultWorkerConfig prefix localhost "localhost"
     calc input = do
         threadDelay (1000 * 1000 * 2)
         return $ foldl' xor zeroBits (input :: [Int])
@@ -64,6 +64,12 @@ masterOrSlave =
             putStrLn $ "Sending result: " ++ tshow (response :: Int)
             putStrLn "================"
         return response
+
+config :: JobQueueConfig
+config = defaultJobQueueConfig
+    { jqcRedisConfig = defaultRedisConfig
+        { rcKeyPrefix = "fpco:hpc-example-redis:" }
+    }
 
 localhost :: ConnectInfo
 localhost = connectInfo "localhost"

@@ -1,6 +1,7 @@
 resolver: lts-5.0
 extra-deps:
   - retry-0.6
+  - hspec-expectations-lifted-0.5.0
 packages:
   - ./json-conduit
   - ./redis-fp

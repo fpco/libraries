@@ -26,23 +26,23 @@ library
                        Data.SimpleSupply
                        Data.Streaming.NetworkMessage
                        Data.TypeFingerprint
-                       Distributed.JobQueue
+                       Distributed.Types
+                       Distributed.Redis
                        Distributed.JobQueue.Client
-                       Distributed.JobQueue.Client.NewApi
-                       Distributed.JobQueue.Status
+                       Distributed.JobQueue.Client.Internal
                        Distributed.JobQueue.Worker
-                       Distributed.RedisQueue
-                       Distributed.RedisQueue.Internal
-                       Distributed.Stateful
+                       Distributed.JobQueue.Internal
+                       Distributed.Heartbeat
+                       Distributed.Heartbeat.Internal
+                       Distributed.JobQueue.Status
+                       -- Distributed.Stateful
                        Distributed.Stateful.Internal
                        Distributed.Stateful.Master
                        Distributed.Stateful.Slave
                        Distributed.WorkQueue
+                       -- TODO: remove these?  Not used.
                        Control.Concurrent.ThreadPool
                        Control.Exception.Mask
-                       -- Exposed for testing purposes
-                       Distributed.JobQueue.Heartbeat
-                       Distributed.JobQueue.Shared
   build-depends:       base
                      , aeson
                      , async
@@ -65,8 +65,8 @@ library
                      , mtl
                      , network
                      , optparse-applicative >= 0.11
-                     , redis-fp
-                     , retry
+                     , redis-fp , retry
+                     , safe
                      , semigroups
                      , split
                      , stm
@@ -188,6 +188,8 @@ test-suite wq-test
                      , executable-path
                      , hspec
                      , hspec-core
+                     , hspec-expectations
+                     , hspec-expectations-lifted
                      , lifted-base
                      , monad-control
                      , monad-logger

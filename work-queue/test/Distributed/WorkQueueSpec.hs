@@ -1,5 +1,4 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -17,12 +16,7 @@ import           Data.List.Split (chunksOf)
 import           Data.Streaming.Network (getSocketFamilyTCP)
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.TypeFingerprintSpec ()
-import           Distributed.JobQueue
-import           Distributed.RedisQueue
-import           Distributed.TestUtil
 import           Distributed.WorkQueue
-import           FP.Redis (Seconds(..), connectInfo)
-import           FP.ThreadFileLogger
 import qualified Network.Socket as NS
 import           Prelude (appendFile, read)
 import           System.Directory (doesFileExist, removeFile)
@@ -44,9 +38,6 @@ data Config
         , xorBits :: Int
         , xorChunkSize :: Int
         , sharedConfig :: SharedConfig
-        }
-    | RedisConfig
-        { isThreadDelay :: Bool
         }
 
 data SharedConfig = SharedConfig
@@ -108,8 +99,6 @@ getConfig "bench0" = defaultXorConfig 0 (benchConfig 0) { checkSlaveRan = False}
 getConfig "bench1" = defaultXorConfig 0 (benchConfig 1)
 getConfig "bench2" = defaultXorConfig 0 (benchConfig 2)
 getConfig "bench10" = defaultXorConfig 0 (benchConfig 10)
-getConfig "redis" = RedisConfig False
-getConfig "redis-long" = RedisConfig True
 getConfig which = error $ "No such config: " ++ unpack which
 
 benchConfig :: Int -> SharedConfig
@@ -149,6 +138,7 @@ forkMasterSlave which = do
                 -- performed calculation.
                 seenPids <- ordNub . map read . lines <$> readFile seenPidsPath
                 slavePids <- readIORef slavesRef
+                useForkIO <- getUseForkIO
                 case (useForkIO, mmasterPid) of
                     (False, Just masterPid) -> do
                         when (checkMasterRan config && masterPid `onotElem` seenPids) $
@@ -170,7 +160,8 @@ seenPidsPath = "work_queue_spec_seen_pids"
 resultsPath = "work_queue_spec_results"
 
 execProcessOrFork :: [String] -> IO Process
-execProcessOrFork args =
+execProcessOrFork args = do
+    useForkIO <- getUseForkIO
     if useForkIO
         then fmap Right $ async $ withArgs args runWorkQueue
         else do
@@ -203,43 +194,6 @@ runMasterOrSlave XorConfig {..} = do
             subresults <- mapQueue queue (chunksOf xorChunkSize xs)
             calc () subresults
     runArgs' sharedConfig initialData calc inner
-runMasterOrSlave RedisConfig {..} | isThreadDelay = runThreadFileLoggingT $ do
-    [lslaves] <- liftIO getArgs
-    let calc :: [Int] -> IO Int
-        calc (x : _) = do
-            threadDelay (x * 1000)
-            return 0
-        calc _ = return 0
-        inner :: RedisInfo -> MasterConnectInfo -> RequestId -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
-        inner redis mci _requestId request queue = do
-            requestSlave redis mci
-            results <- mapQueue queue request
-            if results == fmap (\_ -> 0) request
-                then return 0
-                else return 1
-        config = workerConfig
-            { workerMasterLocalSlaves = read (unpack lslaves)
-            }
-    jobQueueWorker config calc inner
-runMasterOrSlave RedisConfig {..} = runThreadFileLoggingT $ do
-    [lslaves] <- liftIO getArgs
-    let calc :: [Int] -> IO Int
-        calc input =  return $ foldl' xor zeroBits input
-        inner :: RedisInfo -> MasterConnectInfo -> RequestId -> Vector [Int] -> WorkQueue [Int] Int -> IO Int
-        inner redis mci _requestId request queue = do
-            requestSlave redis mci
-            subresults <- mapQueue queue request
-            liftIO $ calc (otoList (subresults :: Vector Int))
-        config = workerConfig
-            { workerMasterLocalSlaves = read (unpack lslaves)
-            }
-    jobQueueWorker config calc inner
-
-workerConfig :: WorkerConfig
-workerConfig = (defaultWorkerConfig redisTestPrefix (connectInfo "localhost") "localhost")
-    { workerHeartbeatSendIvl = Seconds 1
-    , workerCancellationCheckIvl = Seconds 1
-    }
 
 runArgs'
     :: ( Sendable initialData
@@ -295,12 +249,13 @@ cancelProcess :: MonadIO m => Process -> m ()
 cancelProcess (Left pid) = liftIO $ terminateProcess pid
 cancelProcess (Right a) = liftIO $ cancel a
 
-useForkIO :: Bool
-useForkIO =
+getUseForkIO :: IO Bool
+getUseForkIO = do
 #if COVERAGE
-    True
+    return True
 #else
-    False
+    path <- getExecutablePath
+    return ("ghc" `isSuffixOf` path)
 #endif
 
 processPid :: Process -> IO (Maybe Int32)

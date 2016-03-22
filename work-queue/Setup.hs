@@ -9,7 +9,7 @@ main = defaultMainWithHooks $ simpleUserHooks
         let dir = buildDir buildInfo
         mapM_ (\n -> maybeInjectExecutableHash (dir </> n </> n))
             [ "hpc-example-war"
-            , "hpc-example-redis"
+            -- , "hpc-example-redis"
             , "test"
             , "bench"
             ]

@@ -1,456 +1,204 @@
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE ViewPatterns #-}
 
--- | This module provides the API used by job-queue workers.  See
--- "Distributed.JobQueue" for more info.
+-- This module provides a job-queue with heartbeat checking.
 module Distributed.JobQueue.Worker
-    ( WorkerConfig(..)
-    , MasterConnectInfo(..)
-    , defaultWorkerConfig
-    , requestSlave
-    -- * Job-queue worker based on work-queue
-    , jobQueueWorker
-    -- * General job-queue node
-    , jobQueueNode
-    , MasterFunc
-    , SlaveFunc
-    , WorkerParams(..)
-    -- * Exceptions
-    , DistributedJobQueueException(..)
-    -- * Utility
-    , slaveHandleNMExceptions
-    , withWorkerRedis
-    , subscribeToRequests
-    ) where
+    (jobWorker, reenqueueWork) where
 
 import ClassyPrelude
-import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (Async, cancel, cancelWith, waitEither)
-import Control.Monad.Logger (MonadLogger, logErrorS, logInfoS, logDebugS, logWarnS)
-import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
+import Control.Monad.Logger
 import Data.Bits (xor)
+import Data.List.NonEmpty (NonEmpty((:|)))
+import Data.Proxy
 import Data.Serialize (encode)
-import Data.Streaming.Network (ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP)
-import Data.Streaming.NetworkMessage
-import Data.TypeFingerprint
-import Data.Typeable (Proxy(..))
+import Data.Streaming.NetworkMessage (Sendable)
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.TypeFingerprint (typeFingerprint)
+import Data.Typeable (typeOf)
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
-import Data.WorkQueue
-import Distributed.JobQueue.Heartbeat
-import Distributed.JobQueue.Shared
-import Distributed.RedisQueue
-import Distributed.RedisQueue.Internal
-import Distributed.WorkQueue
+import Distributed.Heartbeat (sendHeartbeats)
+import Distributed.JobQueue.Internal
+import Distributed.Redis
+import Distributed.Types
 import FP.Redis
 import FP.ThreadFileLogger
-import GHC.IO.Exception (IOException(IOError))
 import System.Posix.Process (getProcessID)
 
--- | Configuration of a 'jobQueueWorker'.
-data WorkerConfig = WorkerConfig
-    { workerResponseDataExpiry :: Seconds
-      -- ^ How many seconds the response data should be kept in redis.
-      -- The longer it's kept in redis, the more opportunity there is to
-      -- eliminate redundant work, if identical requests are made.  A
-      -- longer expiry also allows more time between sending a
-      -- response notification and the client reading its data.
-    , workerKeyPrefix :: ByteString
-      -- ^ Prefix used for redis keys.
-    , workerConnectInfo :: ConnectInfo
-      -- ^ Info used to connect to the redis server.
-    , workerHostName :: ByteString
-      -- ^ The host name sent to slaves, so that they can connect to
-      -- this worker when it's acting as a master.
-    , workerPort :: Int
-      -- ^ Which port to use when the worker is acting as a master.
-      -- If the port is set to 0, then a free port is automatically
-      -- chosen by the (unix) system.
-    , workerMasterLocalSlaves :: Int
-      -- ^ How many local slaves a master server should run.
-    , workerHeartbeatSendIvl :: Seconds
-      -- ^ The time interval between heartbeats sent to the server.
-      -- This must be substantially lower than the rate at which they
-      -- are checked.
-    , workerConnectionHeartbeatIvlMicros :: Int
-      -- ^ The time interval between heartbeats sent between masters
-      -- and slaves.
-    , workerCancellationCheckIvl :: Seconds
-      -- ^ Number of seconds between the worker checking if it's been
-      -- cancelled.
-    } deriving (Typeable)
-
--- | Given a redis key prefix and redis connection information, builds
--- a default 'WorkerConfig'.
---
--- The defaults are:
---
---     * Heartbeats are sent every 15 seconds.  This should be
---     reasonable, given the client default of checking every 30
---     seconds.  However, if the client uses a different heartbeat
---     time, this should be changed.
---
---     Aside: This isn't ideal.  Ideally, requests from the client
---     would let the worker know how often to send heartbeats.  We
---     can't do that, though, because the heartbeats need to be sent
---     before the worker even has any work.  This is because
---     'rpoplpush' is used to take work and move it to the worker's
---     work list.
---
---     * Response data expire every hour.
---
---     * One local slave. This is because there are cases in which
---     masters may be starved of slaves. For example, if a bunch of
---     work items come in and they all immediately become masters,
---     then progress won't be made without local slaves.
---
---     * 'workerPort' is set to 0 by default, which means the port is
---     allocated dynamically (on most unix systems).
-defaultWorkerConfig :: ByteString -> ConnectInfo -> ByteString -> WorkerConfig
-defaultWorkerConfig prefix ci hostname = WorkerConfig
-    { workerResponseDataExpiry = Seconds 3600
-    , workerKeyPrefix = prefix
-    , workerConnectInfo = ci
-    , workerHostName = hostname
-    , workerPort = 0
-    , workerMasterLocalSlaves = 1
-    , workerHeartbeatSendIvl = Seconds 15
-    , workerConnectionHeartbeatIvlMicros = 1000 * 1000 * 2
-    , workerCancellationCheckIvl = Seconds 10
-    }
-
--- | This runs a job queue worker based on 'WorkQueue'. The data that's
--- being sent between the servers all need to be 'Sendable' so that they
--- can be serialized, and so that agreement on types can be checked at
--- runtime.
-jobQueueWorker
-    :: forall m request response payload result.
-       ( MonadConnect m
-       , Sendable request
-       , Sendable response
-       , Sendable payload
-       , Sendable result
-       )
-    => WorkerConfig
-    -> (payload -> IO result)
-    -- ^ This is the computation function run by slaves. It computes
-    -- @result@ from @payload@.
-    -> (RedisInfo -> MasterConnectInfo -> RequestId -> request -> WorkQueue payload result -> IO response)
-    -- ^ This function runs on the master after it's received a
-    -- request. It's expected that the master will use this request to
-    -- enqueue work items on the provided 'WorkQueue'.  The results of
-    -- this can then be accumulated into a @response@ to be sent back
-    -- to the client.
-    --
-    -- It's expected that this function will use 'queueItem',
-    -- 'mapQueue', or related functions to enqueue work which is
-    -- dispatched to the slaves.
+-- | Implements a compute node which responds to requests and never
+-- returns.
+jobWorker
+    :: (MonadConnect m, Sendable request, Sendable response)
+    => JobQueueConfig
+    -> (Redis -> RequestId -> request -> m response)
+    -- ^ This function is run by the worker, for every request it
+    -- receives.
     -> m ()
-jobQueueWorker config calc distribute =
-    jobQueueNode config slave' master'
-  where
-    slave' WorkerParams{..} mci init = do
-        $logInfoS "JobQueue" (tshow wpId ++ " becoming slave of " ++ tshow mci)
-        let settings = clientSettingsTCP (mciPort mci) (mciHost mci)
-        meres <- slaveHandleNMExceptions mci $
-            runSlave settings wpNMSettings (\() -> init) (\() -> calc)
-        case meres of
-            Nothing -> return ()
-            Just (Right ()) -> $logInfoS "runSlave" (tshow wpId ++ " done being slave of " ++ tshow mci)
-            Just (Left err) -> do
-                $logErrorS "runSlave" $ "Slave threw exception: " ++ tshow err
-                liftIO $ throwIO err
-    master' WorkerParams{..} ss k req getMci = do
-        withMaster (runTCPServer ss) wpNMSettings () $ \queue -> do
-            mci <- getMci
-            withLocalSlaves queue (workerMasterLocalSlaves wpConfig) calc $
-                liftIO $ distribute wpRedis mci k req queue
-
--- TODO: figure out better place to put this utility, or better way to
--- factor this out.
-slaveHandleNMExceptions
-     :: (MonadLogger m, MonadIO m, MonadBaseControl IO m)
-     => MasterConnectInfo -> m a -> m (Maybe a)
-slaveHandleNMExceptions mci f = do
-    eres <- try f
-    case eres of
-        Right x -> return (Just x)
-        -- This indicates that the slave couldn't connect.
-        Left (fromException -> Just err@(IOError {})) -> do
-            $logInfoS "runSlave" $
-                "Failed to connect to master " <>
-                tshow mci <>
-                ".  This probably isn't an issue - the master likely " <>
-                "already finished or died.  Here's the exception: " <>
-              tshow err
-            return Nothing
-        Left (fromException -> Just NMConnectionDropped) -> do
-            $logWarnS "runSlave" $ "Ignoring NMConnectionDropped in slave"
-            return Nothing
-        Left (fromException -> Just NMConnectionClosed) -> do
-            $logWarnS "runSlave" $ "Ignoring NMConnectionClosed in slave"
-            return Nothing
-        Left err -> do
-            $logErrorS "runSlave" $ "Unexpected exception in slave: " ++ tshow err
-            liftIO $ throwIO err
-
--- | Runs a job-queue worker where it's up to the invoker to handle
--- communication amongst the workers.
-jobQueueNode
-    :: forall m request response.
-       (MonadConnect m, Sendable request, Sendable response)
-    => WorkerConfig -> SlaveFunc m -> MasterFunc m request response -> m ()
-jobQueueNode wpConfig slave master = do
-    wpId <- liftIO getWorkerId
-    let wpName = "worker-" ++ tshow (unWorkerId wpId)
-    withLogTag (LogTag wpName) $ withWorkerRedis wpConfig $ \wpRedis -> do
-        wpNMSettings <-
-            setNMHeartbeat (workerConnectionHeartbeatIvlMicros wpConfig )  <$>
-            liftIO defaultNMSettings
-        jobQueueWorkerInternal WorkerParams {..} slave master
-
-data WorkerParams = WorkerParams
-    { wpConfig :: WorkerConfig
-    , wpNMSettings :: NMSettings
-    , wpId :: WorkerId
-    , wpName :: Text
-    , wpRedis :: RedisInfo
-    }
-
-type SlaveFunc m
-    = WorkerParams
-    -> MasterConnectInfo
-    -> IO ()
-    -> m ()
-
-type MasterFunc m request response
-    = WorkerParams
-    -> ServerSettings
-    -> RequestId
-    -> request
-    -> m MasterConnectInfo
-    -> m response
-
--- datatype used by 'jobQueueWorkerInternal'.
-data MaybeWithSubscription
-    -- | When 'loop' doesn't find any work, it's called again using
-    -- this constructor as its argument.  When this happens, it will
-    -- block on the 'MVar', waiting on the 'requestChannel'.  However,
-    -- before blocking, it makes one more attempt at popping work,
-    -- because some work may have come in before the subscription was
-    -- established.
-    = WithSubscription (MVar ()) (IO ())
-    -- | This constructor indicates that 'loop' should just check for
-    -- work, without subscribing to 'requestChannel'. When the worker
-    -- successfully popped work last time, there's no reason to
-    -- believe there isn't more work immediately available.
-    | NoSubscription
-    deriving (Typeable)
-
--- Here's how this works:
---
--- 1) The worker starts out as neither a slave or master.
---
--- 2) If there is a pending 'MasterConnectInfo', then it connects to
--- the specified master and starts working.
---
--- 3) If there is a 'JobRequest', then it becomes a master and runs
--- the @master@.
---
--- 4) If there are neither, then it queries for requests once again,
--- this time with a subscription to the 'requestsChannel'.
---
--- Not having this subscription the first time through is an
--- optimization - it allows us to save redis connections and save
--- redis the overhead of notifying many workers.  When the system
--- isn't saturated in work, we don't really care about performance,
--- and so it doesn't matter that we have so many connections to redis
--- + it needs to notify many workers.
-jobQueueWorkerInternal
-    :: forall m request response.
-       (MonadConnect m, Sendable request, Sendable response)
-    => WorkerParams -> SlaveFunc m -> MasterFunc m request response -> m ()
-jobQueueWorkerInternal params@WorkerParams{..} slave master = do
-    setRedisSchemaVersion wpRedis
-    withLogTag (LogTag wpName) $ withHeartbeats $ loop NoSubscription
-  where
-    loop :: MaybeWithSubscription -> Async () -> m ()
-    loop mws heartbeatThread = do
-        -- If there's slave work to be done, then do it.
-        mslave <- popSlaveRequest wpRedis
-        case mslave of
-            Just mci -> liftBaseWith $ \restore -> do
-                initCalledRef <- newIORef False
-                let init = void $ restore $ do
-                        liftIO $ writeIORef initCalledRef True
-                        unsubscribeToRequests mws
-                        -- Now that we're a slave, doing a heartbeat check is
-                        -- no longer necessary, so deactivate the check, and
-                        -- kill the heartbeat thread.
-                        deactivateHeartbeats wpRedis wpId
-                        liftIO $ cancel heartbeatThread
-                void $ restore $ do
-                    slave params mci init
-                    -- Restart the heartbeats thread before re-entering
-                    -- the loop, if it was stopped.
-                    initCalled <- readIORef initCalledRef
-                    if initCalled
-                        then withHeartbeats (loop NoSubscription)
-                        else loop mws heartbeatThread
-            Nothing -> do
-                -- There isn't any slave work, so instead check if
-                -- there's a job request, and become a master if there
-                -- is one.  If our server dies, then the heartbeat
-                -- code will re-enqueue the request.
-                prr <- popRequest wpRedis wpId
-                case prr of
-                    RequestAvailable k req -> do
-                        unsubscribeToRequests mws
-                        send k =<< becomeMaster params k req master
-                        loop NoSubscription heartbeatThread
-                    NoRequestAvailable -> case mws of
-                        -- If we weren't subscribed to
-                        -- 'requestChannel', then the next iteration
-                        -- should be subscribed.
-                        NoSubscription -> do
-                            $logDebugS "JobQueue" "Re-running requests, with subscription"
-                            (notified, unsub) <- subscribeToRequests wpRedis
-                            let mws' = WithSubscription notified unsub
-                            loop mws' heartbeatThread
-                        -- If we are subscribed to 'requestChannel',
-                        -- then block waiting for a notification.
-                        WithSubscription notified _ -> do
-                            $logDebugS "JobQueue" "Waiting for request notification"
-                            takeMVarE notified NoLongerWaitingForRequest
-                            $logDebugS "JobQueue" "Got notified of an available request"
-                            loop mws heartbeatThread
-                    -- Let the client know about missing requests.
-                    RequestMissing k -> do
-                        send k (Left (RequestMissingException k))
-                        loop mws heartbeatThread
-                    -- Recover in circumstances where this worker
-                    -- still functions, but failed to send its
-                    -- heartbeat in time.
-                    HeartbeatFailure -> do
-                        $logInfoS "JobQueue" $ tshow wpId <> " recovering from heartbeat failure"
-                        recoverFromHeartbeatFailure wpRedis wpId
-                        -- Restart the heartbeat thread, which re-adds
-                        -- the worker to the list of active workers.
-                        liftIO $ cancel heartbeatThread
-                        withHeartbeats $ loop mws
-    send :: RequestId
-         -> Either DistributedJobQueueException response
-         -> m ()
-    send k result = do
-        sendResponse wpRedis expiry wpId k encoded
-        addRequestEvent wpRedis k (RequestWorkFinished wpId)
-      where
-        expiry = workerResponseDataExpiry wpConfig
-        encoded = encode result
-    -- Heartbeats get their own redis connection, as this way it's
-    -- less likely that they'll fail due to the main redis connection
-    -- transferring lots of data.
-    withHeartbeats inner = do
+jobWorker config@JobQueueConfig {..} f = do
+    wid <- liftIO getWorkerId
+    let withTag = withLogTag (LogTag ("worker-" ++ tshow (unWorkerId wid)))
+    withTag $ withRedis jqcRedisConfig $ \r -> do
+        setRedisSchemaVersion r
         heartbeatSentVar <- newEmptyMVar
-        let logTag = LogTag (wpName <> "-heartbeat")
-            runHeartbeats = withLogTag logTag $ withWorkerRedis wpConfig $ \r ->
-                sendHeartbeats r (workerHeartbeatSendIvl wpConfig) wpId heartbeatSentVar
-        withAsyncLifted runHeartbeats $ \heartbeatThread -> do
-            takeMVarE heartbeatSentVar $ InternalJobQueueException $ concat
-                [ "Heartbeat checker thread died before sending initial heartbeat (cancelling computation).  "
-                , "This usually indicates that we lost the connection to redis and couldn't reconnect."
-                ]
-            inner heartbeatThread
+        let heartbeatThread =
+                sendHeartbeats jqcHeartbeatConfig r wid heartbeatSentVar
+            workerThread = do
+                $logDebug "Waiting for initial heartbeat send"
+                takeMVarE heartbeatSentVar $ InternalJobQueueException $ concat
+                    [ "Heartbeat checker thread died before sending initial heartbeat (cancelling computation).  "
+                    , "This usually indicates that we lost the connection to redis and couldn't reconnect."
+                    ]
+                $logDebug "Initial heartbeat sent"
+                (notify, unsub) <- subscribeToNotify r (requestChannel r)
+                jobWorkerThread config r wid notify (f r) `finally` liftIO unsub
+        heartbeatThread `raceLifted` workerThread
 
-becomeMaster
-    :: forall m request response.
+-- FIXME: bring back cancellation
+
+jobWorkerThread
+    :: forall request response m void.
        (MonadConnect m, Sendable request, Sendable response)
-    => WorkerParams
+    => JobQueueConfig
+    -> Redis
+    -> WorkerId
+    -> MVar ()
+    -> (RequestId -> request -> m response)
+    -> m void
+jobWorkerThread JobQueueConfig {..} r wid notify f = forever $ do
+    ereqbs <- try $ run r $ rpoplpush (requestsKey r) (LKey (activeKey r wid))
+    case ereqbs of
+        Left ex@(CommandException (isPrefixOf "WRONGTYPE" -> True)) -> do
+            -- While it's rather unlikely that this happens without it
+            -- being a HeartbeatFailure, check anyway, so that we
+            -- don't mask some unrelated issue.
+            val <- run r $ get (VKey (activeKey r wid))
+            if val /= Just "HeartbeatFailure"
+                then liftIO $ throwIO ex
+                else do
+                    $logInfo $ tshow wid <> " recovering from heartbeat failure"
+                    run_ r $ del (activeKey r wid :| [])
+        Left ex -> liftIO $ throwIO ex
+        Right Nothing -> return ()
+        Right (Just bs) -> do
+            let rid = RequestId bs
+            eres <- try $ do
+                mreq <- receiveRequest r wid rid (Proxy :: Proxy response)
+                case mreq of
+                    Nothing -> return (Left (RequestMissingException rid))
+                    Just req -> Right <$> f rid req
+            let mres = case eres of
+                    Left (fromException -> Just ReenqueueWork) -> Nothing
+                    Left ex -> Just (Left (wrapException ex))
+                    Right (Left ex) -> Just (Left ex)
+                    Right (Right x) -> Just (Right x)
+            case mres of
+                Just res -> do
+                    sendResponse r jqcResponseExpiry wid rid (encode res)
+                    addRequestEvent r rid (RequestWorkFinished wid)
+                Nothing -> do
+
+                    addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
+    $logDebug "Waiting for request notification"
+    takeMVarE notify NoLongerWaitingForRequest
+    $logDebug "Got notified of an available request"
+
+--TODO: decouple protocol checking concern from job-queue
+
+receiveRequest
+    :: forall request response m.
+       (MonadConnect m, Sendable request, Sendable response)
+    => Redis
+    -> WorkerId
+    -> RequestId
+    -> Proxy response
+    -> m (Maybe request)
+receiveRequest redis wid rid Proxy = do
+    mreq <- run redis $ get (requestDataKey redis rid)
+    case mreq of
+        Nothing -> return Nothing
+        Just req -> do
+            addRequestEvent redis rid (RequestWorkStarted wid)
+            let requestTypeFingerprint = typeFingerprint (Proxy :: Proxy request)
+                responseTypeFingerprint = typeFingerprint (Proxy :: Proxy response)
+            JobRequest{..} <- decodeOrThrow "jobWorker" req
+            when (jrRequestTypeFingerprint /= requestTypeFingerprint ||
+                  jrResponseTypeFingerprint /= responseTypeFingerprint) $ do
+                liftIO $ throwIO TypeMismatch
+                    { expectedResponseTypeFingerprint = responseTypeFingerprint
+                    , actualResponseTypeFingerprint = jrResponseTypeFingerprint
+                    , expectedRequestTypeFingerprint = requestTypeFingerprint
+                    , actualRequestTypeFingerprint = jrRequestTypeFingerprint
+                    }
+            when (jrSchema /= redisSchemaVersion) $ do
+                liftIO $ throwIO MismatchedRequestRedisSchemaVersion
+                    { expectedRequestRedisSchemaVersion = redisSchemaVersion
+                    , actualRequestRedisSchemaVersion = jrSchema
+                    , schemaMismatchRequestId = rid
+                    }
+            fmap Just $ decodeOrThrow "jobWorker" jrBody
+
+-- | Send a response for a particular request. Once the response is
+-- successfully sent, this also removes the request data, as it's no
+-- longer needed.
+sendResponse
+    :: MonadConnect m
+    => Redis
+    -> Seconds
+    -> WorkerId
     -> RequestId
     -> ByteString
-    -> MasterFunc m request response
-    -> m (Either DistributedJobQueueException response)
-becomeMaster params@WorkerParams{..} k req master = do
-    $logInfoS "JobQueue" (tshow wpId ++ " becoming master, for " ++ tshow k)
-    eres <- tryAny $ do
-        addRequestEvent wpRedis k (RequestWorkStarted wpId)
-        let requestTypeFingerprint = typeFingerprint (Proxy :: Proxy request)
-            responseTypeFingerprint = typeFingerprint (Proxy :: Proxy response)
-        JobRequest{..} <- decodeOrThrow "jobQueueWorker" req
-        when (jrRequestTypeFingerprint /= requestTypeFingerprint ||
-              jrResponseTypeFingerprint /= responseTypeFingerprint) $ do
-            liftIO $ throwIO TypeMismatch
-                { expectedResponseTypeFingerprint = responseTypeFingerprint
-                , actualResponseTypeFingerprint = jrResponseTypeFingerprint
-                , expectedRequestTypeFingerprint = requestTypeFingerprint
-                , actualRequestTypeFingerprint = jrRequestTypeFingerprint
-                }
-        when (jrSchema /= redisSchemaVersion) $ do
-            liftIO $ throwIO MismatchedRequestRedisSchemaVersion
-                { expectedRequestRedisSchemaVersion = redisSchemaVersion
-                , actualRequestRedisSchemaVersion = jrSchema
-                , schemaMismatchRequestId = k
-                }
-        decoded <- decodeOrThrow "jobQueueWorker" jrBody
-        let WorkerConfig{..} = wpConfig
-        watchForCancel wpRedis k workerCancellationCheckIvl $ do
-            (ss, getPort) <- liftIO $ getPortAfterBind (serverSettingsTCP workerPort "*")
-            master params ss k decoded $ do
-                port <- liftIO getPort
-                return $ MasterConnectInfo workerHostName port
-    case eres of
-        Left err -> do
-            $logErrorS "JobQueue" $
-                tshow k <> " failed with " <> tshow err
-            return (Left (wrapException err))
-        Right x -> do
-            $logInfoS "JobQueue" (tshow wpId ++ " done being master")
-            return (Right x)
+    -> m ()
+sendResponse r expiry wid k x = do
+    -- Store the response data, and notify the client that it's ready.
+    run_ r $ set (responseDataKey r k) x [EX expiry]
+    run_ r $ publish (responseChannel r) (unRequestId k)
+    -- Remove the RequestId associated with this response, from the
+    -- list of in-progress requests.
+    let ak = LKey (activeKey r wid)
+    removed <- try $ run r $ lrem ak 1 (unRequestId k)
+    case removed :: Either RedisException Int64 of
+        Right 1 -> do
+            -- Remove the request data, as it's no longer needed.  We don't
+            -- check if the removal succeeds, as this may not be the first
+            -- time a response is sent for the request.  See the error message
+            -- above.
+            run_ r $ del (unVKey (requestDataKey r k) :| [])
+        _ -> $logWarn $
+            tshow k <>
+            " isn't a member of active queue (" <>
+            tshow ak <>
+            "), likely indicating that a heartbeat failure happened, causing\
+            \ it to be erroneously re-enqueued.  This doesn't affect\
+            \ correctness, but could mean that redundant work is performed."
+    -- Store when the response was stored.
+    responseTime <- liftIO getPOSIXTime
+    setRedisTime r (responseTimeKey r k) responseTime [EX expiry]
 
-watchForCancel :: MonadConnect m => RedisInfo -> RequestId -> Seconds -> m a -> m a
-watchForCancel r k ivl f = do
-    -- FIXME: avoid this MVar stuff, once we have good lifted async.
-    resultVar <- newEmptyMVar
-    thread <- asyncLifted $ do
-        result <- f
-        putMVar resultVar result
-    let loop = do
-            mres <- run r (get (cancelKey r k))
-            case mres of
-                Just res
-                    | res == cancelValue ->
-                        liftIO $ cancelWith thread (RequestCanceledException k)
-                    | otherwise -> liftIO $ throwIO $ InternalJobQueueException
-                        "Didn't get expected value at cancelKey."
-                Nothing -> do
-                    liftIO $ threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl))
-                    loop
-    watcher <- asyncLifted loop
-    res <- liftIO $ waitEither thread watcher
-    case res of
-        Left () -> do
-            liftIO $ cancel watcher
-            takeMVarE resultVar $ InternalJobQueueException
-                "Unexpected BlockedIndefinitelyOnMVar exception in watchForCancel"
-        Right () -> liftIO $ throwIO (RequestCanceledException k)
+-- * Re-enqueuing work
 
-unsubscribeToRequests :: MonadConnect m => MaybeWithSubscription -> m ()
-unsubscribeToRequests NoSubscription = return ()
-unsubscribeToRequests (WithSubscription _ unsub) = liftIO unsub
+data ReenqueueWork = ReenqueueWork
+    deriving (Eq, Show, Typeable)
+
+instance Exception ReenqueueWork
+
+-- | Stop working on this item, and re-enqueue it for some other worker
+-- to handle.
+reenqueueWork :: MonadIO m => m ()
+reenqueueWork = liftIO $ throwIO ReenqueueWork
 
 -- * Utilities
 
-withWorkerRedis :: MonadConnect m => WorkerConfig -> (RedisInfo -> m a) -> m a
-withWorkerRedis config = withRedis (workerKeyPrefix config) (workerConnectInfo config)
+wrapException :: SomeException -> DistributedException
+wrapException ex =
+    case ex of
+        (fromException -> Just err) -> err
+        (fromException -> Just err) -> NetworkMessageException err
+        _ -> OtherException (tshow (typeOf ex)) (tshow ex)
 
 getWorkerId :: IO WorkerId
 getWorkerId = do

@@ -28,10 +28,10 @@ import ClassyPrelude hiding (keys)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Time
 import Data.Time.Clock.POSIX
-import Distributed.JobQueue.Heartbeat (heartbeatActiveKey, heartbeatLastCheckKey)
-import Distributed.JobQueue.Shared
-import Distributed.RedisQueue
-import Distributed.RedisQueue.Internal
+import Distributed.Heartbeat.Internal (heartbeatActiveKey, heartbeatLastCheckKey)
+import Distributed.JobQueue.Internal
+import Distributed.Redis
+import Distributed.Types
 import FP.Redis
 
 data JobQueueStatus = JobQueueStatus
@@ -52,7 +52,7 @@ data RequestStatus = RequestStatus
     , rsStart :: !(Maybe POSIXTime)
     } deriving Show
 
-getJobQueueStatus :: MonadCommand m => RedisInfo -> m JobQueueStatus
+getJobQueueStatus :: MonadCommand m => Redis -> m JobQueueStatus
 getJobQueueStatus r = do
     checkRedisSchemaVersion r
     mLastTime <- getRedisTime r (heartbeatLastCheckKey r)
@@ -85,7 +85,7 @@ getJobQueueStatus r = do
         , jqsWorkers = workers
         }
 
-clearHeartbeatFailure :: MonadCommand m => RedisInfo -> WorkerId -> m ()
+clearHeartbeatFailure :: MonadCommand m => Redis -> WorkerId -> m ()
 clearHeartbeatFailure r wid = do
      let k = activeKey r wid
      eres <- try $ run r $ get (VKey k)
@@ -95,7 +95,7 @@ clearHeartbeatFailure r wid = do
          -- Indicates heartbeat failure
          Right _ -> void $ run r $ del (k :| [])
 
-getActiveWorkers :: MonadCommand m => RedisInfo -> m [WorkerId]
+getActiveWorkers :: MonadCommand m => Redis -> m [WorkerId]
 getActiveWorkers r = do
     let activePrefix = redisKeyPrefix r <> "active:"
     activeKeys <- run r $ keys (activePrefix <> "*")
@@ -111,7 +111,7 @@ data RequestStats = RequestStats
     , rsFetchCount :: Int
     }
 
-getRequestStats :: MonadCommand m => RedisInfo -> RequestId -> m (Maybe RequestStats)
+getRequestStats :: MonadCommand m => Redis -> RequestId -> m (Maybe RequestStats)
 getRequestStats r k = do
     evs <- getRequestEvents r k
     case evs of
@@ -126,13 +126,13 @@ getRequestStats r k = do
             rsTotalTime = diffUTCTime <$> rsComputeFinishTime <*> rsEnqueueTime
             rsFetchCount = length [() | (_, RequestResponseRead) <- evs]
 
-getAllRequests :: MonadCommand m => RedisInfo -> m [RequestId]
+getAllRequests :: MonadCommand m => Redis -> m [RequestId]
 getAllRequests r =
     fmap (mapMaybe (fmap RequestId . (stripSuffix ":events" =<<) . stripPrefix requestPrefix . unKey)) $
     run r (keys (requestPrefix <> "*"))
   where
     requestPrefix = redisKeyPrefix r <> "request:"
 
-getAllRequestStats :: MonadCommand m => RedisInfo -> m [(RequestId, RequestStats)]
+getAllRequestStats :: MonadCommand m => Redis -> m [(RequestId, RequestStats)]
 getAllRequestStats r =
     fmap catMaybes . mapM (\k -> fmap (k,) <$> getRequestStats r k) =<< getAllRequests r

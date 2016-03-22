@@ -47,7 +47,12 @@ data SlaveReq state context input
   deriving (Generic, Eq, Show, NFData, B.Serialize)
 
 instance (HasTypeFingerprint state, HasTypeFingerprint context, HasTypeFingerprint input) => HasTypeFingerprint (SlaveReq state context input) where
-    typeFingerprint _ = typeFingerprint (Proxy :: Proxy (state, context, input))
+    typeFingerprint _ = combineTypeFingerprints
+        [ typeFingerprint (Proxy :: Proxy state)
+        , typeFingerprint (Proxy :: Proxy context)
+        , typeFingerprint (Proxy :: Proxy input)
+        ]
+    showType _ = "SlaveReq (" ++ showType (Proxy :: Proxy state) ++ ") (" ++ showType (Proxy :: Proxy context) ++ ") (" ++ showType (Proxy :: Proxy input) ++ ")"
 
 data SlaveResp state output
   = SRespResetState
@@ -61,7 +66,11 @@ data SlaveResp state output
   deriving (Generic, Eq, Show, NFData, B.Serialize)
 
 instance (HasTypeFingerprint state, HasTypeFingerprint output) => HasTypeFingerprint (SlaveResp state output) where
-    typeFingerprint _ = typeFingerprint (Proxy :: Proxy (state, output))
+    typeFingerprint _ = combineTypeFingerprints
+        [ typeFingerprint (Proxy :: Proxy state)
+        , typeFingerprint (Proxy :: Proxy output)
+        ]
+    showType _ = "SlaveResp (" ++ showType (Proxy :: Proxy state) ++ ") (" ++ showType (Proxy :: Proxy output) ++ ")"
 
 displayReq :: SlaveReq state context input -> Text
 displayReq (SReqResetState mp) = "SReqResetState (" <> pack (show (HMS.keys mp)) <> ")"
