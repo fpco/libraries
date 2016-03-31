@@ -169,7 +169,9 @@ data WorkerConnectInfo = WorkerConnectInfo
     { wciHost :: !ByteString
     , wciPort :: !Int
     }
-    deriving (Generic, Show, Typeable)
+    deriving (Eq, Show, Ord, Generic, Typeable)
+
+instance Serialize WorkerConnectInfo
 
 -- * Exceptions
 
@@ -195,8 +197,6 @@ data DistributedException
         }
     -- ^ Thrown when the client makes a request with the wrong request
     -- / response types.
-    | RequestCanceledException !RequestId
-    -- ^ The request has been cancelled by the user.
     | NoRequestForCallbackRegistration !RequestId
     -- ^ Exception thrown when registering a callback for a non-existent
     -- request.
@@ -218,6 +218,12 @@ data DistributedException
     | NoLongerWaitingForRequest
     -- ^ Exception thrown by worker functions that block waiting for
     -- request.
+    | NoLongerWaitingForWorkerRequest
+    -- ^ Exception thrown by worker functions that block waiting for
+    -- worker requests.
+    | RequestCanceled !RequestId
+    -- ^ Exception returned to the user when the request has been
+    -- cancelled, and is no longer being worked on.
     | NetworkMessageException !NetworkMessageException
     -- ^ Exceptions thrown by "Data.Streaming.NetworkMessage"
     | InternalJobQueueException !Text
@@ -250,10 +256,6 @@ instance Show DistributedException where
         ", expectedRequestTypeFingerprint = " ++ show expectedRequestTypeFingerprint ++
         ", actualRequestTypeFingerprint = " ++ show actualRequestTypeFingerprint ++
         "}"
-    show (RequestCanceledException rid) =
-        "RequestCanceledException (" ++
-        show rid ++
-        ")"
     show (NoRequestForCallbackRegistration rid) =
         "NoRequestForCallbackRegistration (" ++
         show rid ++
@@ -278,6 +280,12 @@ instance Show DistributedException where
         [ "NoLongerWaitingForRequest "
         , "{- This is usually because we lost the connection to redis, and couldn't reconnect. -}"
         ]
+    show NoLongerWaitingForWorkerRequest = concat
+        [ "NoLongerWaitingForWorkerRequest "
+        , "{- This is usually because we lost the connection to redis, and couldn't reconnect. -}"
+        ]
+    show (RequestCanceled rid) =
+        "RequestCanceled (" ++ show rid ++ ")"
     show (NetworkMessageException nme) =
         "NetworkMessageException (" ++ show nme ++ ")"
     show (InternalJobQueueException txt) =

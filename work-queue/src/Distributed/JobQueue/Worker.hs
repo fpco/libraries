@@ -8,7 +8,7 @@
 
 -- This module provides a job-queue with heartbeat checking.
 module Distributed.JobQueue.Worker
-    (jobWorker, reenqueueWork) where
+    (jobWorker, reenqueueWork, cancelWork) where
 
 import ClassyPrelude
 import Control.Monad.Logger
@@ -92,16 +92,25 @@ jobWorkerThread JobQueueConfig {..} r wid notify f = forever $ do
                     Nothing -> return (Left (RequestMissingException rid))
                     Just req -> Right <$> f rid req
             let mres = case eres of
-                    Left (fromException -> Just ReenqueueWork) -> Nothing
+                    Right res -> Just res
+                    Left (fromException -> Just (ReenqueueWork rid'))
+                        | rid == rid' -> Nothing
+                        | otherwise -> Just $ Left $ InternalJobQueueException $
+                            "ReenqueueWork's RequestId didn't match. " <>
+                            "Expected " <> tshow rid <>
+                            ", but got " <> tshow rid'
+                    Left (fromException -> Just (CancelWork rid'))
+                        | rid == rid' -> Just $ Left (RequestCanceled rid)
+                        | otherwise -> Just $ Left $ InternalJobQueueException $
+                            "CancelWork's RequestId didn't match. " <>
+                            "Expected " <> tshow rid <>
+                            ", but got " <> tshow rid'
                     Left ex -> Just (Left (wrapException ex))
-                    Right (Left ex) -> Just (Left ex)
-                    Right (Right x) -> Just (Right x)
             case mres of
                 Just res -> do
                     sendResponse r jqcResponseExpiry wid rid (encode res)
                     addRequestEvent r rid (RequestWorkFinished wid)
                 Nothing -> do
-
                     addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
     $logDebug "Waiting for request notification"
     takeMVarE notify NoLongerWaitingForRequest
@@ -181,15 +190,44 @@ sendResponse r expiry wid k x = do
 
 -- * Re-enqueuing work
 
-data ReenqueueWork = ReenqueueWork
-    deriving (Eq, Show, Typeable)
+-- | This is an exception which signals to 'jobWorker' that it should
+-- stop working, and re-enqueue the work.
+data ReenqueueWork = ReenqueueWork RequestId
+    deriving (Eq, Typeable)
+
+instance Show ReenqueueWork where
+    show (ReenqueueWork rid) =
+        "ReenqueueWork (" ++
+        show rid ++
+        ") {- This signals that the popped request should be re-enqueued." ++
+        "If it's being displayed, this indicates it was thrown in the wrong place -}"
 
 instance Exception ReenqueueWork
 
 -- | Stop working on this item, and re-enqueue it for some other worker
 -- to handle.
-reenqueueWork :: MonadIO m => m ()
-reenqueueWork = liftIO $ throwIO ReenqueueWork
+reenqueueWork :: MonadIO m => RequestId -> m ()
+reenqueueWork = liftIO . throwIO . ReenqueueWork
+
+-- * Canceling work
+
+-- | This is an exception which signals to 'jobWorker' that it should
+-- stop working, and entirely abort the work.
+data CancelWork = CancelWork RequestId
+    deriving (Eq, Typeable)
+
+instance Show CancelWork where
+    show (CancelWork rid) =
+        "CancelWork (" ++
+        show rid ++
+        ") {- This signals that the popped request should be aborted." ++
+        "If it's being displayed, this indicates it was thrown in the wrong place -}"
+
+instance Exception CancelWork
+
+-- | Stop working on this item, and don't re-enqueue it.
+cancelWork :: MonadIO m => RequestId -> m ()
+cancelWork = liftIO . throwIO . CancelWork
 
 -- * Utilities
 

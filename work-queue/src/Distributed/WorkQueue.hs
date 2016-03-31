@@ -1,13 +1,15 @@
 {-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE DeriveGeneric      #-}
-{-# LANGUAGE FlexibleContexts   #-}
-{-# LANGUAGE NoImplicitPrelude  #-}
-{-# LANGUAGE OverloadedStrings  #-}
-{-# LANGUAGE ConstraintKinds  #-}
-{-# LANGUAGE TemplateHaskell  #-}
-{-# LANGUAGE TypeFamilies     #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ViewPatterns #-}
 -- | Distribute a "Data.WorkQueue" queue over a network via
 -- "Data.Streaming.NetworkMessage".
 --
@@ -17,34 +19,37 @@
 -- Note that despite being the eponymous module of this package, the
 -- focus has shifted to "Distributed.Stateful".
 module Distributed.WorkQueue
-    ( withMaster
+    ( MasterConfig(..)
+    , defaultMasterConfig
+    , withMaster
     , runSlave
+      -- * CLI interface
     , RunMode (..)
     , runModeParser
     , runArgs
+      -- * Exceptions
     , DistributedWorkQueueException (..)
-
       -- * Re-exports
     , module Data.WorkQueue
-
-      -- * General interface
-    , ToSlave
-    , generalWithMaster
-    , generalRunSlave
     ) where
 
-import ClassyPrelude hiding ((<>))
-import Control.Concurrent.Async (withAsync)
-import Control.Monad.Trans.Control
-import Data.Function (fix)
-import Data.Serialize (Serialize)
-import Data.Streaming.Network
-import Data.Streaming.NetworkMessage
-import Data.TypeFingerprint
-import Data.WorkQueue
-import FP.ThreadFileLogger (logIODebugS, logExceptions)
-import Options.Applicative
-import Data.Proxy (Proxy(..))
+import           ClassyPrelude hiding ((<>))
+import           Control.Concurrent.Async (withAsync)
+import           Control.Monad.Logger
+import           Control.Monad.Trans.Control
+import qualified Data.ByteString.Char8 as BS8
+import           Data.Function (fix)
+import           Data.Proxy (Proxy(..))
+import           Data.Serialize (Serialize)
+import           Data.Streaming.Network
+import           Data.Streaming.NetworkMessage
+import           Data.TypeFingerprint
+import           Data.WorkQueue
+import           Distributed.Types
+import           FP.ThreadFileLogger
+import           FP.ThreadFileLogger (logIODebugS, logExceptions)
+import           GHC.IO.Exception (IOException(IOError))
+import           Options.Applicative
 
 data ToSlave initialData payload
     = TSInit initialData
@@ -68,12 +73,8 @@ data RunMode
         { numSlaves :: Int
         , masterPort :: Int
         }
-    | SlaveMode
-        { masterHost :: String
-        , masterPort :: Int
-        }
+    | SlaveMode WorkerConnectInfo
     deriving (Eq, Ord, Show, Generic, Typeable)
-
 
 runModeParser :: Parser RunMode
 runModeParser = subparser
@@ -96,14 +97,13 @@ runModeParser = subparser
         )
 
         <> command "slave" (info
-            (SlaveMode
-                <$> (argument str (metavar "<master host>"))
-                <*> (argument auto (metavar "<master port>"))
+            (SlaveMode <$> (WorkerConnectInfo
+                <$> (BS8.pack <$> (argument str (metavar "<master host>")))
+                <*> (argument auto (metavar "<master port>")))
             )
             (progDesc "Connect to a master on the given host and port")
         )
     )
-
 
 -- | Decide what to run based on command line arguments.
 --
@@ -124,7 +124,7 @@ runArgs getInitialData calc inner = liftIO $ do
     case runMode of
         DevMode slaves -> dev slaves
         MasterMode lslaves port -> master lslaves port
-        SlaveMode host port -> slave host port
+        SlaveMode wci -> slave wci
   where
     dev slaves | slaves < 1 = error "Must use at least one slave"
     dev slaves = withWorkQueue $ \queue -> do
@@ -133,8 +133,8 @@ runArgs getInitialData calc inner = liftIO $ do
 
     master lslaves port = do
         initialData <- getInitialData
-        nmSettings <- defaultNMSettings
-        withMaster (runTCPServer ss) nmSettings initialData $ \queue ->
+        config <- defaultMasterConfig
+        withMaster config initialData $ \_ queue ->
             withLocalSlaves
                 queue
                 lslaves
@@ -144,11 +144,24 @@ runArgs getInitialData calc inner = liftIO $ do
         ss = setAfterBind (const $ putStrLn $ "Listening on " ++ tshow port)
                           (serverSettingsTCP port "*")
 
-    slave host port = do
-        nmSettings <- defaultNMSettings
-        void $ runSlave cs nmSettings (\_ -> return ()) calc
-      where
-        cs = clientSettingsTCP port $ fromString $ unpack host
+    slave wci = do
+        nms <- defaultNMSettings
+        runThreadFileLoggingT $ runSlave nms wci calc
+
+data MasterConfig = MasterConfig
+    { masterHost :: ByteString
+    , masterServerSettings :: ServerSettings
+    , masterNMSettings :: NMSettings
+    }
+
+defaultMasterConfig :: IO MasterConfig
+defaultMasterConfig = do
+    nms <- defaultNMSettings
+    return MasterConfig
+        { masterHost = "localhost"
+        , masterServerSettings = serverSettingsTCP 0 "*"
+        , masterNMSettings = nms
+        }
 
 -- | Start running a server in the background to listen for slaves, create a
 -- 'WorkQueue', and assign jobs as necessary.
@@ -171,72 +184,69 @@ runArgs getInitialData calc inner = liftIO $ do
 -- use 'runSlave'.
 withMaster
     :: ( MonadBaseControl IO m
+       , MonadIO m
        , Sendable initialData
        , Sendable payload
        , Sendable result
        )
-    => (forall a. (AppData -> IO ()) -> IO a)
-    -- ^ run the network server
-    -> NMSettings
+    => MasterConfig
     -> initialData
-    -> (WorkQueue payload result -> m final)
+    -> (WorkerConnectInfo -> WorkQueue payload result -> m final)
     -> m final
-withMaster runApp nmSettings = generalWithMaster (runApp . runNMApp nmSettings)
-
-generalWithMaster
-    :: ( MonadBaseControl IO m
-       , Sendable (ToSlave initialData payload)
-       , Sendable result
-       )
-    => (forall a. NMApp (ToSlave initialData payload) result IO () -> IO a)
-    -- ^ Function to run the server.
-    -> initialData
-    -> (WorkQueue payload result -> m final)
-    -> m final
-generalWithMaster runNm initial inner =
-    control $ \runInBase -> withWorkQueue
-            $ \queue -> withAsync (server queue)
-            $ const $ runInBase $ inner queue
+withMaster MasterConfig {..} initial inner =
+    control $ \runInBase -> withWorkQueue $ \queue -> do
+        (ss, getPort) <- liftIO $ getPortAfterBind masterServerSettings
+        withAsync (server ss queue) $ \_ -> runInBase $ do
+            port <- liftIO getPort
+            inner (WorkerConnectInfo masterHost port) queue
   where
     -- Runs a 'forkIO' based server to which slaves connect. Each
     -- connection to a slave runs 'provideWorker' to run a local
     -- worker on the master that delegates the payloads it receives to
     -- the slave.
-    server queue = logExceptions "server" $ runNm $ \nm -> do
-        let socket = tshow (appSockAddr (nmAppData nm))
-        $logIODebugS "withMaster" $ "Master initializing slave on " ++ socket
-        nmWrite nm $ TSInit initial
-        provideWorker queue $ \payload -> do
-            nmWrite nm $ TSPayload payload
-            nmRead nm
-        $logIODebugS "withMaster" $ "Master finalizing slave on " ++ socket
-        nmWrite nm TSDone
-        $logIODebugS "withMaster" $ "Master done finalizing slave on " ++ socket
+    server ss queue = do
+        logExceptions "server" $ runTCPServer ss $ runNMApp masterNMSettings $ \nm -> do
+            let socket = tshow (appSockAddr (nmAppData nm))
+            $logIODebugS "withMaster" $ "Master initializing slave on " ++ socket
+            nmWrite nm $ TSInit initial
+            provideWorker queue $ \payload -> do
+                nmWrite nm $ TSPayload payload
+                nmRead nm
+            $logIODebugS "withMaster" $ "Master finalizing slave on " ++ socket
+            nmWrite nm TSDone
+            $logIODebugS "withMaster" $ "Master done finalizing slave on " ++ socket
 
 -- | Run a slave to perform computations for a remote master (started with
 -- 'withMaster').
 runSlave
-    :: ( MonadIO m
-       , Sendable initialData
-       , Sendable payload
-       , Sendable result
-       )
-    => ClientSettings
-    -> NMSettings
-    -> (initialData -> IO ())
+    :: (MonadIO m, MonadLogger m, Sendable initialData, Sendable payload, Sendable result)
+    => NMSettings
+    -> WorkerConnectInfo
     -> (initialData -> payload -> IO result)
-    -> m (Either SomeException ())
-runSlave cs nm = generalRunSlave (runTCPClient cs . runNMApp nm)
-
-generalRunSlave
-    :: (MonadIO m)
-    => (forall a. NMApp result (ToSlave initialData payload) IO a -> IO a)
-    -- ^ Function to run the slave client.
-    -> (initialData -> IO ())
-    -> (initialData -> payload -> IO result)
-    -> m (Either SomeException ())
-generalRunSlave runNm init calc =
-    liftIO $ runNm nmapp
+    -> m ()
+runSlave nms wci@(WorkerConnectInfo host port) calc = do
+    let clientSettings = clientSettingsTCP port host
+    eres <- liftIO $ runTCPClient clientSettings $ runNMApp nms nmapp
+    case eres of
+        Right x -> return ()
+        -- This indicates that the slave couldn't connect.
+        Left (fromException -> Just err@(IOError {})) -> do
+            $logInfoS "runSlave" $
+                "Failed to connect to master " <>
+                tshow wci <>
+                ".  This probably isn't an issue - the master likely " <>
+                "already finished or died.  Here's the exception: " <>
+              tshow err
+            return ()
+        Left (fromException -> Just NMConnectionDropped) -> do
+            $logWarnS "runSlave" $ "Ignoring NMConnectionDropped in slave"
+            return ()
+        Left (fromException -> Just NMConnectionClosed) -> do
+            $logWarnS "runSlave" $ "Ignoring NMConnectionClosed in slave"
+            return ()
+        Left err -> do
+            $logErrorS "runSlave" $ "Unexpected exception in slave: " ++ tshow err
+            liftIO $ throwIO err
   where
     nmapp nm = tryAny $ do
         let socket = tshow (appSockAddr (nmAppData nm))
@@ -244,8 +254,6 @@ generalRunSlave runNm init calc =
         ts0 <- nmRead nm
         case ts0 of
             TSInit initialData -> do
-                $logIODebugS "runSlave" $ "Running initial action"
-                init initialData
                 $logIODebugS "runSlave" $ "Listening for payloads"
                 fix $ \loop -> do
                     ts <- nmRead nm

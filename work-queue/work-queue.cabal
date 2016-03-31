@@ -26,6 +26,7 @@ library
                        Data.SimpleSupply
                        Data.Streaming.NetworkMessage
                        Data.TypeFingerprint
+                       Distributed.ConnectRequest
                        Distributed.Types
                        Distributed.Redis
                        Distributed.JobQueue.Client
@@ -40,6 +41,7 @@ library
                        Distributed.Stateful.Master
                        Distributed.Stateful.Slave
                        Distributed.WorkQueue
+                       Distributed.Integrated
                        -- TODO: remove these?  Not used.
                        Control.Concurrent.ThreadPool
                        Control.Exception.Mask
@@ -134,6 +136,7 @@ executable hpc-example-redis
                      , unix
                      , semigroups
                      , thread-file-logger
+                     , async
   ghc-options:         -Wall -threaded
 
 executable hpc-example-stateful-client
