@@ -21,7 +21,10 @@ import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import qualified Data.Streaming.NetworkMessage as NM
+import           Data.Void (absurd)
 import           Distributed.Stateful.Internal
+import           Distributed.Types (LogFunc, WorkerConnectInfo(..))
+import           Distributed.WorkQueue (handleWorkerException)
 
 -- | Arguments for 'runSlave'.
 data SlaveArgs state context input output = SlaveArgs
@@ -30,7 +33,7 @@ data SlaveArgs state context input output = SlaveArgs
     -- master.
   , saInit :: !(IO ())
     -- ^ Action to run upon initial connection.
-  , saClientSettings :: !CN.ClientSettings
+  , saConnectInfo :: !WorkerConnectInfo
     -- ^ Settings for the slave's TCP connection.
   , saNMSettings :: !NM.NMSettings
     -- ^ Settings for the connection to the master.
@@ -46,22 +49,28 @@ data SlaveException
 
 instance Exception SlaveException
 
--- | Runs a stateful slave, and never returns (though may throw
--- exceptions).
-runSlave :: forall state context input output void.
+-- | Runs a stateful slave. Returns when it gets disconnected from the
+-- master.
+runSlave :: forall state context input output.
      ( NM.Sendable (SlaveReq state context input), NM.Sendable (SlaveResp state output)
      , NFData state, NFData output
      )
   => SlaveArgs state context input output
-  -> IO void
-runSlave SlaveArgs{..} =
-    CN.runTCPClient saClientSettings $
-    NM.runNMApp saNMSettings $ \nm -> do
-      saInit
-      go (NM.nmRead nm) (NM.nmWrite nm) HMS.empty
+  -> IO ()
+runSlave SlaveArgs{..} = do
+    let WorkerConnectInfo host port = saConnectInfo
+    eres <- try $
+        CN.runTCPClient (CN.clientSettings port host) $
+        NM.runNMApp saNMSettings $ \nm -> do
+          saInit
+          go (NM.nmRead nm) (NM.nmWrite nm) HMS.empty
+    case eres of
+        Right x -> absurd x
+        Left err -> runLogger $ handleWorkerException saConnectInfo err
   where
+    runLogger f = runLoggingT f saLogFunc
     throw = throwAndLog saLogFunc
-    debug msg = runLoggingT (logDebugNS "Distributed.Stateful.Slave" msg) saLogFunc
+    debug msg = runLogger (logDebugNS "Distributed.Stateful.Slave" msg)
     go :: IO (SlaveReq state context input)
       -> (SlaveResp state output -> IO ())
       -> (HMS.HashMap StateId state)

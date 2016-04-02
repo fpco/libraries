@@ -36,7 +36,6 @@ library
                        Distributed.Heartbeat
                        Distributed.Heartbeat.Internal
                        Distributed.JobQueue.Status
-                       -- Distributed.Stateful
                        Distributed.Stateful.Internal
                        Distributed.Stateful.Master
                        Distributed.Stateful.Slave

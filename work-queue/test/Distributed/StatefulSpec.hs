@@ -9,14 +9,6 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Distributed.StatefulSpec (spec) where
 
-import Test.Hspec
-import Prelude (return)
-
-spec :: Spec
-spec = return ()
-
-{-
-
 import           ClassyPrelude
 import           Control.Concurrent.Async
 import           Control.Concurrent.STM (retry, check)
@@ -24,7 +16,7 @@ import           Control.DeepSeq (NFData)
 import           Control.Exception (BlockedIndefinitelyOnSTM(..))
 import           Control.Monad.Logger
 import           Data.Bits
-import           Data.Conduit.Network (serverSettings, clientSettings)
+import           Data.Conduit.Network (serverSettings)
 import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -33,18 +25,17 @@ import           Data.Streaming.NetworkMessage
 import qualified Data.Streaming.NetworkMessage as NM
 import           Data.TypeFingerprint (mkManyHasTypeFingerprint)
 import           Data.TypeFingerprintSpec ()
+import           Distributed.Integrated
 import           Distributed.JobQueue.Client
-import           Distributed.Redis (Redis)
-import           Distributed.Stateful
 import           Distributed.Stateful.Internal (StateId(..))
 import           Distributed.Stateful.Master
 import           Distributed.Stateful.Slave
 import           Distributed.TestUtil
+import           Distributed.Types
 import           FP.Redis
-import           Test.Hspec (shouldThrow)
 import qualified Test.Hspec as Hspec
-import           Test.QuickCheck hiding (output)
 import           Test.Hspec.Expectations.Lifted (shouldBe)
+import           Test.QuickCheck hiding (output)
 
 newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
 newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
@@ -101,24 +92,27 @@ spec = do
          return True
     Hspec.it "Integrates with job-queue" $ do
         clearRedisKeys
-        let args = WorkerArgs
-              { waConfig = defaultWorkerConfig redisTestPrefix localhost "localhost"
-              , waMasterArgs = MasterArgs Nothing (Just 5)
-              , waRequestSlaveCount = 2
-              , waMasterWaitTime = Seconds 1
-              }
         logFunc <- getLogFunc
+        nms <- nmSettings
+        let sma = StatefulMasterArgs
+                { smaMasterArgs = MasterArgs Nothing (Just 5)
+                , smaRequestSlaveCount = 2
+                , smaMasterWaitTime = Seconds 1
+                , smaLogFunc = logFunc
+                , smaRedisConfig = redisConfig
+                , smaHostName = "localhost"
+                , smaNMSettings = nms
+                }
         let slaveFunc _ (Input y) (State z) = return (State (y `xor` z), Output (y `xor` z))
-        let masterFunc :: RedisInfo -> RequestId -> Context -> MasterHandle State Context Input Output -> IO Int
+        let masterFunc :: Redis -> RequestId -> Context -> MasterHandle State Context Input Output -> IO Int
             masterFunc _redis _rid r mh = do
               sids <- HMS.keys <$> resetStates mh (map State [1..16])
               outputs <- update mh r (HMS.fromList (zip sids (map ((:[]) . Input) [17..32])))
               let outputValues = map (\(Output n) -> n) (concatMap HMS.elems (HMS.elems outputs))
               return (foldl' xor 0 outputValues)
-        void $ mapConcurrently (\_ -> runWorker args logFunc slaveFunc masterFunc) [1..(2 :: Int)]
+        void $ mapConcurrently (\_ -> statefulJQWorker jqConfig sma slaveFunc masterFunc) [1..(2 :: Int)]
           `race` do
-            jc <- newJobClient logFunc defaultJobClientConfig
-                { jccRedisPrefix = redisTestPrefix }
+            jc <- newJobClient logFunc jqConfig
             fetchOutput <- submitRequestAndWaitForResponse jc (RequestId "request") (Context 1)
             res <- atomically $ do
                 mres <- fetchOutput
@@ -130,17 +124,17 @@ spec = do
         runSimple $ \mh -> do
             (sid0:sids) <- HS.toList <$> getStateIds mh
             let inputs = HMS.fromList $ map (, ["input 1"]) sids
-            update mh () inputs `shouldThrow` (== InputMissingException sid0)
+            void (update mh () inputs) `shouldThrow` (== InputMissingException sid0)
     Hspec.it "Throws UnusedInputsException" $
         runSimple $ \mh -> do
             let extra = StateId 10
             sids <- ((extra:) . HS.toList) <$> getStateIds mh
             let inputs = HMS.fromList $ map (, ["input 1"]) sids
-            update mh () inputs `shouldThrow` (== UnusedInputsException [extra])
+            void (update mh () inputs) `shouldThrow` (== UnusedInputsException [extra])
     Hspec.it "Throws NoSlavesConnectedException" $ do
         logFunc <- getLogFunc
         mh <- mkMasterHandle (MasterArgs Nothing Nothing) logFunc
-        resetStates (mh :: MasterHandle State Context Input Output) []
+        void (resetStates (mh :: MasterHandle State Context Input Output) [])
           `shouldThrow` (== NoSlavesConnectedException)
     Hspec.it "Throws exception for non-positive maxBatchSize" $ do
         let ma = MasterArgs
@@ -148,21 +142,21 @@ spec = do
               , maMaxBatchSize = Just 0
               }
         logFunc <- getLogFunc
-        mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
+        void (mkMasterHandle ma logFunc) `shouldThrow` \case { MasterException _ -> True; _ -> False }
     Hspec.it "Throws exception for negative minBatchSize" $ do
         let ma = MasterArgs
               { maMinBatchSize = Just (-1)
               , maMaxBatchSize = Nothing
               }
         logFunc <- getLogFunc
-        mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
+        void (mkMasterHandle ma logFunc) `shouldThrow` \case { MasterException _ -> True; _ -> False }
     Hspec.it "Throws exception for minBatchSize greater than maxBatchSize" $ do
         let ma = MasterArgs
               { maMinBatchSize = Just 5
               , maMaxBatchSize = Just 4
               }
         logFunc <- getLogFunc
-        mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
+        void (mkMasterHandle ma logFunc) `shouldThrow` \case { MasterException _ -> True; _ -> False }
 
 it :: String -> IO () -> Hspec.Spec
 it name f = Hspec.it name f
@@ -186,14 +180,14 @@ runMasterAndSlaves
     -> (MasterHandle state context input output -> IO a)
     -> IO a
 runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
-    nms <- nmsSettings
+    nms <- nmSettings
     logFunc <- getLogFunc
     -- Running slaves
     let slaveArgs = SlaveArgs
             { saUpdate = slaveUpdate
             , saInit = return ()
             , saNMSettings = nms
-            , saClientSettings = clientSettings port "localhost"
+            , saConnectInfo = WorkerConnectInfo "localhost" port
             , saLogFunc = logFunc
             }
     let runSlaves = mapConcurrently (\_ -> runSlave slaveArgs) (replicate slaveCnt () :: [()])
@@ -256,8 +250,14 @@ pureUpdate f context inputs ps = (ps', outputs)
     outputs :: HMS.HashMap StateId (HMS.HashMap StateId output)
     outputs = HMS.fromListWith (<>) (map (\(sid, sid', (_, output)) -> (sid, HMS.singleton sid' output)) results)
 
-nmsSettings :: IO NMSettings
-nmsSettings = do
+jqConfig :: JobQueueConfig
+jqConfig = defaultJobQueueConfig { jqcRedisConfig = redisConfig }
+
+redisConfig :: RedisConfig
+redisConfig = defaultRedisConfig { rcKeyPrefix = redisTestPrefix }
+
+nmSettings :: IO NMSettings
+nmSettings = do
     nms <- defaultNMSettings
     return $ setNMHeartbeat 5000000 nms -- 5 seconds
 
@@ -276,6 +276,4 @@ modifyArgs = Hspec.modifyParams . modify
   where
     modify :: (Args -> Args) -> Hspec.Params -> Hspec.Params
     modify f p = p {Hspec.paramsQuickCheckArgs = f (Hspec.paramsQuickCheckArgs p)}
--}
-
 -}

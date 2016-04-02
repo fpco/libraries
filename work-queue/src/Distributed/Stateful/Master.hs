@@ -22,16 +22,17 @@ module Distributed.Stateful.Master
 
 import           ClassyPrelude
 import           Control.Concurrent.Async (mapConcurrently)
-import           Control.Monad.Trans.Control (MonadBaseControl)
 import           Control.Monad.Logger (runLoggingT, logDebugNS)
-import qualified Data.Serialize as B
+import           Control.Monad.Trans.Control (MonadBaseControl)
 import           Data.Foldable (foldlM)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Data.List.Split (chunksOf)
+import qualified Data.Serialize as B
 import           Data.SimpleSupply
 import qualified Data.Streaming.NetworkMessage as NM
 import           Distributed.Stateful.Internal
+import           Distributed.Types (LogFunc)
 import           Text.Printf (printf)
 
 -- | Arguments for 'mkMasterHandle'

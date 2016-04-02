@@ -56,7 +56,7 @@ masterOrSlave :: IO ()
 masterOrSlave = do
     logFunc <- runThreadFileLoggingT askLoggerIO
     wqConfig <- liftIO defaultMasterConfig
-    runMasterOrSlave logFunc config wqConfig calc master
+    workQueueJQWorker logFunc config wqConfig calc master
   where
     master redis wci _rid request queue = do
         requestWorker redis wci

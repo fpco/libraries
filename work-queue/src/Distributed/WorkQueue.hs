@@ -31,6 +31,8 @@ module Distributed.WorkQueue
     , DistributedWorkQueueException (..)
       -- * Re-exports
     , module Data.WorkQueue
+      -- * Internal utilities
+    , handleWorkerException
     ) where
 
 import           ClassyPrelude hiding ((<>))
@@ -228,25 +230,8 @@ runSlave nms wci@(WorkerConnectInfo host port) calc = do
     let clientSettings = clientSettingsTCP port host
     eres <- liftIO $ runTCPClient clientSettings $ runNMApp nms nmapp
     case eres of
-        Right x -> return ()
-        -- This indicates that the slave couldn't connect.
-        Left (fromException -> Just err@(IOError {})) -> do
-            $logInfoS "runSlave" $
-                "Failed to connect to master " <>
-                tshow wci <>
-                ".  This probably isn't an issue - the master likely " <>
-                "already finished or died.  Here's the exception: " <>
-              tshow err
-            return ()
-        Left (fromException -> Just NMConnectionDropped) -> do
-            $logWarnS "runSlave" $ "Ignoring NMConnectionDropped in slave"
-            return ()
-        Left (fromException -> Just NMConnectionClosed) -> do
-            $logWarnS "runSlave" $ "Ignoring NMConnectionClosed in slave"
-            return ()
-        Left err -> do
-            $logErrorS "runSlave" $ "Unexpected exception in slave: " ++ tshow err
-            liftIO $ throwIO err
+        Right () -> return ()
+        Left err -> handleWorkerException wci err
   where
     nmapp nm = tryAny $ do
         let socket = tshow (appSockAddr (nmAppData nm))
@@ -274,3 +259,19 @@ data DistributedWorkQueueException
     | UnexpectedTSDone
     deriving (Show, Typeable)
 instance Exception DistributedWorkQueueException
+
+handleWorkerException :: (MonadLogger m, MonadIO m) => WorkerConnectInfo -> SomeException -> m ()
+handleWorkerException wci (fromException -> Just err@(IOError {})) =
+    $logInfoS "runSlave" $
+        "Failed to connect to master " <>
+        tshow wci <>
+        ".  This probably isn't an issue - the master likely " <>
+        "already finished or died.  Here's the exception: " <>
+      tshow err
+handleWorkerException _ (fromException -> Just NMConnectionDropped) =
+    $logWarnS "runSlave" $ "Ignoring NMConnectionDropped in slave"
+handleWorkerException _ (fromException -> Just NMConnectionClosed) =
+    $logWarnS "runSlave" $ "Ignoring NMConnectionClosed in slave"
+handleWorkerException _ err = do
+    $logErrorS "runSlave" $ "Unexpected exception in slave: " ++ tshow err
+    liftIO $ throwIO err

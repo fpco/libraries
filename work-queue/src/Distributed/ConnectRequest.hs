@@ -7,6 +7,7 @@ module Distributed.ConnectRequest
     ) where
 
 import Control.Concurrent.STM (atomically, check, STM)
+import Control.Exception.Lifted (finally)
 import Control.Monad (forever)
 import Control.Monad.IO.Class (liftIO)
 import Data.Foldable (forM_)
@@ -52,11 +53,12 @@ requestWorker
 requestWorker r wci = do
     let encoded = encode wci
     run_ r $ lpush (workerRequestsKey r) (encoded :| [])
+    sendNotify r (workerRequestsNotify r)
 
 withConnectRequests :: MonadConnect m => STM Bool -> Redis -> (WorkerConnectInfo -> m ()) -> m void
 withConnectRequests enabled r f = do
     (notifyVar, unsub) <- subscribeToNotify r (workerRequestsNotify r)
-    forever $ do
+    (`finally` liftIO unsub) $ forever $ do
         mwci <- popWorkerRequest r
         forM_ mwci $ \wci -> do
             isEnabled <- liftIO $ atomically enabled

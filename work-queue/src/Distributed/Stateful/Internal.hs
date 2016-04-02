@@ -11,11 +11,12 @@ import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
+import           Data.Proxy (Proxy(..))
 import qualified Data.Serialize as B
 import           Data.Serialize.Orphans ()
 import           Data.TypeFingerprint
+import           Distributed.Types (LogFunc)
 import           Text.Printf (PrintfArg(..))
-import           Data.Proxy (Proxy(..))
 
 newtype SlaveId = SlaveId {unSlaveId :: Int}
   deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Serialize)
@@ -86,8 +87,6 @@ displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> pack (show k) <>
 displayResp (SRespUpdate mp) = "SRespUpdate (" <> pack (show (fmap HMS.keys mp)) <> ")"
 displayResp (SRespGetStates mp) = "SRespGetStates (" <> pack (show (HMS.keys mp)) <> ")"
 displayResp (SRespError err) = "SRespError " <> pack (show err)
-
-type LogFunc = Loc -> LogSource -> LogLevel -> LogStr -> IO ()
 
 throwAndLog :: (Exception e, MonadIO m) => LogFunc -> e -> m a
 throwAndLog logFunc err = do
