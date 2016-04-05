@@ -163,7 +163,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                 return (yourHS, leftover)
             Nothing -> throwIO NMConnectionDropped
     control $ \runInBase -> do
-        -- FIXME use a bounded chan perhaps? (Make the queue size
+        -- TODO use a bounded chan perhaps? (Make the queue size
         -- configuration in NMSettings.) Since any data sent will
         -- count as a ping, this would not interfere with the
         -- heartbeat.

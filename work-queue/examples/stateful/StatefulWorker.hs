@@ -17,9 +17,7 @@ import           FP.Redis (connectInfo, Seconds(..))
 $(mkHasTypeFingerprint =<< [t| ByteString |])
 
 main :: IO ()
-main = putStrLn "FIXME: stateful test commented out"
-
-{-
+main = do
     logFunc <- runStdoutLoggingT askLoggerIO
     runWorker args logFunc slaveFunc masterFunc
   where
@@ -54,4 +52,3 @@ masterFunc _ _ req mh = do
   assert (sort (HMS.elems outputs) == sort ["initial state 1, first input", "initial state 2, first input"]) (return ())
   results' <- update mh () (HMS.fromList (map (, [req, ", multiplicity! "]) (HMS.keys outputs)))
   return $ fold $ sort $ HMS.elems $ fold results'
--}

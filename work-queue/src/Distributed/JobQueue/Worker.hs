@@ -12,7 +12,7 @@ module Distributed.JobQueue.Worker
 
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (Async, cancel, cancelWith, waitEither)
+import Control.Concurrent.Async (cancel, cancelWith, waitEither)
 import Control.Monad.Logger
 import Data.Bits (xor)
 import Data.List.NonEmpty (NonEmpty((:|)))
@@ -59,8 +59,6 @@ jobWorker config@JobQueueConfig {..} f = do
                 (notify, unsub) <- subscribeToNotify r (requestChannel r)
                 jobWorkerThread config r wid notify (f r) `finally` liftIO unsub
         heartbeatThread `raceLifted` workerThread
-
--- FIXME: bring back cancellation
 
 jobWorkerThread
     :: forall request response m void.

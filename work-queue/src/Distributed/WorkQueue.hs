@@ -43,13 +43,12 @@ import qualified Data.ByteString.Char8 as BS8
 import           Data.Function (fix)
 import           Data.Proxy (Proxy(..))
 import           Data.Serialize (Serialize)
-import           Data.Streaming.Network
+import           Data.Streaming.Network hiding (getPort)
 import           Data.Streaming.NetworkMessage
 import           Data.TypeFingerprint
 import           Data.WorkQueue
 import           Distributed.Types
 import           FP.ThreadFileLogger
-import           FP.ThreadFileLogger (logIODebugS, logExceptions)
 import           GHC.IO.Exception (IOException(IOError))
 import           Options.Applicative
 
@@ -135,16 +134,14 @@ runArgs getInitialData calc inner = liftIO $ do
 
     master lslaves port = do
         initialData <- getInitialData
-        config <- defaultMasterConfig
+        config0 <- defaultMasterConfig
+        let config = config0 { masterServerSettings = serverSettingsTCP port "*" }
         withMaster config initialData $ \_ queue ->
             withLocalSlaves
                 queue
                 lslaves
                 (calc initialData)
                 (inner initialData queue)
-      where
-        ss = setAfterBind (const $ putStrLn $ "Listening on " ++ tshow port)
-                          (serverSettingsTCP port "*")
 
     slave wci = do
         nms <- defaultNMSettings

@@ -11,6 +11,7 @@ import Data.Maybe
 import Data.Time
 import Data.TypeFingerprint (mkHasTypeFingerprint)
 import Distributed.JobQueue.Client
+import Distributed.Types
 
 $(mkHasTypeFingerprint =<< [t| ByteString |])
 
@@ -18,10 +19,13 @@ type Request = ByteString
 type Response = ByteString
 
 main :: IO ()
-main = putStrLn "FIXME: stateful test commented out"
-{-
+main = do
   logFunc <- runStdoutLoggingT askLoggerIO
-  jc <- newJobClient logFunc defaultJobClientConfig { jccRedisPrefix = "stateful-demo:" }
+  jc <- newJobClient logFunc defaultJobQueueConfig
+    { jqcRedisConfig = defaultRedisConfig
+      { rcKeyPrefix = "stateful-demo:"
+      }
+    }
   -- Use the current time as the request id, to avoid cached results.
   now <- getCurrentTime
   let rid = RequestId (pack (show now))
@@ -35,4 +39,3 @@ main = putStrLn "FIXME: stateful test commented out"
       Nothing -> retry
       Just eres -> return eres
   print (eres :: Either DistributedException Response)
--}

@@ -100,7 +100,7 @@ jobClientThread
     => LogFunc -> JobQueueConfig -> DispatchMap response -> TVar Int -> IO void
 jobClientThread logFunc config dispatch inFlight =
     flip runLoggingT logFunc $ forever $ do
-        -- FIXME: use redis conn here too. My reluctance to make the
+        -- TODO: use redis conn here too. My reluctance to make the
         -- change now is that perhaps there is a subtle reason it is not
         -- already that way.
         eres <- tryAny $ withRedis (jqcRedisConfig config) $

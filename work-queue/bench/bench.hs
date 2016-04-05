@@ -15,7 +15,7 @@ import FP.Redis
 
 main :: IO ()
 main =
-  -- FIXME: Ideally there would be a way to get redis connections and free for
+  -- TODO: Ideally there would be a way to get redis connections and free for
   -- each benchmark (but not measure this time). This is not yet possible - see
   -- https://github.com/bos/criterion/issues/79
   runNoLoggingT $

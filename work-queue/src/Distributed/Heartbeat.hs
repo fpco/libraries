@@ -17,7 +17,7 @@ import Distributed.Types
 import FP.Redis
 import FP.ThreadFileLogger
 
--- FIXME: add warnings when the check rate is too low compared to send
+-- TODO: add warnings when the check rate is too low compared to send
 -- rate.
 
 -- | Periodically check worker heartbeats. See #78 for a description of
@@ -79,22 +79,3 @@ sendHeartbeats config r wid heartbeatSentVar = do
     sendHeartbeat = do
         now <- liftIO getPOSIXTime
         run_ r $ zadd (heartbeatActiveKey r) ((realToFrac now, unWorkerId wid) :| [])
-
-{- FIXME: remove
-
--- | This removes the worker from the set which are actively checked via
--- heartbeats.  If there's active work, then it throws
--- 'WorkStillInProgress', but still halts the heartbeats.  When this
--- happens, the heartbeat checker will re-enqueue the items.  The
--- occurence of this error indicates misuse of sendHeartbeats, where
--- it gets cancelled before work is done.
-deactivateHeartbeats
-    :: MonadConnect m => Redis -> WorkerId -> m ()
-deactivateHeartbeats r wid = do
-    activeCount <- try $ run r $ llen (LKey (activeKey r wid))
-    case activeCount :: Either RedisException Int64 of
-        Right 0 -> return ()
-        Right _ -> throwIO (WorkStillInProgress wid)
-        _ -> return ()
-    run_ r $ zrem (heartbeatActiveKey r) (unWorkerId wid :| [])
--}

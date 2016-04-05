@@ -102,7 +102,7 @@ getActiveWorkers r = do
     return $ mapMaybe (fmap WorkerId . stripPrefix activePrefix . unKey) activeKeys
 
 data RequestStats = RequestStats
-    { rsEnqueueTime :: Maybe UTCTime -- ^ FIXME: figure out why this can be Nothing 0_0
+    { rsEnqueueTime :: Maybe UTCTime
     , rsReenqueueCount :: Int
     , rsComputeStartTime :: Maybe UTCTime
     , rsComputeFinishTime :: Maybe UTCTime
