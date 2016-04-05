@@ -88,12 +88,19 @@ spec = do
     -- possible into a library feature. The library should record enough
     -- information that various invariants can be checked. Then, the
     -- clients can periodically run sanity checks.
-    testcase "Preserves data despite slaves being started and killed periodically (different requests)" $ do
-        fail "FIXME: implement"
+{-
+    testcase "Preserves data despite slaves being started and killed periodically (all using the same request)" $ do
+        resultVars <- replicateM 10 runJobClientAndRequest
+        liftIO $ void $
+            randomSlaveSpawner "redis" `race`
+            randomSlaveSpawner "redis" `race`
+            randomSlaveSpawner "redis" `race`
+            checkResults 60 resultVars (repeat 0)
     testcase "Multiple clients can make requests to multiple workers" $ do
         fail "FIXME: implement"
     testcase "Can cancel active requests" $ do
         fail "FIXME: implement"
+-}
 
 -- Maximum test time of 2 minutes.  Individual tests can of course further restrict this
 testcase :: String -> ResourceT IO () -> Spec
