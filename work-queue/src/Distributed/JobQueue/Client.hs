@@ -5,6 +5,7 @@ module Distributed.JobQueue.Client
     , waitForResponse
     , checkForResponse
     , submitRequestAndWaitForResponse
+    , cancelRequest
     -- * Convenience utilities for blocking on responses
     , atomicallyFromJust
     , atomicallyReturnOrThrow

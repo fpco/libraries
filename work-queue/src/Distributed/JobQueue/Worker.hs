@@ -11,6 +11,8 @@ module Distributed.JobQueue.Worker
     (jobWorker, reenqueueWork, cancelWork) where
 
 import ClassyPrelude
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (Async, cancel, cancelWith, waitEither)
 import Control.Monad.Logger
 import Data.Bits (xor)
 import Data.List.NonEmpty (NonEmpty((:|)))
@@ -86,32 +88,33 @@ jobWorkerThread JobQueueConfig {..} r wid notify f = forever $ do
         Right Nothing -> return ()
         Right (Just bs) -> do
             let rid = RequestId bs
-            eres <- try $ do
-                mreq <- receiveRequest r wid rid (Proxy :: Proxy response)
-                case mreq of
-                    Nothing -> return (Left (RequestMissingException rid))
-                    Just req -> Right <$> f rid req
-            let mres = case eres of
-                    Right res -> Just res
-                    Left (fromException -> Just (ReenqueueWork rid'))
-                        | rid == rid' -> Nothing
-                        | otherwise -> Just $ Left $ InternalJobQueueException $
-                            "ReenqueueWork's RequestId didn't match. " <>
-                            "Expected " <> tshow rid <>
-                            ", but got " <> tshow rid'
-                    Left (fromException -> Just (CancelWork rid'))
-                        | rid == rid' -> Just $ Left (RequestCanceled rid)
-                        | otherwise -> Just $ Left $ InternalJobQueueException $
-                            "CancelWork's RequestId didn't match. " <>
-                            "Expected " <> tshow rid <>
-                            ", but got " <> tshow rid'
-                    Left ex -> Just (Left (wrapException ex))
-            case mres of
-                Just res -> do
-                    sendResponse r jqcResponseExpiry wid rid (encode res)
-                    addRequestEvent r rid (RequestWorkFinished wid)
-                Nothing -> do
-                    addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
+            watchForCancel r rid jqcCancelCheckIvl $ do
+                eres <- try $ do
+                    mreq <- receiveRequest r wid rid (Proxy :: Proxy response)
+                    case mreq of
+                        Nothing -> return (Left (RequestMissingException rid))
+                        Just req -> Right <$> f rid req
+                let mres = case eres of
+                        Right res -> Just res
+                        Left (fromException -> Just (ReenqueueWork rid'))
+                            | rid == rid' -> Nothing
+                            | otherwise -> Just $ Left $ InternalJobQueueException $
+                                "ReenqueueWork's RequestId didn't match. " <>
+                                "Expected " <> tshow rid <>
+                                ", but got " <> tshow rid'
+                        Left (fromException -> Just (CancelWork rid'))
+                            | rid == rid' -> Just $ Left (RequestCanceled rid)
+                            | otherwise -> Just $ Left $ InternalJobQueueException $
+                                "CancelWork's RequestId didn't match. " <>
+                                "Expected " <> tshow rid <>
+                                ", but got " <> tshow rid'
+                        Left ex -> Just (Left (wrapException ex))
+                case mres of
+                    Just res -> do
+                        sendResponse r jqcResponseExpiry wid rid (encode res)
+                        addRequestEvent r rid (RequestWorkFinished wid)
+                    Nothing -> do
+                        addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
     $logDebug "Waiting for request notification"
     takeMVarE notify NoLongerWaitingForRequest
     $logDebug "Got notified of an available request"
@@ -228,6 +231,33 @@ instance Exception CancelWork
 -- | Stop working on this item, and don't re-enqueue it.
 cancelWork :: MonadIO m => RequestId -> m ()
 cancelWork = liftIO . throwIO . CancelWork
+
+watchForCancel :: MonadConnect m => Redis -> RequestId -> Seconds -> m a -> m a
+watchForCancel r k ivl f = do
+    -- FIXME: avoid this MVar stuff, once we have good lifted async.
+    resultVar <- newEmptyMVar
+    thread <- asyncLifted $ do
+        result <- f
+        putMVar resultVar result
+    let loop = do
+            mres <- run r (get (cancelKey r k))
+            case mres of
+                Just res
+                    | res == cancelValue ->
+                        liftIO $ cancelWith thread (CancelWork k)
+                    | otherwise -> liftIO $ throwIO $ InternalJobQueueException
+                        "Didn't get expected value at cancelKey."
+                Nothing -> do
+                    liftIO $ threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl))
+                    loop
+    watcher <- asyncLifted loop
+    res <- liftIO $ waitEither thread watcher
+    case res of
+        Left () -> do
+            liftIO $ cancel watcher
+            takeMVarE resultVar $ InternalJobQueueException
+                "Unexpected BlockedIndefinitelyOnMVar exception in watchForCancel"
+        Right () -> liftIO $ throwIO (CancelWork k)
 
 -- * Utilities
 

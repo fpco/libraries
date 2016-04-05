@@ -73,6 +73,9 @@ data JobQueueConfig = JobQueueConfig
     -- thrown.
     , jqcEventExpiry :: !Seconds
     -- ^ How many seconds an 'EventLogMessage' remains in redis.
+    , jqcCancelCheckIvl :: !Seconds
+    -- ^ How often the worker should poll redis for an indication that
+    -- the request has been cancelled.
     }
 
 -- | Default settings for the job-queue:
@@ -84,6 +87,8 @@ data JobQueueConfig = JobQueueConfig
 -- * Requests, responses, and heartbeat failures expire after an hour.
 --
 -- * 'EventLogMessage's expire after a day.
+--
+-- * Workers check for cancellation every 10 seconds.
 defaultJobQueueConfig :: JobQueueConfig
 defaultJobQueueConfig = JobQueueConfig
     { jqcRedisConfig = defaultRedisConfig
@@ -92,6 +97,7 @@ defaultJobQueueConfig = JobQueueConfig
     , jqcRequestExpiry = Seconds 3600
     , jqcResponseExpiry = Seconds 3600
     , jqcEventExpiry = Seconds (3600 * 24)
+    , jqcCancelCheckIvl = Seconds 10
     }
 
 data JobRequest = JobRequest

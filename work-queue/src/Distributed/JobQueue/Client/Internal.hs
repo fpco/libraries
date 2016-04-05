@@ -287,13 +287,19 @@ submitRequestAndWaitForResponse jc rid request = do
         Just res -> return (return (Just (Right res)))
         Nothing -> waitForResponse jc rid
 
-
--- FIXME: remove 'Maybe WorkerId' parameter.
-
 -- | Cancel a request. Note that if the request is currently being worked
 -- on, then you must also pass the 'WorkerId'. Returns 'True' if it
 -- successfully removed the request from redis. (Note that this does
 -- *not* guarantee that the worker actually manages to cancel its work).
+--
+-- NOTE: this feature is a bit experimental and may not work correctly
+-- if the async exception gets caught. We may need to consider a more
+-- forceful "cancel work" that involves killing processes.
+--
+-- FIXME: remove 'Maybe WorkerId' parameter.
+--
+-- FIXME: I think there's a race here where deleting the data could
+-- cause a 'RequestMissingException'
 cancelRequest :: MonadCommand m => Seconds -> Redis -> RequestId -> Maybe WorkerId -> m Bool
 cancelRequest expiry redis k mwid = do
     run_ redis $ del (unVKey (requestDataKey redis k) :| [])
