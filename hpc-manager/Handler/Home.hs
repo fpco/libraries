@@ -5,12 +5,13 @@ module Handler.Home where
 import Control.Monad.Logger
 import Data.Either
 import Data.Time.Clock
-import Distributed.JobQueue.Client (cancelRequest, DistributedJobQueueException(..))
+import Distributed.JobQueue.Client (cancelRequest)
+import Distributed.Types
 import Distributed.JobQueue.Status
-import Distributed.RedisQueue
 import FP.Redis
 import Import
 import Yesod.Form.Bootstrap3
+import Distributed.Redis
 
 --------------------------------------------------------------------------------
 -- Connection Configuration
@@ -104,7 +105,7 @@ getStatusR = do
         $(widgetFile "status")
 
 getAndRenderRequest :: (MonadIO m, MonadBaseControl IO m) =>
-    UTCTime -> RedisInfo -> RequestId -> m (Text, Text, Text)
+    UTCTime -> Redis -> RequestId -> m (Text, Text, Text)
 getAndRenderRequest start r k = do
     mrs <- getRequestStats r k
     let shownId = decodeUtf8 (unRequestId k)
@@ -169,10 +170,14 @@ getRequestsR = do
 -- Utilities
 
 withRedis' :: (MonadIO m, MonadCatch m, MonadBaseControl IO m)
-           => Config -> (RedisInfo -> LoggingT m a) -> m a
-withRedis' config = handleMismatchedSchema . runStdoutLoggingT . withRedis (redisPrefix config) ci
+           => Config -> (Redis -> LoggingT m a) -> m a
+withRedis' config =
+    handleMismatchedSchema . runStdoutLoggingT . withRedis rc
   where
-    ci = (connectInfo (redisHost config)) { connectPort = redisPort config }
+    rc = RedisConfig
+        { rcConnectInfo = (connectInfo (redisHost config)) { connectPort = redisPort config }
+        , rcKeyPrefix = redisPrefix config
+        }
 
 handleMismatchedSchema :: (MonadIO m, MonadCatch m, MonadBaseControl IO m) => m a -> m a
 handleMismatchedSchema = flip catch $ \ex ->
