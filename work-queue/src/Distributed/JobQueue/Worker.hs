@@ -229,7 +229,7 @@ instance Show CancelWork where
 instance Exception CancelWork
 
 -- | Stop working on this item, and don't re-enqueue it.
-cancelWork :: MonadIO m => RequestId -> m ()
+cancelWork :: MonadIO m => RequestId -> m a
 cancelWork = liftIO . throwIO . CancelWork
 
 watchForCancel :: MonadConnect m => Redis -> RequestId -> Seconds -> m a -> m a

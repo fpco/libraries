@@ -28,7 +28,6 @@ import           Data.Streaming.NetworkMessage
 import           Distributed.ConnectRequest
 import           Distributed.JobQueue.Worker
 import           Distributed.Redis
-import           Distributed.Stateful.Internal as S
 import           Distributed.Stateful.Master as S
 import           Distributed.Stateful.Slave as S
 import           Distributed.Types
@@ -49,8 +48,14 @@ statefulJQWorker
 statefulJQWorker jqc masterConfig slaveFunc masterFunc = do
     let StatefulMasterArgs {..} = masterConfig
     runJQWorker smaLogFunc jqc
-        (\_redis wci -> statefulSlave smaLogFunc smaNMSettings smaRedisConfig slaveFunc)
-        (\redis rid request -> statefulMaster masterConfig (masterFunc redis rid request))
+        (\_redis wci -> S.runSlave SlaveArgs
+            { saUpdate = slaveFunc
+            , saInit = return ()
+            , saConnectInfo = wci
+            , saNMSettings = smaNMSettings
+            , saLogFunc = smaLogFunc
+            })
+        (\redis rid request -> statefulMaster masterConfig rid (masterFunc redis rid request))
 
 workQueueJQWorker
     :: (Sendable request, Sendable response, Sendable payload, Sendable result)
@@ -115,7 +120,7 @@ runJQWorker logFunc config slaveFunc masterFunc = do
 -- * Running stateful master / slave without job-queue
 
 statefulSlave
-    :: forall state context input output response.
+    :: forall state context input output.
      ( NFData state, NFData output
      , Sendable state, Sendable context, Sendable input, Sendable output
      )
@@ -159,9 +164,10 @@ statefulMaster
      , Sendable state, Sendable context, Sendable input, Sendable output
      )
     => StatefulMasterArgs
+    -> RequestId
     -> (MasterHandle state context input output -> IO response)
     -> IO response
-statefulMaster StatefulMasterArgs{..} master = do
+statefulMaster StatefulMasterArgs{..} rid master = do
     let runLogger f = runLoggingT f smaLogFunc
     (ss, getPort) <- getPortAfterBind (CN.serverSettings 0 "*")
     mh <- mkMasterHandle smaMasterArgs smaLogFunc
@@ -176,9 +182,8 @@ statefulMaster StatefulMasterArgs{..} master = do
           slaveCount <- atomically (getSlaveCount mh)
           case (res, slaveCount) of
             (Nothing, 0) -> do
-              runLogger $ logErrorN "Timed out waiting for slaves to connect"
-              -- FIXME: need a way to cancel being a master.
-              fail "Timed out waiting for slaves to connect. (see FIXME comment in code)"
+              runLogger $ logWarnN "Timed out waiting for slaves to connect"
+              cancelWork rid
             _ -> liftIO $ master mh
     let requestSlaves = do
             port <- liftIO getPort
