@@ -10,25 +10,35 @@ import           Data.Foldable (fold)
 import qualified Data.HashMap.Strict as HMS
 import           Data.List (sort)
 import           Data.Monoid ((<>))
+import           Data.Streaming.NetworkMessage
 import           Data.TypeFingerprint (mkHasTypeFingerprint)
--- import           Distributed.Stateful
+import           Distributed.Integrated
+import           Distributed.Stateful.Slave
+import           Distributed.Stateful.Master
+import           Distributed.Types
 import           FP.Redis (connectInfo, Seconds(..))
 
 $(mkHasTypeFingerprint =<< [t| ByteString |])
 
 main :: IO ()
 main = do
-    logFunc <- runStdoutLoggingT askLoggerIO
-    runWorker args logFunc slaveFunc masterFunc
+    nms <- defaultNMSettings
+    lf <- runStdoutLoggingT askLoggerIO
+    statefulJQWorker jqc (args nms lf) slaveFunc masterFunc
   where
-    args = WorkerArgs
-      { waConfig = defaultWorkerConfig "stateful-demo:" (connectInfo "localhost") "localhost"
-      , waMasterArgs = MasterArgs
+    rc = defaultRedisConfig { rcKeyPrefix = "stateful-demo:" }
+    jqc = defaultJobQueueConfig { jqcRedisConfig = rc }
+    args nms lf = StatefulMasterArgs
+      { smaMasterArgs = MasterArgs
         { maMaxBatchSize = Just 5
         , maMinBatchSize = Nothing
         }
-      , waRequestSlaveCount = 2
-      , waMasterWaitTime = Seconds 10
+      , smaRequestSlaveCount = 2
+      , smaMasterWaitTime = Seconds 10
+      , smaLogFunc = lf
+      , smaRedisConfig = rc
+      , smaHostName = "localhost"
+      , smaNMSettings = nms
       }
 
 type Request = ByteString
