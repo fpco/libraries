@@ -77,12 +77,16 @@ workQueueJQWorker logFunc config masterConfig slaveFunc masterFunc = do
 data MasterOrSlave = Idle | Slave | Master
     deriving (Eq, Ord, Show)
 
+-- REVIEW: To request slaves, there is a separate queue from normal requests, the
+-- reason being that we want to prioritize slave requests over normal requests.
 runJQWorker
     :: (Sendable request, Sendable response)
     => LogFunc
     -> JobQueueConfig
     -> (Redis -> WorkerConnectInfo -> IO ())
     -> (Redis -> RequestId -> request -> IO response)
+    -- REVIEW: How to get the master's WorkerConnectInfo is specific to your
+    -- particular master/slave setup.
     -> IO ()
 runJQWorker logFunc config slaveFunc masterFunc = do
     stateVar <- newTVarIO Idle

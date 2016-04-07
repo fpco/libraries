@@ -4,6 +4,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
 
+-- REVIEW TODO: Add explicit export list
 module Distributed.Heartbeat where
 
 import ClassyPrelude
@@ -70,6 +71,8 @@ sendHeartbeats
     :: MonadConnect m => HeartbeatConfig -> Redis -> WorkerId -> MVar () -> m void
 sendHeartbeats config r wid heartbeatSentVar = do
     sendHeartbeat
+    -- REVIEW TODO: It's probably a good idea to make this fail if the mvar is full already.
+    -- Alternatively, we can just pass an IO action instead of an 'MVar'.
     void $ tryPutMVar heartbeatSentVar ()
     forever $ do
         let Seconds ivl = hcSenderIvl config

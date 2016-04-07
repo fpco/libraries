@@ -35,6 +35,13 @@ import System.Posix.Process (getProcessID)
 
 -- | Implements a compute node which responds to requests and never
 -- returns.
+--
+-- REVIEW: This pulls data from the redis queue by waiting on new items to appear.
+-- REVIEW: It uses an atomic redis operation (rpop and lpush) to get stuff from redis,
+-- it's not entirely clear who wins when there is contention.
+-- REVIEW: rpop and lpush together make sure that we can take from the queue of stuff to
+-- be done and put on the queue of workers who are doing some work (which is used to
+-- re-enqueue stuff) in a single atomic operation.
 jobWorker
     :: (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
@@ -42,6 +49,7 @@ jobWorker
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m ()
+    -- REVIEW: Morally this returns 'Void'
 jobWorker config@JobQueueConfig {..} f = do
     wid <- liftIO getWorkerId
     let withTag = withLogTag (LogTag ("worker-" ++ tshow (unWorkerId wid)))
@@ -210,7 +218,9 @@ instance Exception ReenqueueWork
 
 -- | Stop working on this item, and re-enqueue it for some other worker
 -- to handle.
-reenqueueWork :: MonadIO m => RequestId -> m ()
+--
+-- REVIEW TODO: Try to get rid of these jumps
+reenqueueWork :: MonadIO m => RequestId -> m a
 reenqueueWork = liftIO . throwIO . ReenqueueWork
 
 -- * Canceling work
@@ -230,6 +240,8 @@ instance Show CancelWork where
 instance Exception CancelWork
 
 -- | Stop working on this item, and don't re-enqueue it.
+--
+-- REVIEW: See @REVIEW@ for 'reenqueueWork'
 cancelWork :: MonadIO m => RequestId -> m a
 cancelWork = liftIO . throwIO . CancelWork
 

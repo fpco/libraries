@@ -8,6 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
 
+-- REVIEW TODO: Explicit exports
 module Distributed.JobQueue.Client.Internal where
 
 import           ClassyPrelude
@@ -63,6 +64,11 @@ type DispatchMap response =
 --
 -- 2. Checking for worker heartbeat responses, and handling heartbeat
 --    failures.
+--
+-- REVIEW TODO: The client is not run forever anymore. It's now garbage
+-- collected.
+-- REVIEW: We need a thread here for the client to check the heartbeats and
+-- to subscribe to the channel receiving incoming response notifications.
 newJobClient
     :: (MonadIO m, Sendable response)
     => LogFunc
@@ -172,6 +178,10 @@ jobClientThread' config dispatch inFlight redis = do
 -- | Submits a new request. Returns a 'Just' if the response to the
 -- request is already ready (e.g. if a request with the given
 -- 'RequestId' was already submitted and processed).
+--
+-- REVIEW TODO: Consider dropping the automatic check for existing response,
+-- since we can achieve that with the other functions in this module and
+-- it makes 'submitRequest' a bit slower.
 submitRequest
     :: forall request response m.
        (MonadCommand m, Sendable request, Sendable response)
@@ -303,6 +313,9 @@ submitRequestAndWaitForResponse jc rid request = do
 --
 -- FIXME: I think there's a race here where deleting the data could
 -- cause a 'RequestMissingException'
+--
+-- REVIEW: Note that the only way to get the 'WorkerId' for a submitted request
+-- is using the status.
 cancelRequest :: MonadCommand m => Seconds -> Redis -> RequestId -> Maybe WorkerId -> m Bool
 cancelRequest expiry redis k mwid = do
     run_ redis $ del (unVKey (requestDataKey redis k) :| [])

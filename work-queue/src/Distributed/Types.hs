@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
+-- REVIEW TODO: Add explicit exports or move types to relevant modules
 module Distributed.Types where
 
 import           ClassyPrelude hiding ((<>))
@@ -28,6 +29,8 @@ type LogFunc = Loc -> LogSource -> LogLevel -> LogStr -> IO ()
 -- | Every worker has a 'WorkerId' to uniquely identify it. It's needed
 -- for the fault tolerance portion - in the event that a worker goes
 -- down we need to be able to re-enqueue its work.
+--
+-- REVIEW: This is used only for job queue, not work queue.
 newtype WorkerId = WorkerId { unWorkerId :: ByteString }
     deriving (Eq, Ord, Show, Serialize, IsString, Typeable)
 
@@ -37,6 +40,8 @@ instance Aeson.ToJSON WorkerId where
 -- | This is the key used for enqueued requests, and, later, the
 -- response associated with it. It's the hash of the request, which
 -- allows responses to be cached.
+--
+-- REVIEW: This is used only for job queue, not work queue.
 newtype RequestId = RequestId { unRequestId :: ByteString }
     deriving (Eq, Ord, Show, Serialize, Hashable, Typeable)
 
@@ -46,11 +51,17 @@ instance Aeson.ToJSON RequestId where
 -- * Job-queue
 
 -- | Configuration of job-queue, used by both the client and worker.
+--
+-- REVIEW TODO: Take a look if it's worth having just one type for client
+-- and worker.
 data JobQueueConfig = JobQueueConfig
     { jqcRedisConfig :: !RedisConfig
     -- ^ Configuration of communication with redis.
     , jqcHeartbeatConfig :: !HeartbeatConfig
     -- ^ Configuration for heartbeat checking.
+    --
+    -- REVIEW: This config is used by both the client and the worker to
+    -- set up heartbeats. The documentation is elsewhere.
     , jqcHeartbeatFailureExpiry :: !Seconds
     -- ^ How long a heartbeat failure should stick around. This should
     -- be a quite large amount of time, as the worker might eventually
@@ -58,6 +69,9 @@ data JobQueueConfig = JobQueueConfig
     -- collected. Garbage collecting them to save resources doesn't
     -- matter very much. The main reason it matters is so that the UI
     -- doesn't end up with tons of heartbeat failure records.
+    --
+    -- REVIEW: With "garbage collection" above we mean collection of
+    -- heartbeat-related data in redis.
     , jqcRequestExpiry :: !Seconds
     -- ^ The expiry time of the request data stored in redis. If it
     -- takes longer than this time for the worker to attempt to fetch
@@ -71,6 +85,10 @@ data JobQueueConfig = JobQueueConfig
     -- notification and the client reading its data. If the client finds
     -- that the response is missing, 'ResponseMissingException' is
     -- thrown.
+    --
+    -- REVIEW: With "identical" here we're only talking about the request
+    -- id, so if we resubmit the request _with the same request id_, the
+    -- response will be cached. The body of the request is irrelevant.
     , jqcEventExpiry :: !Seconds
     -- ^ How many seconds an 'EventLogMessage' remains in redis.
     , jqcCancelCheckIvl :: !Seconds
@@ -93,16 +111,18 @@ defaultJobQueueConfig :: JobQueueConfig
 defaultJobQueueConfig = JobQueueConfig
     { jqcRedisConfig = defaultRedisConfig
     , jqcHeartbeatConfig = defaultHeartbeatConfig
-    , jqcHeartbeatFailureExpiry = Seconds 3600
+    , jqcHeartbeatFailureExpiry = Seconds 3600 -- 1 hour
     , jqcRequestExpiry = Seconds 3600
     , jqcResponseExpiry = Seconds 3600
-    , jqcEventExpiry = Seconds (3600 * 24)
+    , jqcEventExpiry = Seconds (3600 * 24) -- 1 day
     , jqcCancelCheckIvl = Seconds 10
     }
 
 data JobRequest = JobRequest
     { jrRequestTypeFingerprint, jrResponseTypeFingerprint :: !TypeFingerprint
     , jrSchema :: !ByteString
+    -- REVIEW: This is a tag to detect if the deployment is compatible with the current
+    -- code.
     , jrBody :: !ByteString
     } deriving (Generic, Show, Typeable)
 

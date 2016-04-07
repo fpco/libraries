@@ -36,6 +36,7 @@ import FP.Redis
 
 data JobQueueStatus = JobQueueStatus
     { jqsLastHeartbeat :: !(Maybe UTCTime)
+    -- REVIEW: This is the last time a Client checked an heartbeat from a worker.
     , jqsPending :: ![RequestId]
     , jqsWorkers :: ![WorkerStatus]
     } deriving Show
@@ -44,7 +45,11 @@ data WorkerStatus = WorkerStatus
     { wsWorker :: !WorkerId
     , wsHeartbeatFailure :: !Bool
     , wsLastHeartbeat :: !(Maybe UTCTime)
+    -- REVIEW: This is the last heartbeat _sent_ by the worker (it might have not been
+    -- received by anyone).
     , wsRequests :: ![RequestId]
+    -- REVIEW: Note that this currently should never be one (e.g. 'Maybe' 'RequestId')
+    -- but as an artifact of the redis data structures used we have it as a list.
     } deriving Show
 
 data RequestStatus = RequestStatus
@@ -109,6 +114,7 @@ data RequestStats = RequestStats
     , rsComputeTime :: Maybe NominalDiffTime
     , rsTotalTime :: Maybe NominalDiffTime
     , rsFetchCount :: Int
+    -- REVIEW: This is the number of times the request has been read by the client.
     }
 
 getRequestStats :: MonadCommand m => Redis -> RequestId -> m (Maybe RequestStats)
