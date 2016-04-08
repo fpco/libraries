@@ -6,13 +6,15 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Distributed.JobQueue.Client.Internal where
 
 import           ClassyPrelude
+import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async (race, async, cancel)
 import           Control.Concurrent.STM (check, retry)
-import           Control.Concurrent (threadDelay)
+import           Control.Exception (AsyncException)
 import           Control.Monad.Logger (MonadLogger, logErrorS, logInfoS, logDebugS, logWarnS, runLoggingT)
 import           Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith, restoreM)
 import qualified Data.ByteString.Char8 as BS8
@@ -103,10 +105,11 @@ jobClientThread logFunc config dispatch inFlight =
         -- TODO: use redis conn here too. My reluctance to make the
         -- change now is that perhaps there is a subtle reason it is not
         -- already that way.
-        eres <- tryAny $ withRedis (jqcRedisConfig config) $
+        eres <- try $ withRedis (jqcRedisConfig config) $
             jobClientThread' config dispatch inFlight
         case eres of
             Right x -> absurd x
+            Left (fromException -> Just err) -> liftIO $ throwIO (err :: AsyncException)
             Left err -> do
                 $logErrorS "JobClient" (pack (show err))
                 $logInfoS "JobClient" "Waiting a second and restarting job client after exception."

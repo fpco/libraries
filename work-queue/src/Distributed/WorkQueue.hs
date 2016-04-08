@@ -37,6 +37,7 @@ module Distributed.WorkQueue
 
 import           ClassyPrelude hiding ((<>))
 import           Control.Concurrent.Async (withAsync)
+import           Control.Exception (AsyncException)
 import           Control.Monad.Logger
 import           Control.Monad.Trans.Control
 import qualified Data.ByteString.Char8 as BS8
@@ -230,7 +231,7 @@ runSlave nms wci@(WorkerConnectInfo host port) calc = do
         Right () -> return ()
         Left err -> handleWorkerException wci err
   where
-    nmapp nm = tryAny $ do
+    nmapp nm = try $ do
         let socket = tshow (appSockAddr (nmAppData nm))
         $logIODebugS "runSlave" $ "Starting slave on " ++ socket
         ts0 <- nmRead nm
@@ -269,6 +270,8 @@ handleWorkerException _ (fromException -> Just NMConnectionDropped) =
     $logWarnS "runSlave" $ "Ignoring NMConnectionDropped in slave"
 handleWorkerException _ (fromException -> Just NMConnectionClosed) =
     $logWarnS "runSlave" $ "Ignoring NMConnectionClosed in slave"
+handleWorkerException _ (fromException -> Just err) =
+    liftIO $ throwIO (err :: AsyncException)
 handleWorkerException _ err = do
     $logErrorS "runSlave" $ "Unexpected exception in slave: " ++ tshow err
     liftIO $ throwIO err

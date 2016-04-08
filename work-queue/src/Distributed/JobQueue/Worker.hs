@@ -13,6 +13,7 @@ module Distributed.JobQueue.Worker
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (cancel, cancelWith, waitEither)
+import Control.Exception (AsyncException)
 import Control.Monad.Logger
 import Data.Bits (xor)
 import Data.List.NonEmpty (NonEmpty((:|)))
@@ -92,21 +93,23 @@ jobWorkerThread JobQueueConfig {..} r wid notify f = forever $ do
                     case mreq of
                         Nothing -> return (Left (RequestMissingException rid))
                         Just req -> Right <$> f rid req
-                let mres = case eres of
-                        Right res -> Just res
+                mres <- case eres of
+                        Right res -> return $ Just res
                         Left (fromException -> Just (ReenqueueWork rid'))
-                            | rid == rid' -> Nothing
-                            | otherwise -> Just $ Left $ InternalJobQueueException $
+                            | rid == rid' -> return Nothing
+                            | otherwise -> return $ Just $ Left $ InternalJobQueueException $
                                 "ReenqueueWork's RequestId didn't match. " <>
                                 "Expected " <> tshow rid <>
                                 ", but got " <> tshow rid'
                         Left (fromException -> Just (CancelWork rid'))
-                            | rid == rid' -> Just $ Left (RequestCanceled rid)
-                            | otherwise -> Just $ Left $ InternalJobQueueException $
+                            | rid == rid' -> return $ Just $ Left (RequestCanceled rid)
+                            | otherwise -> return $ Just $ Left $ InternalJobQueueException $
                                 "CancelWork's RequestId didn't match. " <>
                                 "Expected " <> tshow rid <>
                                 ", but got " <> tshow rid'
-                        Left ex -> Just (Left (wrapException ex))
+                        Left (fromException -> Just err) ->
+                            throwIO (err :: AsyncException)
+                        Left ex -> return $ Just (Left (wrapException ex))
                 case mres of
                     Just res -> do
                         sendResponse r jqcResponseExpiry wid rid (encode res)
