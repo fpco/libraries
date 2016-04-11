@@ -19,6 +19,7 @@ import           Prelude hiding (round)
 import           System.Random.MWC
 import           Data.Serialize.Orphans ()
 import           Distributed.WorkQueue
+import           Distributed.WorkQueue.CLI
 import           Data.TypeFingerprint (mkManyHasTypeFingerprint)
 
 $(mkManyHasTypeFingerprint

@@ -30,8 +30,7 @@ import qualified Data.Set as S
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.Time.Clock (diffUTCTime)
 import           Data.TypeFingerprint
-import qualified Distributed.JobQueue.Client.Internal as JQ
-import           Distributed.JobQueue.Internal
+import qualified Distributed.JobQueue.Client as JQ
 import           Distributed.JobQueue.Worker
 import           Distributed.TestUtil
 import           Distributed.Types

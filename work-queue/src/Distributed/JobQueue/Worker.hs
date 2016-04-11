@@ -8,11 +8,11 @@
 
 -- This module provides a job-queue with heartbeat checking.
 module Distributed.JobQueue.Worker
-    (jobWorker, reenqueueWork, cancelWork) where
+    (jobWorker, reenqueueWork, cancelWork, runJQWorker) where
 
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (cancel, cancelWith, waitEither)
+import Control.Concurrent.Async (cancel, cancelWith, waitEither, race)
 import Control.Exception (AsyncException)
 import Control.Monad.Logger
 import Data.Bits (xor)
@@ -32,6 +32,7 @@ import Distributed.Types
 import FP.Redis
 import FP.ThreadFileLogger
 import System.Posix.Process (getProcessID)
+import Distributed.ConnectRequest (withConnectRequests)
 
 -- | Implements a compute node which responds to requests and never
 -- returns.
@@ -287,3 +288,52 @@ getWorkerId = do
     (w1, w2, w3, w4) <- toWords <$> UUID.nextRandom
     let w1' = w1 `xor` fromIntegral pid
     return $ WorkerId $ UUID.toASCIIBytes $ UUID.fromWords w1' w2 w3 w4
+
+-- * Running a JobQueue worker
+
+data MasterOrSlave = Idle | Slave | Master
+    deriving (Eq, Ord, Show)
+
+-- REVIEW: To request slaves, there is a separate queue from normal requests, the
+-- reason being that we want to prioritize slave requests over normal requests.
+runJQWorker
+    :: (Sendable request, Sendable response)
+    => LogFunc
+    -> JobQueueConfig
+    -> (Redis -> WorkerConnectInfo -> IO ())
+    -> (Redis -> RequestId -> request -> IO response)
+    -- REVIEW: How to get the master's WorkerConnectInfo is specific to your
+    -- particular master/slave setup.
+    -> IO ()
+runJQWorker logFunc config slaveFunc masterFunc = do
+    stateVar <- newTVarIO Idle
+    void $
+        runLoggingT (handleWorkerRequests stateVar) logFunc `race`
+        runLoggingT (handleRequests stateVar) logFunc
+  where
+    handleWorkerRequests stateVar =
+        withRedis (jqcRedisConfig config) $ \redis ->
+            -- Fetch connect requests. The first argument is an STM
+            -- action which determines whether we want to receive slave
+            -- requests. We only want to become a slave if we're not in
+            -- 'Master' mode.
+            withConnectRequests ((==Idle) <$> readTVar stateVar) redis $ \wci ->
+                liftIO $ slaveFunc redis wci
+    handleRequests stateVar =
+        jobWorker config $ \redis rid request -> liftIO $
+            -- Ensure that the node was idle before becoming a master
+            -- node. If we got a slave request simultaneously with
+            -- getting a work request, the slave request gets
+            -- prioritized and the work gets re-enqueud.
+            bracket (transitionIdleTo Master stateVar)
+                    (\_ -> backToIdle stateVar) $ \wasIdle -> do
+                when (not wasIdle) $ reenqueueWork rid
+                masterFunc redis rid request
+    backToIdle stateVar = atomically $ writeTVar stateVar Idle
+    transitionIdleTo state' stateVar = atomically $ do
+        state <- readTVar stateVar
+        if state == Idle
+            then do
+                writeTVar stateVar state'
+                return True
+             else return False

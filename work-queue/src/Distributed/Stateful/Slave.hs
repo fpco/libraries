@@ -24,7 +24,7 @@ import qualified Data.Streaming.NetworkMessage as NM
 import           Data.Void (absurd)
 import           Distributed.Stateful.Internal
 import           Distributed.Types (LogFunc, WorkerConnectInfo(..))
-import           Distributed.WorkQueue (handleWorkerException)
+import           Distributed.WorkQueue (handleSlaveException)
 
 -- | Arguments for 'runSlave'.
 data SlaveArgs state context input output = SlaveArgs
@@ -59,6 +59,7 @@ runSlave :: forall state context input output.
   -> IO ()
 runSlave SlaveArgs{..} = do
     let WorkerConnectInfo host port = saConnectInfo
+    -- REVIEW TODO: Shouldn't this be 'tryAny' or similar too?
     eres <- try $
         CN.runTCPClient (CN.clientSettings port host) $
         NM.runNMApp saNMSettings $ \nm -> do
@@ -66,7 +67,7 @@ runSlave SlaveArgs{..} = do
           go (NM.nmRead nm) (NM.nmWrite nm) HMS.empty
     case eres of
         Right x -> absurd x
-        Left err -> runLogger $ handleWorkerException saConnectInfo err
+        Left err -> runLogger $ handleSlaveException saConnectInfo "Distributed.Stateful.Slave.runSlave" err
   where
     runLogger f = runLoggingT f saLogFunc
     throw = throwAndLog saLogFunc

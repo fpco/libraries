@@ -25,11 +25,12 @@ import           Data.Streaming.NetworkMessage
 import qualified Data.Streaming.NetworkMessage as NM
 import           Data.TypeFingerprint (mkManyHasTypeFingerprint)
 import           Data.TypeFingerprintSpec ()
-import           Distributed.Integrated
+import           Distributed.JobQueue.Stateful
 import           Distributed.JobQueue.Client
+import           Distributed.Stateful
 import           Distributed.Stateful.Internal (StateId(..))
-import           Distributed.Stateful.Master
-import           Distributed.Stateful.Slave
+-- import           Distributed.Stateful.Master
+-- import           Distributed.Stateful.Slave
 import           Distributed.TestUtil
 import           Distributed.Types
 import           FP.Redis

@@ -16,7 +16,8 @@ import           Data.List.Split (chunksOf)
 import           Data.Streaming.Network (getSocketFamilyTCP)
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.TypeFingerprintSpec ()
-import           Distributed.WorkQueue
+import           Data.WorkQueue
+import           Distributed.WorkQueue.CLI
 import qualified Network.Socket as NS
 import           Prelude (appendFile, read)
 import           System.Directory (doesFileExist, removeFile)

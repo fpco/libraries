@@ -9,7 +9,7 @@ import           Control.Monad
 import           Data.IORef (newIORef, atomicModifyIORef', readIORef)
 import           Data.TypeFingerprint (mkHasTypeFingerprint)
 import           Data.WorkQueue (queueItem)
-import qualified Distributed.WorkQueue as WQ
+import qualified Distributed.WorkQueue.CLI as WQ
 
 $(mkHasTypeFingerprint =<< [t| Int |])
 

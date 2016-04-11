@@ -15,9 +15,10 @@ import Data.Bits (xor, zeroBits)
 import Data.List.NonEmpty (nonEmpty)
 import Data.List.Split (chunksOf)
 import Data.TypeFingerprint (mkManyHasTypeFingerprint)
+import Data.WorkQueue
 import Distributed.ConnectRequest
-import Distributed.Integrated
 import Distributed.JobQueue.Client
+import Distributed.JobQueue.WorkQueue
 import Distributed.Types
 import Distributed.WorkQueue
 import FP.Redis
@@ -59,6 +60,8 @@ masterOrSlave = do
     workQueueJQWorker logFunc config wqConfig calc master
   where
     master redis wci _rid request queue = do
+        -- REVIEW: Why do we need to request slaves explicitly? What happens if we don't?
+        -- Does this mean that only one slave will be requested?
         requestWorker redis wci
         subresults <- mapQueue queue (request :: Vector [Int])
         response <- liftIO $ calc (otoList (subresults :: Vector Int))

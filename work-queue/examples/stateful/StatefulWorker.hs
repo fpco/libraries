@@ -12,9 +12,8 @@ import           Data.List (sort)
 import           Data.Monoid ((<>))
 import           Data.Streaming.NetworkMessage
 import           Data.TypeFingerprint (mkHasTypeFingerprint)
-import           Distributed.Integrated
-import           Distributed.Stateful.Slave
-import           Distributed.Stateful.Master
+import           Distributed.Stateful
+import           Distributed.JobQueue.Stateful
 import           Distributed.Types
 import           FP.Redis (connectInfo, Seconds(..))
 
