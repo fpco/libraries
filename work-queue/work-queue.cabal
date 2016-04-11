@@ -35,11 +35,11 @@ library
                        Distributed.JobQueue.Worker
                        Distributed.JobQueue.WorkQueue
                        Distributed.JobQueue.Stateful
+                       Distributed.Redis
 
                        Distributed.Stateful.Internal
 
   other-modules:       Data.SimpleSupply
-                       Distributed.Redis
                        Distributed.Stateful.Master
                        Distributed.Stateful.Slave
                        Distributed.JobQueue.Internal
