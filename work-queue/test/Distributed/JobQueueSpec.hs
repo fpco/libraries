@@ -41,6 +41,12 @@ import           System.Random (randomRIO)
 import           System.Timeout.Lifted (timeout)
 import           Test.Hspec (Spec, it)
 import           Test.Hspec.Expectations.Lifted (shouldBe, shouldReturn)
+import qualified Control.Concurrent.STM as STM
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID.V4
+
+import           Distributed.WorkQueueSpec (forkWorker, cancelProcess)
+import           Distributed.Redis (withRedis)
 
 data Request = Request (Vector [Int])
     deriving (Eq, Show, Generic, Typeable)
@@ -100,6 +106,13 @@ spec = do
     testcase "Can cancel active requests" $ do
         fail "FIXME: implement"
 -}
+    jqit "Preserves data despite slaves being started and killed periodically (all using the same request)" $ do
+        resultVars <- replicateM 10 forkDispatcher
+        liftIO $ void $
+            randomSlaveSpawner "redis" `race`
+            randomSlaveSpawner "redis" `race`
+            randomSlaveSpawner "redis" `race`
+            checkResults 60 resultVars (repeat 0)
 
 -- Maximum test time of 2 minutes.  Individual tests can of course further restrict this
 testcase :: String -> ResourceT IO () -> Spec
@@ -200,15 +213,8 @@ forkRepeat action =
     in forkIO go
 
 {-
-spec :: Spec
-spec = do
-    jqit "Preserves data despite slaves being started and killed periodically (all using the same request)" $ do
-        resultVars <- replicateM 10 forkDispatcher
-        liftIO $ void $
-            randomSlaveSpawner "redis" `race`
-            randomSlaveSpawner "redis" `race`
-            randomSlaveSpawner "redis" `race`
-            checkResults 60 resultVars (repeat 0)
+spec2 :: Spec
+spec2 = do
     jqit "Preserves data despite slaves being started and killed periodically (different requests)" $ do
         resultVars <- forM [1..10] (forkDispatcher' . mkRequest)
         liftIO $ void $
@@ -283,6 +289,7 @@ spec = do
             Left (RequestCanceledException {}) -> return ()
             _ -> fail $ "Instead of canceled exception, got " ++
                 show (mresult' :: Either DistributedException Int)
+-}
 
 jqit :: String -> ResourceT IO () -> Spec
 jqit name f = it name $ clearRedisKeys >> runResourceT f
@@ -290,12 +297,14 @@ jqit name f = it name $ clearRedisKeys >> runResourceT f
 forkDispatcher :: ResourceT IO (MVar (Either DistributedException Int))
 forkDispatcher = forkDispatcher' defaultRequest
 
-defaultRequest :: Vector [Int]
+defaultRequest :: Request
 defaultRequest = mkRequest 0
 
+{-
 -- These lists always xor together to 0
 mkRequest :: Int -> Vector [Int]
 mkRequest offset = fromList $ chunksOf 10 $ map (`shiftL` offset) [1..(2^(8 :: Int))-1]
+-}
 
 forkDispatcher'
     :: (Sendable request, Sendable response)
@@ -308,13 +317,25 @@ forkDispatcher' request = do
 runDispatcher
     :: (Sendable request, Sendable response)
     => request -> MVar (Either DistributedException response) -> IO ()
-runDispatcher request resultVar =
-    runThreadFileLoggingT $ logNest "dispatcher" $ withRedis redisTestPrefix localhost $ \redis ->
-        withJobQueueClient clientConfig redis $ \cvs -> do
-            -- Push a single set of work requests.
-            result <- try $ jobQueueRequest clientConfig cvs redis request
-            putMVar resultVar result
+runDispatcher request resultVar = do
+    logFunc <- runThreadFileLoggingT $ withLogTag "dispatcher" askLoggerIO
+    let cfg = defaultJobQueueConfig
+            { jqcRedisConfig = RedisConfig
+                  { rcKeyPrefix = redisTestPrefix, rcConnectInfo = localhost }
+            }
+    client <- JQ.newJobClient logFunc cfg
+    k <- RequestId . UUID.toASCIIBytes <$> UUID.V4.nextRandom
+    result <- liftIO $
+        waitForSTMMaybe =<< JQ.submitRequestAndWaitForResponse client k request
+    putMVar resultVar result
+  where
+    waitForSTMMaybe m = atomically $ do
+        mbRes <- m
+        case mbRes of
+            Nothing -> STM.retry
+            Just res -> return res
 
+{-
 sendJobRequest
     :: forall request response. (Sendable request, Sendable response)
     => LogTag -> RequestSets response -> request -> IO RequestId
@@ -371,7 +392,7 @@ clientConfig = defaultClientConfig
 
 heartbeatCheckIvl :: Seconds
 heartbeatCheckIvl = Seconds 2
-
+-}
 randomSlaveSpawner :: String -> IO ()
 randomSlaveSpawner which = runResourceT $ runThreadFileLoggingT $ withLogTag "randomSlaveSpawner" $ forM_ [0..] $ \n -> do
     startTime <- liftIO getCurrentTime
@@ -380,7 +401,7 @@ randomSlaveSpawner which = runResourceT $ runThreadFileLoggingT $ withLogTag "ra
     randomDelay (500 * n) (500 + 500 * n)
     $logInfo $ "Cancelling worker started at " ++ tshow startTime
     cancelProcess pid
-
+{-
 randomWaiterSpawner :: (Sendable response, Ord response)
                     => LogTag -> RequestSets response -> IO ()
 randomWaiterSpawner tag sets = runResourceT $ runThreadFileLoggingT $ withLogTag tag $ forM_ [0..] $ \n -> do
@@ -456,7 +477,7 @@ checkRequestsAnswered correct sets seconds = runThreadFileLoggingT $ withLogTag 
         Just () -> do
             sent <- readIORef (sentRequests sets)
             when (S.null sent) $ fail "Didn't send any requests."
-
+-}
 randomDelay :: (MonadIO m, MonadBase IO m) => Int -> Int -> m ()
 randomDelay minMillis maxMillis = do
     ms <- liftIO $ randomRIO (minMillis, maxMillis)
@@ -475,7 +496,7 @@ checkResults seconds resultVars expecteds = liftIO $ do
                 case result of
                     Left ex -> liftIO $ throwIO ex
                     Right x -> x `shouldBe` expected
-
+{-
 getException :: (Show r, MonadIO m) => Int -> MVar (Either DistributedException r) -> m DistributedException
 getException seconds resultVar = liftIO $ do
     result <- timeout (seconds * 1000 * 1000) $ takeMVar resultVar

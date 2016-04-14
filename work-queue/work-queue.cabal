@@ -212,6 +212,7 @@ test-suite wq-test
                      , unordered-containers
                      , vector
                      , work-queue
+                     , uuid
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
   if flag(coverage)
