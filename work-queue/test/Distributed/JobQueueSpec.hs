@@ -13,7 +13,7 @@ module Distributed.JobQueueSpec (spec) where
 
 import           ClassyPrelude hiding (keys)
 import           Control.Concurrent (forkIO, myThreadId, ThreadId)
-import           Control.Concurrent.Async (Async, race, async, cancel, waitCatch, cancel)
+import           Control.Concurrent.Async (Async, race, async, cancel, waitCatch, cancel, race_)
 import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Exception (AsyncException(ThreadKilled), throwTo)
 import           Control.Monad.Base (MonadBase)
@@ -44,9 +44,16 @@ import           Test.Hspec.Expectations.Lifted (shouldBe, shouldReturn)
 import qualified Control.Concurrent.STM as STM
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID.V4
+import           Control.Monad.Trans.Control (control)
+import qualified Crypto.Hash.SHA256 as SHA256
 
-import           Distributed.WorkQueueSpec (forkWorker, cancelProcess)
+import           Distributed.ConnectRequest
 import           Distributed.Redis (withRedis)
+import qualified Distributed.WorkQueue as WQ
+import qualified Data.WorkQueue as WQ
+import qualified Distributed.JobQueue.WorkQueue as JQ
+import           Data.TypeFingerprintSpec ()
+import qualified Distributed.JobQueue.Status as JQ
 
 data Request = Request (Vector [Int])
     deriving (Eq, Show, Generic, Typeable)
@@ -109,11 +116,37 @@ spec = do
     jqit "Preserves data despite slaves being started and killed periodically (all using the same request)" $ do
         resultVars <- replicateM 10 forkDispatcher
         liftIO $ void $
-            randomSlaveSpawner "redis" `race`
-            randomSlaveSpawner "redis" `race`
-            randomSlaveSpawner "redis" `race`
+            randomSlaveSpawner runJQWorker_ `race`
+            randomSlaveSpawner runJQWorker_ `race`
+            randomSlaveSpawner runJQWorker_ `race`
             checkResults 60 resultVars (repeat 0)
+    jqit "Preserves data despite slaves being started and killed periodically (different requests)" $ do
+        resultVars <- forM [1..3] (forkDispatcher' . mkRequest)
+        liftIO $ void $
+            randomSlaveSpawner runJQWorker_ `race`
+            randomSlaveSpawner runJQWorker_ `race`
+            randomSlaveSpawner runJQWorker_ `race`
+            checkResults 100 resultVars (repeat 0)
+    jqit "Works despite clients and workers being started and killed periodically" $ do
+        (sets :: RequestSets Int) <- mkRequestSets
+        liftIO $ void $
+            randomSlaveSpawner runJQWorkerLong `race`
+            randomSlaveSpawner runJQWorkerLong `race`
+            randomSlaveSpawner runJQWorkerLong `race`
+            randomSlaveSpawner runJQWorkerLong `race`
+            randomWaiterSpawner "waiter-1" sets `race`
+            randomWaiterSpawner "waiter-2" sets `race`
+            -- Run job requesters for 10 seconds, then check that all
+            -- the responses eventually came back.
+            (do void $ timeout (1000 * 1000 * 10) $
+                    randomJobRequester "job-requester-1" sets 254 `race`
+                    randomJobRequester "job-requester-2" sets 255
+                -- Give some more time for the job requesters to do their thing.
+                threadDelay (1000 * 1000 * 20))
+        putStrLn "Will now check the answers"
+        checkRequestsAnswered (== 0) sets 120
 
+  where cfg = defaultRedisConfig { rcKeyPrefix = redisTestPrefix }
 -- Maximum test time of 2 minutes.  Individual tests can of course further restrict this
 testcase :: String -> ResourceT IO () -> Spec
 testcase = testcaseTimeout (Seconds 120)
@@ -167,9 +200,17 @@ runWorker
     -> ResourceT IO (Async ())
 runWorker = allocateAsync . runThreadFileLoggingT . jobWorker config
 
+redisConfig :: RedisConfig
+redisConfig = defaultRedisConfig { rcKeyPrefix = redisTestPrefix }
+
 config :: JobQueueConfig
 config = defaultJobQueueConfig
-    { jqcRedisConfig = defaultRedisConfig { rcKeyPrefix = redisTestPrefix } }
+    { jqcRedisConfig = redisConfig
+    , jqcHeartbeatConfig = HeartbeatConfig
+        { hcSenderIvl = Seconds 1
+        , hcCheckerIvl = heartbeatCheckIvl
+        }
+    }
 
 r0 :: RequestId
 r0 = RequestId "0"
@@ -215,30 +256,7 @@ forkRepeat action =
 {-
 spec2 :: Spec
 spec2 = do
-    jqit "Preserves data despite slaves being started and killed periodically (different requests)" $ do
-        resultVars <- forM [1..10] (forkDispatcher' . mkRequest)
-        liftIO $ void $
-            randomSlaveSpawner "redis" `race`
-            randomSlaveSpawner "redis" `race`
-            randomSlaveSpawner "redis" `race`
-            checkResults 60 resultVars (repeat 0)
-    jqit "Works despite clients and workers being started and killed periodically" $ do
-        (sets :: RequestSets Int) <- mkRequestSets
-        liftIO $ void $
-            randomSlaveSpawner "redis-long" `race`
-            randomSlaveSpawner "redis-long" `race`
-            randomSlaveSpawner "redis-long" `race`
-            randomSlaveSpawner "redis-long" `race`
-            randomWaiterSpawner "waiter-1" sets `race`
-            randomWaiterSpawner "waiter-2" sets `race`
-            -- Run job requesters for 10 seconds, then check that all
-            -- the responses eventually came back.
-            (do void $ timeout (1000 * 1000 * 10) $
-                    randomJobRequester "job-requester-1" sets 254 `race`
-                    randomJobRequester "job-requester-2" sets 255
-                -- Give some more time for the job requesters to do their thing.
-                threadDelay (1000 * 1000 * 10)
-                checkRequestsAnswered (== 0) sets 120)
+
     jqit "Sends an exception to the client on type mismatch" $ do
         resultVar <- forkDispatcher' defaultRequest
         _ <- forkWorker "redis" 0
@@ -319,12 +337,8 @@ runDispatcher
     => request -> MVar (Either DistributedException response) -> IO ()
 runDispatcher request resultVar = do
     logFunc <- runThreadFileLoggingT $ withLogTag "dispatcher" askLoggerIO
-    let cfg = defaultJobQueueConfig
-            { jqcRedisConfig = RedisConfig
-                  { rcKeyPrefix = redisTestPrefix, rcConnectInfo = localhost }
-            }
-    client <- JQ.newJobClient logFunc cfg
-    k <- RequestId . UUID.toASCIIBytes <$> UUID.V4.nextRandom
+    client <- JQ.newJobClient logFunc config
+    let k = RequestId (SHA256.hash (encode request))
     result <- liftIO $
         waitForSTMMaybe =<< JQ.submitRequestAndWaitForResponse client k request
     putMVar resultVar result
@@ -335,27 +349,23 @@ runDispatcher request resultVar = do
             Nothing -> STM.retry
             Just res -> return res
 
-{-
 sendJobRequest
     :: forall request response. (Sendable request, Sendable response)
     => LogTag -> RequestSets response -> request -> IO RequestId
-sendJobRequest tag sets request =
-    runThreadFileLoggingT $ logNest tag $ withRedis redisTestPrefix localhost $ \redis -> do
-        mresult <- timeout (1000 * 1000 * 10) $ sendRequest clientConfig redis request
-        let encoded = encodeRequest request (Proxy :: Proxy response)
-            k = getRequestId encoded
-        case mresult of
-            Nothing -> do
-                $logError $ "Timed out waiting for request to be sent: " <> tshow k
-                fail "sendJobRequest failed"
-            Just (_, Just (_ :: response)) -> do
-                $logError $ "Didn't expect to find a cached result: " <> tshow k
-                fail "sendJobRequest failed"
-            Just (rid, Nothing) -> do
-                $logInfo $ "Sent job request " ++ tshow rid
-                atomicInsert rid (sentRequests sets)
-                atomicInsert rid (unwatchedRequests sets)
-                return rid
+sendJobRequest tag sets request = runResourceT $ runThreadFileLoggingT $ withLogTag tag $ do
+    logFunc <- askLoggerIO
+    jc <- JQ.newJobClient logFunc config
+    let rid = RequestId (SHA256.hash (encode request))
+    mresult <- JQ.submitRequest jc rid request
+    case mresult of
+        Just (_ :: response) -> do
+            $logError $ "Didn't expect to find a cached result: " <> tshow rid
+            fail "sendJobRequest failed"
+        Nothing -> do
+            $logInfo $ "Sent job request " ++ tshow rid
+            atomicInsert rid (sentRequests sets)
+            atomicInsert rid (unwatchedRequests sets)
+            return rid
 
 forkResponseWaiter
     :: forall response. (Sendable response, Ord response)
@@ -367,41 +377,76 @@ forkResponseWaiter tag sets = allocateAsync responseWaiter
     -- Takes some items from the unwatchedRequests set and waits on it.
     responseWaiter :: IO ()
     responseWaiter = do
-        runThreadFileLoggingT $ logNest tag $ withRedis redisTestPrefix localhost $ \redis -> do
-            withJobQueueClient clientConfig redis $ \cvs ->
-                foldl' raceLifted
-                       (forever $ threadDelay maxBound)
-                       (replicate 5 (waitForResponse cvs redis) :: [LoggingT IO ()])
-    waitForResponse :: ClientVars (LoggingT IO) response -> Redis -> LoggingT IO ()
-    waitForResponse cvs redis = forever $ do
+        logFunc <- runThreadFileLoggingT $ withLogTag tag askLoggerIO
+        jc <- JQ.newJobClient logFunc config
+        foldl' race_
+               (forever $ threadDelay maxBound)
+               (replicate 5 (waitForResponse jc) :: [IO ()])
+    waitForResponse :: JQ.JobClient response -> IO ()
+    waitForResponse cvs = forever $ do
         withItem (unwatchedRequests sets) $ \rid -> do
-            resultVar <- newEmptyMVar
-            registerResponseCallback cvs redis rid $
-                void . tryPutMVar resultVar
-            result <- takeMVar resultVar
+            act <- JQ.waitForResponse cvs rid
+            result <- liftIO $ atomically $ do
+                mb <- act
+                case mb of
+                    Nothing -> STM.retry
+                    Just res -> return res
             case result of
                 Left ex -> liftIO $ throwIO ex
                 Right x -> do
-                    $logInfo $ "Got result for " <> tshow rid
+                    runThreadFileLoggingT $ withLogTag tag ($logInfo $ "Got result for " <> tshow rid)
                     atomicInsert (rid, x) (receivedResponses sets)
 
+{-
 clientConfig :: ClientConfig
 clientConfig = defaultClientConfig
     { clientHeartbeatCheckIvl = heartbeatCheckIvl
     }
+-}
 
 heartbeatCheckIvl :: Seconds
 heartbeatCheckIvl = Seconds 2
--}
-randomSlaveSpawner :: String -> IO ()
-randomSlaveSpawner which = runResourceT $ runThreadFileLoggingT $ withLogTag "randomSlaveSpawner" $ forM_ [0..] $ \n -> do
+
+
+runJQWorker_ :: LogFunc -> IO ()
+runJQWorker_ logFunc = do
+    let calc :: [Int] -> IO Int
+        calc input = return $ foldl' xor zeroBits input
+        inner :: Redis -> WorkerConnectInfo -> RequestId -> Request -> WQ.WorkQueue [Int] Int -> IO Int
+        inner redis mci _requestId (Request request) queue = do
+            requestWorker redis mci
+            subresults <- WQ.mapQueue queue request
+            liftIO $ calc (otoList (subresults :: Vector Int))
+    masterConf <- WQ.defaultMasterConfig
+    JQ.workQueueJQWorker logFunc config masterConf calc inner
+
+runJQWorkerLong :: LogFunc -> IO ()
+runJQWorkerLong logFunc = do
+    let calc :: [Int] -> IO Int
+        calc (x : _) = do
+            threadDelay (x * 1000)
+            return 0
+        calc _ = return 0
+        inner :: Redis -> WorkerConnectInfo -> RequestId -> Request -> WQ.WorkQueue [Int] Int -> IO Int
+        inner redis mci _requestId (Request request) queue = do
+            requestWorker redis mci
+            results <- WQ.mapQueue queue request
+            if results == fmap (\_ -> 0) request
+                then return 0
+                else return 1
+    masterConf <- WQ.defaultMasterConfig
+    JQ.workQueueJQWorker logFunc config masterConf calc inner
+
+randomSlaveSpawner :: (LogFunc -> IO ()) -> IO ()
+randomSlaveSpawner workerFunc = runResourceT $ runThreadFileLoggingT $ withLogTag "randomSlaveSpawner" $ forM_ [0..] $ \n -> do
     startTime <- liftIO getCurrentTime
     $logInfo $ "Forking worker at " ++ tshow startTime
-    pid <- lift $ forkWorker which 0
-    randomDelay (500 * n) (500 + 500 * n)
+    logFunc <- askLoggerIO
+    pid <- liftIO (forkIO (workerFunc logFunc))
+    randomDelay (500 * n) (500 + 500 * n)    
     $logInfo $ "Cancelling worker started at " ++ tshow startTime
-    cancelProcess pid
-{-
+    liftIO (throwTo pid ThreadKilled)
+
 randomWaiterSpawner :: (Sendable response, Ord response)
                     => LogTag -> RequestSets response -> IO ()
 randomWaiterSpawner tag sets = runResourceT $ runThreadFileLoggingT $ withLogTag tag $ forM_ [0..] $ \n -> do
@@ -418,13 +463,14 @@ randomJobRequester tag sets cnt = runResourceT $ runThreadFileLoggingT $ withLog
     ms <- liftIO $ randomRIO (0, 200)
     let request :: Vector [Int]
         request = fromList $ map (ms:) $ chunksOf 100 [n..n+cnt]
-    lift $ void $ allocateAsync (sendJobRequest (LogTag (tag ++ "-" ++ tshow n)) sets request)
+    lift $ void $ allocateAsync (sendJobRequest (LogTag (tag ++ "-" ++ tshow n)) sets (Request request))
     randomDelay 100 200
 
 checkRequestsAnswered :: (MonadIO m, MonadBaseControl IO m, Show response) => (response -> Bool) -> RequestSets response -> Int -> m ()
 checkRequestsAnswered correct sets seconds = runThreadFileLoggingT $ withLogTag "checkRequestsAnswered" $ do
     lastSummaryRef <- newIORef (error "impossible: lastSummaryRef")
-    let loop = do
+    let updateLastSummaryRef :: IO (Set RequestId, Set RequestId, Set RequestId)
+        updateLastSummaryRef = do
             unwatched <- readIORef (unwatchedRequests sets)
             sent <- readIORef (sentRequests sets)
             received <- readIORef (receivedResponses sets)
@@ -432,33 +478,39 @@ checkRequestsAnswered correct sets seconds = runThreadFileLoggingT $ withLogTag 
             unless (S.null wrongResults) $
                 fail $ "Received wrong results: " ++ show wrongResults
             let unreceived = sent `S.difference` S.map fst received
-            writeIORef lastSummaryRef (unwatched, sent, unreceived)
+            writeIORef lastSummaryRef (unwatched, sent, unreceived)            
+            return (unwatched, sent, unreceived)
+        loop = do
+            (unwatched, sent, unreceived) <- updateLastSummaryRef
             -- NOTE: uncomment this for lots more debug info
             -- mapM_ ($logDebug . pack) . lines =<< getSummary
             if S.null unwatched && S.null unreceived
                 then return ()
                 else threadDelay (1000 * 1000) >> loop
         getSummary = liftIO $ do
-            (unwatched, sent, unreceived) <- readIORef lastSummaryRef
-            JobQueueStatus{..} <- runThreadFileLoggingT $
-                withRedis redisTestPrefix localhost getJobQueueStatus
+            (unwatched, sent, unreceived) <- updateLastSummaryRef
+            JQ.JobQueueStatus{..} <- runThreadFileLoggingT $
+                withRedis redisConfig JQ.getJobQueueStatus
             -- TODO: May also make sense to check that requests we have received
             -- aren't in the pending / active lists.
             start <- getCurrentTime
             let summary :: String
-                summary =
-                    if not (null unwatched) then "Some requests weren't watched" else
-                    if null unreceived then "All responses received" else
-                    if not (null requestsLost) then "Some request was lost! Argh!" else
-                    if not (null oldHeartbeats) then "Heartbeat checker failed to re-enqueue items" else
-                    "Test timed out too early, but no there was no data loss, and heartbeats seem to function."
+                summary = intercalate ", " $ do
+                    let errs =
+                            (guard (not (null unwatched)) >> ["Some requests weren't watched"]) ++
+                            (guard (null unreceived) >> ["All responses received"]) ++
+                            (guard (not (null requestsLost)) >> ["Some request was lost! Argh!"]) ++
+                            (guard (not (null oldHeartbeats)) >> ["Heartbeat checker failed to re-enqueue items"])
+                    if null errs
+                        then ["Test timed out too early, but no there was no data loss, and heartbeats seem to function."]
+                        else errs
                 requestsLost =
                     map fst $
                     filter (isNothing . snd) $
-                    map (\x -> (x, find (\y -> x `elem` wsRequests y) jqsWorkers)) $
+                    map (\x -> (x, find (\y -> x `elem` JQ.wsRequests y) jqsWorkers)) $
                     filter (`onotElem` jqsPending) (S.toList unreceived)
                 ivl = fromIntegral (unSeconds heartbeatCheckIvl)
-                oldHeartbeats = filter (maybe True (> ivl) . fmap (start `diffUTCTime`) . wsLastHeartbeat) jqsWorkers
+                oldHeartbeats = filter (maybe True (> ivl) . fmap (start `diffUTCTime`) . JQ.wsLastHeartbeat) jqsWorkers
             return $
                 "\nsent = " ++ show sent ++
                 "\nunwatched = " ++ show unwatched ++
@@ -469,7 +521,7 @@ checkRequestsAnswered correct sets seconds = runThreadFileLoggingT $ withLogTag 
                 "\nrequestsLost = " ++ show requestsLost ++
                 "\ntimeSinceLastHeartbeat = " ++ show jqsLastHeartbeat ++
                 "\nsummary = " ++ show summary
-    result <- timeout (seconds * 1000 * 1000) loop
+    result <- liftIO (timeout (seconds * 1000 * 1000) loop)
     case result of
         Nothing -> do
             summary <- getSummary
@@ -477,7 +529,7 @@ checkRequestsAnswered correct sets seconds = runThreadFileLoggingT $ withLogTag 
         Just () -> do
             sent <- readIORef (sentRequests sets)
             when (S.null sent) $ fail "Didn't send any requests."
--}
+
 randomDelay :: (MonadIO m, MonadBase IO m) => Int -> Int -> m ()
 randomDelay minMillis maxMillis = do
     ms <- liftIO $ randomRIO (minMillis, maxMillis)
@@ -496,7 +548,7 @@ checkResults seconds resultVars expecteds = liftIO $ do
                 case result of
                     Left ex -> liftIO $ throwIO ex
                     Right x -> x `shouldBe` expected
-{-
+
 getException :: (Show r, MonadIO m) => Int -> MVar (Either DistributedException r) -> m DistributedException
 getException seconds resultVar = liftIO $ do
     result <- timeout (seconds * 1000 * 1000) $ takeMVar resultVar
@@ -505,11 +557,13 @@ getException seconds resultVar = liftIO $ do
         Just (Right n) -> fail $ "Expected exception, but got " ++ show n
         Just (Left err) -> return err
 
+{-
 enqueueSlaveRequest :: MonadIO m => MasterConnectInfo -> m ()
 enqueueSlaveRequest mci =
     liftIO $ runThreadFileLoggingT $ logNest "enqueueSlaveRequest" $ withRedis redisTestPrefix localhost $ \r -> do
         let encoded = encode mci
         run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
+-}
 
 -- Keeping track of requests which have been sent, haven't yet been
 -- watched, and have been received.
@@ -541,4 +595,3 @@ withItem ref f = do
         case mx of
             Nothing -> return ()
             Just x -> restore (f x) `onException` atomicInsert x ref
--}

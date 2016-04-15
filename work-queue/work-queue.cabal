@@ -213,6 +213,7 @@ test-suite wq-test
                      , vector
                      , work-queue
                      , uuid
+                     , cryptohash
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded
   if flag(coverage)

@@ -52,7 +52,7 @@ import qualified Data.Serialize as B
 import           Data.Streaming.Network (AppData, appRead, appWrite)
 import           Data.Streaming.Network (ServerSettings, setAfterBind)
 import           Data.TypeFingerprint
-import           Data.Typeable (Proxy(..))
+import           Data.Typeable (Proxy(..), Typeable)
 import           Data.Void (absurd)
 import           GHC.IO.Exception (IOException(ioe_type), IOErrorType(ResourceVanished))
 import           Network.Socket (socketPort)
@@ -83,7 +83,7 @@ type NMApp iSend youSend m a = NMAppData iSend youSend -> m a
 
 -- | Constraint synonym for the constraints required to send data from
 -- / to an 'NMApp'.
-type Sendable a = (B.Serialize a, HasTypeFingerprint a)
+type Sendable a = (B.Serialize a, HasTypeFingerprint a, Typeable a)
 
 -- | Provides an 'NMApp' with a means of communicating with the other side of a
 -- connection. See other functions provided by this module.
