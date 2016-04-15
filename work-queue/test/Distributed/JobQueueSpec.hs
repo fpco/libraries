@@ -145,8 +145,61 @@ spec = do
                 threadDelay (1000 * 1000 * 20))
         putStrLn "Will now check the answers"
         checkRequestsAnswered (== 0) sets 120
+    jqit "Sends an exception to the client on type mismatch" $ do
+        resultVar <- forkDispatcher' defaultRequest
+        pid1 <- forkJQWorker runJQWorker_ 0
+        pid2 <- forkJQWorker runJQWorker_ 0
+        ex <- getException 5 (resultVar :: MVar (Either DistributedException Bool))
+        cancelJQWorker pid1
+        cancelJQWorker pid2
+        case ex of
+            TypeMismatch {} -> return ()
+            _ -> fail $ "Expected TypeMismatch, but got " <> show ex
+    jqit "Multiple clients can make requests to multiple workers" $ do
+        let workerCount = 4
+            requestCount = 20
+        -- At least one worker needs a local slave, so that progress
+        -- is made when they all initially become masters.
+        pid0 <- forkJQWorker runJQWorker_ 1
+        pids <- replicateM (workerCount - 1) (forkJQWorker runJQWorker_ 0)
+        resultVars <- mapM (forkDispatcher' . mkRequest) [1..requestCount]
+        eresults <- timeout (30 * 1000 * 1000) $ mapM takeMVar resultVars
+        mapM cancelJQWorker (pid0 : pids)
+        case eresults of
+            Just (partitionEithers -> ([], xs)) -> liftIO $ xs `shouldBe` (replicate requestCount 0 :: [Int])
+            Just (partitionEithers -> (errs, _)) -> fail $ "Got errors: " ++ show errs
+            _ -> fail "Timed out waiting for values"
+    jqit "Can cancel active requests" $ do
+        resultVar <- forkDispatcher' (fromList [[1000 * 8]] :: Vector [Int])
+        pid <- forkJQWorker runJQWorkerLong 1
+        threadDelay (1000 * 1000)
+        let withRedis' = runThreadFileLoggingT . withRedis redisConfig
+            getWorkerStatus = do
+                mworker <- listToMaybe . JQ.jqsWorkers <$> withRedis' JQ.getJobQueueStatus
+                case mworker of
+                    Nothing -> fail "Couldn't find worker"
+                    Just worker -> return worker
+        worker <- getWorkerStatus
+        when (null $ JQ.wsRequests worker) $
+            fail "Worker didn't get request"
+        forM_ (JQ.wsRequests worker) $ \req -> do
+            success <- withRedis' $ \redis ->
+                JQ.cancelRequest (Seconds 60) redis req (Just (JQ.wsWorker worker))
+            liftIO $ success `shouldBe` True
+        threadDelay (1000 * 1000)
+        -- Test that the worker is indeed now available.
+        resultVar' <- forkDispatcher' (fromList [[1000]] :: Vector [Int])
+        threadDelay (1000 * 1000 * 3)
+        mresult <- tryTakeMVar resultVar'
+        liftIO $ mresult `shouldBe` Just (Right (0 :: Int))
+        -- And that the other result comes in with a canceled exception.
+        mresult' <- takeMVar resultVar
+        cancelJQWorker pid
+        case mresult' of
+            Left (RequestCanceled {}) -> return ()
+            _ -> fail $ "Instead of canceled exception, got " ++
+                show (mresult' :: Either DistributedException Int)
 
-  where cfg = defaultRedisConfig { rcKeyPrefix = redisTestPrefix }
 -- Maximum test time of 2 minutes.  Individual tests can of course further restrict this
 testcase :: String -> ResourceT IO () -> Spec
 testcase = testcaseTimeout (Seconds 120)
@@ -253,62 +306,6 @@ forkRepeat action =
                   _                         -> return ()
     in forkIO go
 
-{-
-spec2 :: Spec
-spec2 = do
-
-    jqit "Sends an exception to the client on type mismatch" $ do
-        resultVar <- forkDispatcher' defaultRequest
-        _ <- forkWorker "redis" 0
-        _ <- forkWorker "redis" 0
-        ex <- getException 5 (resultVar :: MVar (Either DistributedException Bool))
-        case ex of
-            TypeMismatch {} -> return ()
-            _ -> fail $ "Expected TypeMismatch, but got " <> show ex
-    jqit "Multiple clients can make requests to multiple workers" $ do
-        let workerCount = 4
-            requestCount = 20
-        -- At least one worker needs a local slave, so that progress
-        -- is made when they all initially become masters.
-        _ <- forkWorker "redis" 1
-        replicateM_ (workerCount - 1) $ void $ forkWorker "redis" 0
-        resultVars <- mapM (forkDispatcher' . mkRequest) [1..requestCount]
-        eresults <- timeout (30 * 1000 * 1000) $ mapM takeMVar resultVars
-        case eresults of
-            Just (partitionEithers -> ([], xs)) -> liftIO $ xs `shouldBe` (replicate requestCount 0 :: [Int])
-            Just (partitionEithers -> (errs, _)) -> fail $ "Got errors: " ++ show errs
-            _ -> fail "Timed out waiting for values"
-    jqit "Can cancel active requests" $ do
-        resultVar <- forkDispatcher' (fromList [[1000 * 8]] :: Vector [Int])
-        _ <- forkWorker "redis-long" 1
-        threadDelay (1000 * 1000)
-        let withRedis' = runThreadFileLoggingT . withRedis redisTestPrefix localhost
-            getWorkerStatus = do
-                mworker <- listToMaybe . jqsWorkers <$> withRedis' getJobQueueStatus
-                case mworker of
-                    Nothing -> fail "Couldn't find worker"
-                    Just worker -> return worker
-        worker <- getWorkerStatus
-        when (null $ wsRequests worker) $
-            fail "Worker didn't get request"
-        forM_ (wsRequests worker) $ \req -> do
-            success <- withRedis' $ \redis ->
-                cancelRequest (Seconds 60) redis req (Just (wsWorker worker))
-            liftIO $ success `shouldBe` True
-        threadDelay (1000 * 1000)
-        -- Test that the worker is indeed now available.
-        resultVar' <- forkDispatcher' (fromList [[1000]] :: Vector [Int])
-        threadDelay (1000 * 1000 * 3)
-        mresult <- tryTakeMVar resultVar'
-        liftIO $ mresult `shouldBe` Just (Right (0 :: Int))
-        -- And that the other result comes in with a canceled exception.
-        mresult' <- takeMVar resultVar
-        case mresult' of
-            Left (RequestCanceledException {}) -> return ()
-            _ -> fail $ "Instead of canceled exception, got " ++
-                show (mresult' :: Either DistributedException Int)
--}
-
 jqit :: String -> ResourceT IO () -> Spec
 jqit name f = it name $ clearRedisKeys >> runResourceT f
 
@@ -408,20 +405,21 @@ heartbeatCheckIvl :: Seconds
 heartbeatCheckIvl = Seconds 2
 
 
-runJQWorker_ :: LogFunc -> IO ()
-runJQWorker_ logFunc = do
+runJQWorker_ :: LogFunc -> Int -> IO ()
+runJQWorker_ logFunc lslaves = do
     let calc :: [Int] -> IO Int
         calc input = return $ foldl' xor zeroBits input
         inner :: Redis -> WorkerConnectInfo -> RequestId -> Request -> WQ.WorkQueue [Int] Int -> IO Int
         inner redis mci _requestId (Request request) queue = do
-            requestWorker redis mci
-            subresults <- WQ.mapQueue queue request
-            liftIO $ calc (otoList (subresults :: Vector Int))
+            WQ.withLocalSlaves queue lslaves calc $ do
+                requestWorker redis mci
+                subresults <- WQ.mapQueue queue request
+                liftIO $ calc (otoList (subresults :: Vector Int))
     masterConf <- WQ.defaultMasterConfig
     JQ.workQueueJQWorker logFunc config masterConf calc inner
 
-runJQWorkerLong :: LogFunc -> IO ()
-runJQWorkerLong logFunc = do
+runJQWorkerLong :: LogFunc -> Int -> IO ()
+runJQWorkerLong logFunc lslaves = do
     let calc :: [Int] -> IO Int
         calc (x : _) = do
             threadDelay (x * 1000)
@@ -429,23 +427,32 @@ runJQWorkerLong logFunc = do
         calc _ = return 0
         inner :: Redis -> WorkerConnectInfo -> RequestId -> Request -> WQ.WorkQueue [Int] Int -> IO Int
         inner redis mci _requestId (Request request) queue = do
-            requestWorker redis mci
-            results <- WQ.mapQueue queue request
-            if results == fmap (\_ -> 0) request
-                then return 0
-                else return 1
+            WQ.withLocalSlaves queue lslaves calc $ do
+                requestWorker redis mci
+                results <- WQ.mapQueue queue request
+                if results == fmap (\_ -> 0) request
+                    then return 0
+                    else return 1
     masterConf <- WQ.defaultMasterConfig
     JQ.workQueueJQWorker logFunc config masterConf calc inner
 
-randomSlaveSpawner :: (LogFunc -> IO ()) -> IO ()
+forkJQWorker :: (MonadIO m) => (LogFunc -> Int -> IO ()) -> Int -> m ThreadId
+forkJQWorker workerFunc lslaves = liftIO $ do
+    logFunc <- runThreadFileLoggingT $ withLogTag "randomSlaveSpawner" askLoggerIO
+    forkIO (workerFunc logFunc lslaves)
+
+cancelJQWorker :: (MonadIO m) => ThreadId -> m ()
+cancelJQWorker pid = liftIO (throwTo pid ThreadKilled)
+
+randomSlaveSpawner :: (LogFunc -> Int -> IO ()) -> IO ()
 randomSlaveSpawner workerFunc = runResourceT $ runThreadFileLoggingT $ withLogTag "randomSlaveSpawner" $ forM_ [0..] $ \n -> do
     startTime <- liftIO getCurrentTime
     $logInfo $ "Forking worker at " ++ tshow startTime
     logFunc <- askLoggerIO
-    pid <- liftIO (forkIO (workerFunc logFunc))
+    pid <- forkJQWorker workerFunc 0
     randomDelay (500 * n) (500 + 500 * n)    
     $logInfo $ "Cancelling worker started at " ++ tshow startTime
-    liftIO (throwTo pid ThreadKilled)
+    cancelJQWorker pid
 
 randomWaiterSpawner :: (Sendable response, Ord response)
                     => LogTag -> RequestSets response -> IO ()
