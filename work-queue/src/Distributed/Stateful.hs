@@ -166,7 +166,9 @@ runMasterRedis
 runMasterRedis wa logFunc master ss = do
     (ss', getPort) <- getPortAfterBind ss
     let getMci = do
-            port <- getPort
+            port <- case workerExternalPort (waConfig wa) of
+                Nothing -> getPort
+                Just port -> return port
             return $ MasterConnectInfo (workerHostName (waConfig wa)) port
     runMasterImpl wa logFunc master ss' getMci
 

@@ -75,6 +75,10 @@ data WorkerConfig = WorkerConfig
       -- ^ Which port to use when the worker is acting as a master.
       -- If the port is set to 0, then a free port is automatically
       -- chosen by the (unix) system.
+    , workerExternalPort :: Maybe Int
+      -- ^ Port number that is sent to slaves. This can be useful if
+      -- for example we're running the master in docker and the internal
+      -- port is mapped to some fixed external port.
     , workerMasterLocalSlaves :: Int
       -- ^ How many local slaves a master server should run.
     , workerHeartbeatSendIvl :: Seconds
@@ -122,6 +126,7 @@ defaultWorkerConfig prefix ci hostname = WorkerConfig
     , workerConnectInfo = ci
     , workerHostName = hostname
     , workerPort = 0
+    , workerExternalPort = Nothing
     , workerMasterLocalSlaves = 1
     , workerHeartbeatSendIvl = Seconds 15
     , workerConnectionHeartbeatIvlMicros = 1000 * 1000 * 2
@@ -405,7 +410,9 @@ becomeMaster params@WorkerParams{..} k req master = do
         watchForCancel wpRedis k workerCancellationCheckIvl $ do
             (ss, getPort) <- liftIO $ getPortAfterBind (serverSettingsTCP workerPort "*")
             master params ss k decoded $ do
-                port <- liftIO getPort
+                port <- liftIO $ case workerExternalPort of
+                    Nothing -> getPort
+                    Just port -> return port
                 return $ MasterConnectInfo workerHostName port
     case eres of
         Left err -> do
