@@ -60,14 +60,20 @@ jobWorker config@JobQueueConfig {..} f = do
         let heartbeatThread =
                 sendHeartbeats jqcHeartbeatConfig r wid heartbeatSentVar
             workerThread = do
-                $logDebug "Waiting for initial heartbeat send"
-                takeMVarE heartbeatSentVar $ InternalJobQueueException $ concat
-                    [ "Heartbeat checker thread died before sending initial heartbeat (cancelling computation).  "
-                    , "This usually indicates that we lost the connection to redis and couldn't reconnect."
-                    ]
-                $logDebug "Initial heartbeat sent"
-                (notify, unsub) <- subscribeToNotify r (requestChannel r)
-                jobWorkerThread config r wid notify (f r) `finally` liftIO unsub
+                mbExc <- try $ do
+                    $logDebug "Waiting for initial heartbeat send"
+                    takeMVarE heartbeatSentVar $ InternalJobQueueException $ concat
+                        [ "Heartbeat checker thread died before sending initial heartbeat (cancelling computation).  "
+                        , "This usually indicates that we lost the connection to redis and couldn't reconnect."
+                        ]
+                    $logDebug "Initial heartbeat sent"
+                    (notify, unsub) <- subscribeToNotify r (requestChannel r)
+                    jobWorkerThread config r wid notify (f r) `finally` liftIO unsub
+                case mbExc of
+                    Left (err :: SomeException) -> do
+                        $logInfo ("### Worker got exception " <> tshow err)
+                        throwIO err
+                    Right x -> return x
         heartbeatThread `raceLifted` workerThread
 
 jobWorkerThread
@@ -81,7 +87,7 @@ jobWorkerThread
     -> m void
 jobWorkerThread JobQueueConfig {..} r wid notify f = forever $ do
     ereqbs <- try $ run r $ rpoplpush (requestsKey r) (LKey (activeKey r wid))
-    case ereqbs of
+    gotResponse <- case ereqbs of
         Left ex@(CommandException (isPrefixOf "WRONGTYPE" -> True)) -> do
             -- While it's rather unlikely that this happens without it
             -- being a HeartbeatFailure, check anyway, so that we
@@ -92,8 +98,9 @@ jobWorkerThread JobQueueConfig {..} r wid notify f = forever $ do
                 else do
                     $logInfo $ tshow wid <> " recovering from heartbeat failure"
                     run_ r $ del (activeKey r wid :| [])
+                    return False
         Left ex -> liftIO $ throwIO ex
-        Right Nothing -> return ()
+        Right Nothing -> return False
         Right (Just bs) -> do
             let rid = RequestId bs
             watchForCancel r rid jqcCancelCheckIvl $ do
@@ -103,15 +110,21 @@ jobWorkerThread JobQueueConfig {..} r wid notify f = forever $ do
                         Nothing -> return (Left (RequestMissingException rid))
                         Just req -> Right <$> f rid req
                 mres <- case eres of
-                        Right res -> return $ Just res
+                        Right res -> do
+                            $logInfo "Got request"
+                            return $ Just res
                         Left (fromException -> Just (ReenqueueWork rid'))
-                            | rid == rid' -> return Nothing
+                            | rid == rid' -> do
+                                $logInfo "Got reenqueue"
+                                return Nothing
                             | otherwise -> return $ Just $ Left $ InternalJobQueueException $
                                 "ReenqueueWork's RequestId didn't match. " <>
                                 "Expected " <> tshow rid <>
                                 ", but got " <> tshow rid'
                         Left (fromException -> Just (CancelWork rid'))
-                            | rid == rid' -> return $ Just $ Left (RequestCanceled rid)
+                            | rid == rid' -> do
+                                $logInfo "Got cancel"
+                                return $ Just $ Left (RequestCanceled rid)
                             | otherwise -> return $ Just $ Left $ InternalJobQueueException $
                                 "CancelWork's RequestId didn't match. " <>
                                 "Expected " <> tshow rid <>
@@ -125,9 +138,17 @@ jobWorkerThread JobQueueConfig {..} r wid notify f = forever $ do
                         addRequestEvent r rid (RequestWorkFinished wid)
                     Nothing -> do
                         addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
-    $logDebug "Waiting for request notification"
-    takeMVarE notify NoLongerWaitingForRequest
-    $logDebug "Got notified of an available request"
+            return True
+    -- Wait for notification only if we've already consumed all the available requests
+    -- -- the notifications only tell us about _new_ requests, nothing about how many
+    -- there might be backed up in the queue.
+    --
+    -- REVIEW TODO: there is most likely still a race here between notifications and this
+    -- wait.
+    unless gotResponse $ do
+        $logDebug "Waiting for request notification"
+        takeMVarE notify NoLongerWaitingForRequest
+        $logDebug "Got notified of an available request"
 
 --TODO: decouple protocol checking concern from job-queue
 

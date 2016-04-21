@@ -170,7 +170,7 @@ spec = do
             Just (partitionEithers -> (errs, _)) -> fail $ "Got errors: " ++ show errs
             _ -> fail "Timed out waiting for values"
     jqit "Can cancel active requests" $ do
-        resultVar <- forkDispatcher' (fromList [[1000 * 8]] :: Vector [Int])
+        resultVar :: MVar (Either DistributedException Int) <- forkDispatcher' (Request (fromList [[1000 * 20]] :: Vector [Int]))
         pid <- forkJQWorker runJQWorkerLong 1
         threadDelay (1000 * 1000)
         let withRedis' = runThreadFileLoggingT . withRedis redisConfig
@@ -188,17 +188,18 @@ spec = do
             liftIO $ success `shouldBe` True
         threadDelay (1000 * 1000)
         -- Test that the worker is indeed now available.
-        resultVar' <- forkDispatcher' (fromList [[1000]] :: Vector [Int])
+        {-
+        resultVar' <- forkDispatcher' (Request (fromList [[1000]] :: Vector [Int]))
         threadDelay (1000 * 1000 * 3)
-        mresult <- tryTakeMVar resultVar'
-        liftIO $ mresult `shouldBe` Just (Right (0 :: Int))
+        mresult <- takeMVar resultVar'
+        liftIO $ mresult `shouldBe` Right (0 :: Int)
+        -}
         -- And that the other result comes in with a canceled exception.
         mresult' <- takeMVar resultVar
         cancelJQWorker pid
         case mresult' of
             Left (RequestCanceled {}) -> return ()
-            _ -> fail $ "Instead of canceled exception, got " ++
-                show (mresult' :: Either DistributedException Int)
+            _ -> fail $ "Instead of canceled exception, got " ++ show mresult'
 
 -- Maximum test time of 2 minutes.  Individual tests can of course further restrict this
 testcase :: String -> ResourceT IO () -> Spec
@@ -336,8 +337,16 @@ runDispatcher request resultVar = do
     logFunc <- runThreadFileLoggingT $ withLogTag "dispatcher" askLoggerIO
     client <- JQ.newJobClient logFunc config
     let k = RequestId (SHA256.hash (encode request))
-    result <- liftIO $
+    putStrLn "### Waiting for response..."
+    result0 <- try $ liftIO $
         waitForSTMMaybe =<< JQ.submitRequestAndWaitForResponse client k request
+    result <- case result0 of
+        Left (err :: SomeException) -> do
+            putStrLn ("### Got exception " <> tshow err)
+            throwIO err
+        Right x -> do
+            putStrLn ("### Got")
+            return x
     putMVar resultVar result
   where
     waitForSTMMaybe m = atomically $ do
