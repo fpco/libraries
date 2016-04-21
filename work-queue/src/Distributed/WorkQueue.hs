@@ -67,12 +67,12 @@ runSlave
     -> m ()
 runSlave nms wci@(WorkerConnectInfo host port) calc = do
     let clientSettings = clientSettingsTCP port host
-    eres <- liftIO $ runTCPClient clientSettings $ runNMApp nms nmapp
+    eres <- liftIO $ try $ runTCPClient clientSettings $ runNMApp nms nmapp
     case eres of
         Right () -> return ()
         Left err -> handleSlaveException wci "Distributed.WorkQueue.Common.runSlave" err
   where
-    nmapp nm = try $ do
+    nmapp nm = do
         let socket = tshow (appSockAddr (nmAppData nm))
         $logIODebugS "runSlave" $ "Starting slave on " ++ socket
         ts0 <- nmRead nm
