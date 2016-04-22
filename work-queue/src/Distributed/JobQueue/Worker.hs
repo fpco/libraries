@@ -12,7 +12,7 @@ module Distributed.JobQueue.Worker
 
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (cancel, cancelWith, waitEither, race)
+import Control.Concurrent.Async (cancel, cancelWith, waitEither, race, withAsync)
 import Control.Exception (AsyncException)
 import Control.Monad.Logger
 import Data.Bits (xor)
@@ -33,6 +33,7 @@ import FP.Redis
 import FP.ThreadFileLogger
 import System.Posix.Process (getProcessID)
 import Distributed.ConnectRequest (withConnectRequests)
+import Control.Monad.Trans.Control (control)
 
 -- | Implements a compute node which responds to requests and never
 -- returns.
@@ -70,9 +71,7 @@ jobWorker config@JobQueueConfig {..} f = do
                     (notify, unsub) <- subscribeToNotify r (requestChannel r)
                     jobWorkerThread config r wid notify (f r) `finally` liftIO unsub
                 case mbExc of
-                    Left (err :: SomeException) -> do
-                        $logInfo ("### Worker got exception " <> tshow err)
-                        throwIO err
+                    Left (err :: SomeException) -> throwIO err
                     Right x -> return x
         heartbeatThread `raceLifted` workerThread
 
@@ -87,7 +86,7 @@ jobWorkerThread
     -> m void
 jobWorkerThread JobQueueConfig {..} r wid notify f = forever $ do
     ereqbs <- try $ run r $ rpoplpush (requestsKey r) (LKey (activeKey r wid))
-    gotResponse <- case ereqbs of
+    gotRequest <- case ereqbs of
         Left ex@(CommandException (isPrefixOf "WRONGTYPE" -> True)) -> do
             -- While it's rather unlikely that this happens without it
             -- being a HeartbeatFailure, check anyway, so that we
@@ -103,41 +102,40 @@ jobWorkerThread JobQueueConfig {..} r wid notify f = forever $ do
         Right Nothing -> return False
         Right (Just bs) -> do
             let rid = RequestId bs
-            watchForCancel r rid jqcCancelCheckIvl $ do
-                eres <- try $ do
-                    mreq <- receiveRequest r wid rid (Proxy :: Proxy response)
-                    case mreq of
-                        Nothing -> return (Left (RequestMissingException rid))
-                        Just req -> Right <$> f rid req
-                mres <- case eres of
-                        Right res -> do
-                            $logInfo "Got request"
-                            return $ Just res
-                        Left (fromException -> Just (ReenqueueWork rid'))
-                            | rid == rid' -> do
-                                $logInfo "Got reenqueue"
-                                return Nothing
-                            | otherwise -> return $ Just $ Left $ InternalJobQueueException $
-                                "ReenqueueWork's RequestId didn't match. " <>
-                                "Expected " <> tshow rid <>
-                                ", but got " <> tshow rid'
-                        Left (fromException -> Just (CancelWork rid'))
-                            | rid == rid' -> do
-                                $logInfo "Got cancel"
-                                return $ Just $ Left (RequestCanceled rid)
-                            | otherwise -> return $ Just $ Left $ InternalJobQueueException $
-                                "CancelWork's RequestId didn't match. " <>
-                                "Expected " <> tshow rid <>
-                                ", but got " <> tshow rid'
-                        Left (fromException -> Just err) ->
-                            throwIO (err :: AsyncException)
-                        Left ex -> return $ Just (Left (wrapException ex))
-                case mres of
-                    Just res -> do
-                        sendResponse r jqcResponseExpiry wid rid (encode res)
-                        addRequestEvent r rid (RequestWorkFinished wid)
-                    Nothing -> do
-                        addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
+            eres <- try $ do
+                mreq <- receiveRequest r wid rid (Proxy :: Proxy response)
+                case mreq of
+                    Nothing -> return (Left (RequestMissingException rid))
+                    Just req -> watchForCancel r rid jqcCancelCheckIvl (Right <$> f rid req)
+            mres <- case eres of
+                    Right res -> do
+                        $logInfo "Got request"
+                        return $ Just res
+                    Left (fromException -> Just (ReenqueueWork rid'))
+                        | rid == rid' -> do
+                            $logInfo "Got reenqueue"
+                            return Nothing
+                        | otherwise -> return $ Just $ Left $ InternalJobQueueException $
+                            "ReenqueueWork's RequestId didn't match. " <>
+                            "Expected " <> tshow rid <>
+                            ", but got " <> tshow rid'
+                    Left (fromException -> Just (CancelWork rid'))
+                        | rid == rid' -> do
+                            $logInfo "Got cancel"
+                            return $ Just $ Left (RequestCanceled rid)
+                        | otherwise -> return $ Just $ Left $ InternalJobQueueException $
+                            "CancelWork's RequestId didn't match. " <>
+                            "Expected " <> tshow rid <>
+                            ", but got " <> tshow rid'
+                    Left (fromException -> Just err) ->
+                        throwIO (err :: AsyncException)
+                    Left ex -> return $ Just (Left (wrapException ex))
+            case mres of
+                Just res -> do
+                    sendResponse r jqcResponseExpiry wid rid (encode res)
+                    addRequestEvent r rid (RequestWorkFinished wid)
+                Nothing -> do
+                    addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
             return True
     -- Wait for notification only if we've already consumed all the available requests
     -- -- the notifications only tell us about _new_ requests, nothing about how many
@@ -145,7 +143,7 @@ jobWorkerThread JobQueueConfig {..} r wid notify f = forever $ do
     --
     -- REVIEW TODO: there is most likely still a race here between notifications and this
     -- wait.
-    unless gotResponse $ do
+    unless gotRequest $ do
         $logDebug "Waiting for request notification"
         takeMVarE notify NoLongerWaitingForRequest
         $logDebug "Got notified of an available request"
@@ -268,31 +266,26 @@ cancelWork :: MonadIO m => RequestId -> m a
 cancelWork = liftIO . throwIO . CancelWork
 
 watchForCancel :: MonadConnect m => Redis -> RequestId -> Seconds -> m a -> m a
-watchForCancel r k ivl f = do
-    -- FIXME: avoid this MVar stuff, once we have good lifted async.
-    resultVar <- newEmptyMVar
-    thread <- asyncLifted $ do
-        result <- f
-        putMVar resultVar result
-    let loop = do
-            mres <- run r (get (cancelKey r k))
-            case mres of
-                Just res
-                    | res == cancelValue ->
-                        liftIO $ cancelWith thread (CancelWork k)
-                    | otherwise -> liftIO $ throwIO $ InternalJobQueueException
-                        "Didn't get expected value at cancelKey."
-                Nothing -> do
-                    liftIO $ threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl))
-                    loop
-    watcher <- asyncLifted loop
-    res <- liftIO $ waitEither thread watcher
-    case res of
-        Left () -> do
-            liftIO $ cancel watcher
-            takeMVarE resultVar $ InternalJobQueueException
-                "Unexpected BlockedIndefinitelyOnMVar exception in watchForCancel"
-        Right () -> liftIO $ throwIO (CancelWork k)
+watchForCancel r k ivl f =
+    control $ \run ->
+        withAsync (run f) $ \thread ->
+        withAsync loop $ \watcher -> do
+            res <- waitEither thread watcher
+            case res of
+                Left res -> return res
+                Right () -> do
+                    throwIO (CancelWork k)
+  where
+    loop = do
+        mres <- run r (get (cancelKey r k))
+        case mres of
+            Just res
+                | res == cancelValue -> return ()
+                | otherwise -> liftIO $ throwIO $ InternalJobQueueException
+                    "Didn't get expected value at cancelKey."
+            Nothing -> do
+                liftIO $ threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl))
+                loop
 
 -- * Utilities
 
