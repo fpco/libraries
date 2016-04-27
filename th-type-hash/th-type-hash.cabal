@@ -21,7 +21,7 @@ library
                      , template-haskell
                      , th-orphans
                      , th-reify-many
-                     , fpco-cereal
+                     , store
                      , cryptohash
                      , bytestring
   default-language:    Haskell2010

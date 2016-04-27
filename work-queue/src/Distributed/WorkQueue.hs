@@ -34,7 +34,7 @@ import ClassyPrelude hiding ((<>))
 import Control.Concurrent.Async (withAsync)
 import Control.Monad.Trans.Control
 import Data.Function (fix)
-import Data.Serialize (Serialize)
+import Data.Store (Store)
 import Data.Streaming.Network
 import Data.Streaming.NetworkMessage
 import Data.TypeFingerprint
@@ -48,7 +48,7 @@ data ToSlave initialData payload
     | TSPayload payload
     | TSDone
     deriving (Generic, Typeable)
-instance (Serialize a, Serialize b) => Serialize (ToSlave a b)
+instance (Store a, Store b) => Store (ToSlave a b)
 
 instance (HasTypeFingerprint initialData, HasTypeFingerprint payload) => HasTypeFingerprint (ToSlave initialData payload) where
     typeFingerprint _ = typeFingerprint (Proxy :: Proxy (initialData, payload))

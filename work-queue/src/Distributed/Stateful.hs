@@ -30,6 +30,7 @@ import           Control.Concurrent.STM (check)
 import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger
 import qualified Data.Conduit.Network as CN
+import qualified Data.Store as S
 import           Data.Streaming.NetworkMessage
 import           Distributed.JobQueue.Worker hiding (MasterFunc, SlaveFunc)
 import           Distributed.JobQueue.Shared (popSlaveRequest, takeMVarE)
@@ -40,7 +41,6 @@ import           Distributed.Stateful.Slave hiding (runSlave)
 import           Distributed.Stateful.Slave
 import           FP.Redis
 import           System.Timeout (timeout)
-import qualified Data.Serialize as C
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID.V4
 
@@ -174,7 +174,7 @@ runMasterRedis wa logFunc master ss = do
                 Just port -> return port
             return $ MasterConnectInfo (workerHostName (waConfig wa)) port
     -- Synthetic, unique id for debugging purposes
-    rid <- RequestId . C.encode . UUID.toWords <$> UUID.V4.nextRandom
+    rid <- RequestId . S.encode . UUID.toWords <$> UUID.V4.nextRandom
     runMasterImpl wa rid logFunc master ss' getMci
 
 runMasterImpl

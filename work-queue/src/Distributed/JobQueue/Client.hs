@@ -39,7 +39,7 @@ import           Control.Concurrent.Async (race)
 import           Control.Monad.Logger (MonadLogger, logErrorS, logDebugS)
 import           Control.Monad.Trans.Control (liftBaseWith, restoreM)
 import           Data.List.NonEmpty (NonEmpty((:|)))
-import           Data.Serialize (encode)
+import qualified Data.Store as S
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.TypeFingerprint
 import           Data.Typeable (Proxy(..))
@@ -306,11 +306,11 @@ encodeRequest
     -> Proxy response
     -> ByteString
 encodeRequest request _ =
-    encode JobRequest
+    S.encode JobRequest
         { jrRequestTypeFingerprint = typeFingerprint (Proxy :: Proxy request)
         , jrResponseTypeFingerprint = typeFingerprint (Proxy :: Proxy response)
         , jrSchema = redisSchemaVersion
-        , jrBody = encode request
+        , jrBody = S.encode request
         }
 
 -- Internal function to send a request without checking redis for an

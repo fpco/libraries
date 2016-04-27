@@ -12,6 +12,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import           Data.IORef
 import           Data.Maybe (isNothing)
+import           Data.Store (encode)
 import           Data.Streaming.Network
 import           Data.Streaming.NetworkMessage
 import           Data.TypeFingerprintSpec ()
@@ -77,12 +78,25 @@ spec = do
                 return True
         res <- timeout (1000 * 1000) $ runClientAndServer client (\_ -> return ())
         res `shouldBe` Just True
-    it "throws DecodeFailed when fed bogus data" $ do
+    -- I'm not perfectly happy with this behaviour.  When fed bogus
+    -- data, the first bytes will be interpreted as the message
+    -- size. This will likely be a large number, so we'll wait for
+    -- more data indefinitely. We should come up with something
+    -- better. Maybe a magic number?
+    it "throws HeartbeatFailure when fed bogus data" $ do
         let client :: NMApp Bool Int IO ()
             client app = void $ nmRead app
             server app = appWrite (nmAppData app) "bogus data"
         res <- try $ runClientAndServer client server
-        res `shouldBe` Left (NMDecodeFailure "Failed reading: Unknown encoding for constructor\nEmpty call stack\n")
+        res `shouldSatisfy` (`elem` [Left NMHeartbeatFailure, Left NMConnectionDropped])
+    it "throws DecodeFailed when fed bogus data of correct length" $ do
+        let client :: NMApp Bool Int IO ()
+            client app = void $ nmRead app
+            bogusData = "bogus data"
+            l = BS.length bogusData
+            server app = appWrite (nmAppData app) $ encode l `BS.append` "bogus data"
+        res <- try $ runClientAndServer client server
+        res `shouldSatisfy` isDecodeFailure
     it "throws HeartbeatFailure when heartbeat intervals are too small" $ do
         exitedLateRef <- newIORef False
         settings <- setNMHeartbeat 10 <$> defaultNMSettings
@@ -97,6 +111,10 @@ spec = do
         res `shouldSatisfy` (`elem` [Left NMHeartbeatFailure, Left NMConnectionDropped])
         exitedLate <- readIORef exitedLateRef
         exitedLate `shouldBe` False
+
+isDecodeFailure :: Either NetworkMessageException a -> Bool
+isDecodeFailure (Left (NMDecodeFailure _)) = True
+isDecodeFailure _ = False
 
 largeSendTest :: NMSettings -> IO ()
 largeSendTest settings = do

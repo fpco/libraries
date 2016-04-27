@@ -20,7 +20,7 @@ import           Data.Conduit.Network (serverSettings, clientSettings)
 import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
-import           Data.Serialize (Serialize)
+import           Data.Store (Store)
 import           Data.Streaming.NetworkMessage
 import qualified Data.Streaming.NetworkMessage as NM
 import           Data.TypeFingerprint (mkManyHasTypeFingerprint)
@@ -36,15 +36,15 @@ import           FP.Redis
 import           Test.Hspec (shouldBe, shouldThrow)
 import qualified Test.Hspec as Hspec
 import           Test.QuickCheck hiding (output)
-import qualified Data.Serialize as C
+import qualified Data.Store as S
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID.V4
 import           Control.Monad.Trans.Control (MonadBaseControl)
 
-newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
-newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
-newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq, NFData)
-newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq, NFData)
+newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Store, Eq)
+newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Store, Eq)
+newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Store, Eq, NFData)
+newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Store, Eq, NFData)
 
 $(mkManyHasTypeFingerprint
     [ [t| Context |]
@@ -59,7 +59,7 @@ mkMasterHandle_
   -> LogFunc
   -> m (MasterHandle state context input output)
 mkMasterHandle_ args logFunc = do
-  rid <- liftIO (RequestId . C.encode . UUID.toWords <$> UUID.V4.nextRandom)
+  rid <- liftIO (RequestId . S.encode . UUID.toWords <$> UUID.V4.nextRandom)
   mkMasterHandle args rid logFunc
 
 spec :: Hspec.Spec

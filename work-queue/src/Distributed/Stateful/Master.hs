@@ -24,7 +24,7 @@ import           ClassyPrelude
 import           Control.Concurrent.Async (mapConcurrently)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import           Control.Monad.Logger (runLoggingT, logDebugNS)
-import qualified Data.Serialize as B
+import           Data.Store (Store)
 import           Data.Foldable (foldlM)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -322,7 +322,7 @@ addSlaveConnection MasterHandle{..} conn = do
 -- If no slaves are connected, this throws an exception.
 resetStates :: forall state context input output m.
      ( MonadBaseControl IO m, MonadIO m
-     , B.Serialize state, B.Serialize context, B.Serialize input, B.Serialize output
+     , Store state, Store context, Store input, Store output
      )
   => MasterHandle state context input output
   -> [state]

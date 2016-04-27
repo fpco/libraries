@@ -20,8 +20,8 @@ import           Control.Monad.Catch (Handler(Handler))
 import           Control.Monad.Logger (logDebugS, logErrorS)
 import           Control.Retry (RetryPolicy, limitRetries, constantDelay)
 import qualified Data.Aeson as Aeson
-import           Data.Serialize (Serialize)
-import qualified Data.Serialize as C
+import           Data.Store (Store)
+import qualified Data.Store as S
 import qualified Data.ByteString.Char8 as BS8
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import qualified Data.Text as T
@@ -43,7 +43,7 @@ data RedisInfo = RedisInfo
 -- needed for the fault tolerance portion - in the event that a worker
 -- goes down we need to be able to re-enqueue its work.
 newtype WorkerId = WorkerId { unWorkerId :: ByteString }
-    deriving (Eq, Ord, Show, Serialize, IsString, Typeable)
+    deriving (Eq, Ord, Show, Store, IsString, Typeable)
 
 instance Aeson.ToJSON WorkerId where toJSON = Aeson.String . T.pack . BS8.unpack . unWorkerId
 
@@ -51,7 +51,7 @@ instance Aeson.ToJSON WorkerId where toJSON = Aeson.String . T.pack . BS8.unpack
 -- response associated with it.  It's the hash of the request, which
 -- allows responses to be cached.
 newtype RequestId = RequestId { unRequestId :: ByteString }
-    deriving (Eq, Ord, Show, Serialize, Hashable, Typeable, NFData)
+    deriving (Eq, Ord, Show, Store, Hashable, Typeable, NFData)
 
 instance Aeson.ToJSON RequestId where toJSON = Aeson.String . T.pack . BS8.unpack . unRequestId
 
@@ -169,11 +169,11 @@ run_ = runCommand_ . redisConnection
 -- | Attempt to decode the given 'ByteString'.  If this fails, then
 -- throw a 'DecodeError' tagged with a 'String' indicating the source
 -- of the decode error.
-decodeOrThrow :: forall m a. (MonadIO m, Serialize a)
+decodeOrThrow :: forall m a. (MonadIO m, Store a)
               => String -> ByteString -> m a
 decodeOrThrow src lbs =
-    case C.runGet (C.get <* (guard =<< C.isEmpty)) lbs of
-        Left err -> throwErr err
+    case S.decode lbs of
+        Left err -> throwErr (show err)
         Right x -> return x
   where
     throwErr = liftIO . throwIO . DecodeError src
