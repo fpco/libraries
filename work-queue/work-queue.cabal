@@ -196,6 +196,7 @@ test-suite wq-test
                      , unix
                      , unordered-containers
                      , vector
+                     , uuid
                      , work-queue
   default-language:    Haskell2010
   ghc-options:         -Wall -threaded

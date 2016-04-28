@@ -16,6 +16,7 @@ import           Data.Serialize.Orphans ()
 import           Data.TypeFingerprint
 import           Text.Printf (PrintfArg(..))
 import           Data.Proxy (Proxy(..))
+import           Distributed.RedisQueue
 
 newtype SlaveId = SlaveId {unSlaveId :: Int}
   deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Serialize)
@@ -30,7 +31,8 @@ instance PrintfArg StateId where
   parseFormat = parseFormat . unStateId
 
 data SlaveReq state context input
-  = SReqResetState
+  = SReqInit !RequestId !SlaveId
+  | SReqResetState
       !(HMS.HashMap StateId state) -- New states
   | SReqAddStates
       !(HMS.HashMap StateId state) -- States to add
@@ -50,7 +52,8 @@ instance (HasTypeFingerprint state, HasTypeFingerprint context, HasTypeFingerpri
     typeFingerprint _ = typeFingerprint (Proxy :: Proxy (state, context, input))
 
 data SlaveResp state output
-  = SRespResetState
+  = SRespInit
+  | SRespResetState
   | SRespAddStates
   | SRespRemoveStates
       !SlaveId
@@ -64,6 +67,7 @@ instance (HasTypeFingerprint state, HasTypeFingerprint output) => HasTypeFingerp
     typeFingerprint _ = typeFingerprint (Proxy :: Proxy (state, output))
 
 displayReq :: SlaveReq state context input -> Text
+displayReq (SReqInit reqId slaveId) = "SReqInit (" <> pack (show reqId) <> " " <> pack (show slaveId) <> ")"
 displayReq (SReqResetState mp) = "SReqResetState (" <> pack (show (HMS.keys mp)) <> ")"
 displayReq (SReqAddStates mp) = "SReqAddStates (" <> pack (show (HMS.keys mp)) <> ")"
 displayReq (SReqRemoveStates k mp) = "SReqRemoveStates (" <> pack (show k) <> ") " <> "(" <> pack (show (HS.toList mp)) <> ")"
@@ -71,6 +75,7 @@ displayReq (SReqUpdate _ mp) = "SReqUpdate (" <> pack (show (fmap HMS.keys mp)) 
 displayReq SReqGetStates = "SReqGetStates"
 
 displayResp :: SlaveResp state output -> Text
+displayResp SRespInit = "SRespInit"
 displayResp SRespResetState = "SRespResetState"
 displayResp SRespAddStates = "SRespAddStates"
 displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> pack (show k) <> ") " <> "(" <> pack (show (HMS.keys mp)) <> ")"

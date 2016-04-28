@@ -28,6 +28,7 @@ import qualified Data.Text as T
 import           Data.Time.Clock.POSIX
 import           FP.Redis
 import           FP.Redis.Internal (recoveringWithReset)
+import           Control.DeepSeq (NFData)
 
 -- * Types used in the API
 
@@ -50,7 +51,7 @@ instance Aeson.ToJSON WorkerId where toJSON = Aeson.String . T.pack . BS8.unpack
 -- response associated with it.  It's the hash of the request, which
 -- allows responses to be cached.
 newtype RequestId = RequestId { unRequestId :: ByteString }
-    deriving (Eq, Ord, Show, Serialize, Hashable, Typeable)
+    deriving (Eq, Ord, Show, Serialize, Hashable, Typeable, NFData)
 
 instance Aeson.ToJSON RequestId where toJSON = Aeson.String . T.pack . BS8.unpack . unRequestId
 

@@ -36,6 +36,10 @@ import           FP.Redis
 import           Test.Hspec (shouldBe, shouldThrow)
 import qualified Test.Hspec as Hspec
 import           Test.QuickCheck hiding (output)
+import qualified Data.Serialize as C
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID.V4
+import           Control.Monad.Trans.Control (MonadBaseControl)
 
 newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
 newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
@@ -48,6 +52,15 @@ $(mkManyHasTypeFingerprint
     , [t| State |]
     , [t| Output |]
     ])
+
+mkMasterHandle_
+  :: (MonadBaseControl IO m, MonadIO m)
+  => MasterArgs
+  -> LogFunc
+  -> m (MasterHandle state context input output)
+mkMasterHandle_ args logFunc = do
+  rid <- liftIO (RequestId . C.encode . UUID.toWords <$> UUID.V4.nextRandom)
+  mkMasterHandle args rid logFunc
 
 spec :: Hspec.Spec
 spec = do
@@ -96,7 +109,7 @@ spec = do
               { waConfig = defaultWorkerConfig redisTestPrefix localhost "localhost"
               , waMasterArgs = MasterArgs Nothing (Just 5)
               , waRequestSlaveCount = 2
-              , waMasterWaitTime = Seconds 1
+              , waMasterWaitTime = Seconds 10
               }
         logFunc <- getLogFunc
         let slaveFunc _ (Input y) (State z) = return (State (y `xor` z), Output (y `xor` z))
@@ -130,7 +143,7 @@ spec = do
             update mh () inputs `shouldThrow` (== UnusedInputsException [extra])
     Hspec.it "Throws NoSlavesConnectedException" $ do
         logFunc <- getLogFunc
-        mh <- mkMasterHandle (MasterArgs Nothing Nothing) logFunc
+        mh <- mkMasterHandle_ (MasterArgs Nothing Nothing) logFunc
         resetStates (mh :: MasterHandle State Context Input Output) []
           `shouldThrow` (== NoSlavesConnectedException)
     Hspec.it "Throws exception for non-positive maxBatchSize" $ do
@@ -139,21 +152,21 @@ spec = do
               , maMaxBatchSize = Just 0
               }
         logFunc <- getLogFunc
-        mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
+        mkMasterHandle_ ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
     Hspec.it "Throws exception for negative minBatchSize" $ do
         let ma = MasterArgs
               { maMinBatchSize = Just (-1)
               , maMaxBatchSize = Nothing
               }
         logFunc <- getLogFunc
-        mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
+        mkMasterHandle_ ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
     Hspec.it "Throws exception for minBatchSize greater than maxBatchSize" $ do
         let ma = MasterArgs
               { maMinBatchSize = Just 5
               , maMaxBatchSize = Just 4
               }
         logFunc <- getLogFunc
-        mkMasterHandle ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
+        mkMasterHandle_ ma logFunc `shouldThrow` \case { MasterException _ -> True; _ -> False }
 
 it :: String -> IO () -> Hspec.Spec
 it name f = Hspec.it name f
@@ -193,7 +206,8 @@ runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
             { maMinBatchSize = Nothing
             , maMaxBatchSize = Just 5
             }
-    mh <- mkMasterHandle masterArgs logFunc
+    -- Synthetic, unique id for debugging purposes
+    mh <- mkMasterHandle_ masterArgs logFunc
     masterReady <- newEmptyMVar
     someConnected <- newEmptyMVar
     doneVar <- newEmptyMVar

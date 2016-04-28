@@ -40,6 +40,9 @@ import           Distributed.Stateful.Slave hiding (runSlave)
 import           Distributed.Stateful.Slave
 import           FP.Redis
 import           System.Timeout (timeout)
+import qualified Data.Serialize as C
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID.V4
 
 data WorkerArgs = WorkerArgs
   { waConfig :: WorkerConfig
@@ -92,7 +95,7 @@ runWorker wa@WorkerArgs {..} logFunc slave master =
     slave' wp mci onInit = liftIO $ runSlaveImpl logFunc slave (wpNMSettings wp) mci onInit
     master' :: WorkerParams -> CN.ServerSettings -> RequestId -> request -> LoggingT IO MasterConnectInfo -> LoggingT IO response
     master' wp ss rid r getMci = LoggingT $ \_ ->
-        runMasterImpl wa logFunc (master (wpRedis wp) rid r) ss (runLogger getMci)
+        runMasterImpl wa rid logFunc (master (wpRedis wp) rid r) ss (runLogger getMci)
 
 -- | Runs a slave worker, which connects to the specified master.  Redis is used
 -- to inform the slaves of how to connect to the master.
@@ -170,7 +173,9 @@ runMasterRedis wa logFunc master ss = do
                 Nothing -> getPort
                 Just port -> return port
             return $ MasterConnectInfo (workerHostName (waConfig wa)) port
-    runMasterImpl wa logFunc master ss' getMci
+    -- Synthetic, unique id for debugging purposes
+    rid <- RequestId . C.encode . UUID.toWords <$> UUID.V4.nextRandom
+    runMasterImpl wa rid logFunc master ss' getMci
 
 runMasterImpl
     :: forall state context input output response.
@@ -178,14 +183,15 @@ runMasterImpl
      , Sendable state, Sendable context, Sendable input, Sendable output
      )
     => WorkerArgs
+    -> RequestId
     -> LogFunc
     -> (MasterHandle state context input output -> IO response)
     -> CN.ServerSettings
     -> IO MasterConnectInfo
     -> IO response
-runMasterImpl WorkerArgs{..} logFunc master ss getMci = do
+runMasterImpl WorkerArgs{..} reqId logFunc master ss getMci = do
     let runLogger f = runLoggingT f logFunc
-    mh <- mkMasterHandle waMasterArgs logFunc
+    mh <- mkMasterHandle waMasterArgs reqId logFunc
     nms <- liftIO nmsSettings
     doneVar <- newEmptyMVar
     let acceptConns =

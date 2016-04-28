@@ -33,6 +33,9 @@ import           Data.SimpleSupply
 import qualified Data.Streaming.NetworkMessage as NM
 import           Distributed.Stateful.Internal
 import           Text.Printf (printf)
+import qualified Data.ByteString.Base64 as Base64
+import qualified Data.Text.Encoding as T
+import           Distributed.RedisQueue
 
 -- | Arguments for 'mkMasterHandle'
 data MasterArgs = MasterArgs
@@ -52,6 +55,7 @@ data MasterHandle state context input output = MasterHandle
   , mhStateIdSupply :: !(Supply StateId)
   , mhArgs :: !MasterArgs
   , mhLogFunc :: !LogFunc
+  , mhRequestId :: !RequestId
   }
 
 -- TODO: consider unifying these maps? Seemed like more refactoring work
@@ -80,9 +84,10 @@ instance Exception MasterException
 mkMasterHandle
   :: (MonadBaseControl IO m, MonadIO m)
   => MasterArgs
+  -> RequestId
   -> LogFunc
   -> m (MasterHandle state context input output)
-mkMasterHandle ma@MasterArgs{..} logFunc = do
+mkMasterHandle ma@MasterArgs{..} reqId logFunc = do
   let throw = throwAndLog logFunc . MasterException . pack
   case (maMinBatchSize, maMaxBatchSize) of
     (_, Just maxBatchSize) | maxBatchSize < 1 ->
@@ -107,6 +112,7 @@ mkMasterHandle ma@MasterArgs{..} logFunc = do
     , mhStateIdSupply = stateIdSupply
     , mhArgs = ma
     , mhLogFunc = logFunc
+    , mhRequestId = reqId
     }
 
 -- | Send an update request to all the slaves. This will cause each of
@@ -163,7 +169,7 @@ update MasterHandle{..} context inputs0 = liftIO $ do
           _ -> Nothing
     Just maxBatchSize -> do
       slaveStatesVar <- newMVar (HMS.fromList (map (second (map fst)) slaveIdsAndInputs))
-      let slaveThread slaveId = updateSlaveThread mhArgs mhLogFunc context maxBatchSize slaveId slaves slaveStatesVar inputMap
+      let slaveThread slaveId = updateSlaveThread mhArgs mhRequestId mhLogFunc context maxBatchSize slaveId slaves slaveStatesVar inputMap
       mapConcurrently (\slaveId -> (slaveId, ) <$> slaveThread slaveId) (HMS.keys slaves)
   atomicModifyIORef' mhSlaveInfoRef $ \si -> (, ()) $ si
     { siStates =
@@ -185,6 +191,7 @@ data SlaveThreadStatus
 updateSlaveThread
   :: forall state context input output.
      MasterArgs
+  -> RequestId
   -> LogFunc
   -> context
   -> Int -- ^ Max batch size
@@ -193,9 +200,12 @@ updateSlaveThread
   -> MVar (HMS.HashMap SlaveId [StateId]) -- ^ 'MVar's holding the remaining states for each slave
   -> HMS.HashMap StateId [(StateId, input)] -- Inputs to the computation
   -> IO (HMS.HashMap StateId (HMS.HashMap StateId output))
-updateSlaveThread MasterArgs{..} logFunc context maxBatchSize thisSlaveId slaves slaveStatesVar inputMap = go
+updateSlaveThread MasterArgs{..} reqId logFunc context maxBatchSize thisSlaveId slaves slaveStatesVar inputMap = go
   where
-    debug msg = runLoggingT (logDebugNS "Distributed.Stateful.Master.updateSlaveThread" (pack msg)) logFunc
+    debug msg0 = do
+      let msg = T.decodeUtf8 (Base64.encode (unRequestId reqId)) <> ": " <> msg0
+      runLoggingT (logDebugNS "Distributed.Stateful.Master.updateSlaveThread" msg) logFunc
+
     thisSlave = slaves HMS.! thisSlaveId
 
     go :: IO (HMS.HashMap StateId (HMS.HashMap StateId output))
@@ -226,13 +236,13 @@ updateSlaveThread MasterArgs{..} logFunc context maxBatchSize thisSlaveId slaves
         STSOk roundStates -> broadcastAndContinue roundStates
         STSStop -> return HMS.empty
         STSRequestStates requestFrom statesToRequest -> do
-          debug (printf ("Transferring states from %d to %d %s\n")
-              requestFrom thisSlaveId (show (map unStateId statesToRequest)))
+          debug $ pack $
+            printf ("Transferring states from %d to %d %s\n")
+              requestFrom thisSlaveId (show (map unStateId statesToRequest))
           requestStatesForSlave requestFrom statesToRequest
           broadcastAndContinue statesToRequest
 
-    -- | This is 'IO' just because we need to modify the 'IORef' holding
-    -- the map recording which states are held by which slave.
+    -- | This is 'IO' just because of logging.
     stealStatesForSlave ::
          Int
       -> HMS.HashMap SlaveId [StateId]
@@ -294,6 +304,12 @@ addSlaveConnection :: (MonadBaseControl IO m, MonadIO m)
   -> m ()
 addSlaveConnection MasterHandle{..} conn = do
   slaveId <- askSupply mhSlaveIdSupply
+  -- Init slave
+  NM.nmWrite conn (SReqInit mhRequestId slaveId)
+  readSelect conn $ \case
+    SRespInit -> return ()
+    _ -> Nothing
+  -- Continue
   atomicModifyIORef' mhSlaveInfoRef (\si -> (, ()) $ si
     { siConnections = HMS.insert slaveId conn (siConnections si)
     , siStates = HMS.insert slaveId HS.empty (siStates si)

@@ -16,12 +16,15 @@ module Distributed.Stateful.Slave
 import           ClassyPrelude
 import           Control.DeepSeq (force, NFData)
 import           Control.Exception (evaluate, AsyncException)
-import           Control.Monad.Logger (runLoggingT, logDebugNS)
+import           Control.Monad.Logger (runLoggingT, logDebugNS, logErrorNS)
 import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import qualified Data.Streaming.NetworkMessage as NM
 import           Distributed.Stateful.Internal
+import qualified Data.ByteString.Base64 as Base64
+import qualified Data.Text.Encoding as T
+import           Distributed.RedisQueue
 
 -- | Arguments for 'runSlave'.
 data SlaveArgs state context input output = SlaveArgs
@@ -42,6 +45,8 @@ data SlaveException
   = AddingExistingStates [StateId]
   | MissingStatesToRemove [StateId]
   | InputStateNotFound StateId
+  | BadInitRequest Text
+  | UnexpectedInitRequest !RequestId !SlaveId
   deriving (Eq, Show, Typeable)
 
 instance Exception SlaveException
@@ -57,25 +62,47 @@ runSlave :: forall state context input output void.
 runSlave SlaveArgs{..} =
     CN.runTCPClient saClientSettings $
     NM.runNMApp saNMSettings $ \nm -> do
-      saInit
-      go (NM.nmRead nm) (NM.nmWrite nm) HMS.empty
+        saInit
+        -- First, receive the init
+        req <- NM.nmRead nm
+        case req of
+            SReqInit reqId slaveId -> do
+                NM.nmWrite nm SRespInit
+                -- Proceed
+                go (NM.nmRead nm) (NM.nmWrite nm) reqId slaveId HMS.empty
+            _ -> do
+                let err = BadInitRequest ("Expecting SReqInit as first message, got " <> displayReq req)
+                NM.nmWrite nm (SRespError (pack (show err)))
+                throwAndLog saLogFunc err
   where
-    throw = throwAndLog saLogFunc
-    debug msg = runLoggingT (logDebugNS "Distributed.Stateful.Slave" msg) saLogFunc
-    go :: IO (SlaveReq state context input)
+    decorateMsg reqId slaveId msg =
+      T.decodeUtf8 (Base64.encode (unRequestId reqId)) <> "-" <> tshow (unSlaveId slaveId) <> ": " <> msg
+
+    throw reqId slaveId err = do
+      runLoggingT (logErrorNS "Distributed.Stateful.Slave" (decorateMsg reqId slaveId (tshow err))) saLogFunc
+      throwIO err
+
+    debug reqId slaveId msg0 = do
+      let msg = decorateMsg reqId slaveId msg0
+      runLoggingT (logDebugNS "Distributed.Stateful.Slave" msg) saLogFunc
+
+    go ::
+         IO (SlaveReq state context input)
       -> (SlaveResp state output -> IO ())
+      -> RequestId
+      -> SlaveId
       -> (HMS.HashMap StateId state)
       -> IO void
-    go recv send states = do
+    go recv send reqId slaveId states = do
       req <- recv
-      debug (displayReq req)
+      debug reqId slaveId (displayReq req)
       eres <- try $ do
         res <- case req of
           SReqResetState states' -> return (SRespResetState, states')
           SReqGetStates -> return (SRespGetStates states, states)
           SReqAddStates newStates -> do
             let aliased = HMS.keys (HMS.intersection newStates states)
-            unless (null aliased) $ throw (AddingExistingStates aliased)
+            unless (null aliased) $ throw reqId slaveId (AddingExistingStates aliased)
             return (SRespAddStates, HMS.union newStates states)
           SReqRemoveStates slaveRequesting stateIdsToDelete -> do
             let eitherLookup sid =
@@ -83,14 +110,14 @@ runSlave SlaveArgs{..} =
                     Nothing -> Left sid
                     Just x -> Right (sid, x)
             let (missing, toSend) = partitionEithers $ map eitherLookup $ HS.toList stateIdsToDelete
-            unless (null missing) $ throw (MissingStatesToRemove missing)
+            unless (null missing) $ throw reqId slaveId (MissingStatesToRemove missing)
             let states' = foldl' (flip HMS.delete) states stateIdsToDelete
             return (SRespRemoveStates slaveRequesting (HMS.fromList toSend), states')
           SReqUpdate context inputs -> do
             results <- forM (HMS.toList inputs) $ \(oldStateId, innerInputs) ->
               if null innerInputs then return Nothing else Just <$> do
                 state <- case HMS.lookup oldStateId states of
-                  Nothing -> throw (InputStateNotFound oldStateId)
+                  Nothing -> throw reqId slaveId (InputStateNotFound oldStateId)
                   Just state0 -> return state0
                 fmap ((oldStateId, ) . HMS.fromList) $ forM (HMS.toList innerInputs) $ \(newStateId, input) ->
                   fmap (newStateId, ) $ saUpdate context input state
@@ -98,13 +125,15 @@ runSlave SlaveArgs{..} =
             let states' = foldMap (fmap fst) resultsMap
             let outputs = fmap (fmap snd) resultsMap
             return (SRespUpdate outputs, states' `HMS.union` (states `HMS.difference` inputs))
+          SReqInit reqId' slaveId' ->
+            throw reqId slaveId (UnexpectedInitRequest reqId' slaveId')
         evaluate (force res)
       case eres of
         Right (output, states') -> do
           send output
-          debug (displayResp output)
-          go recv send states'
+          debug reqId slaveId (displayResp output)
+          go recv send reqId slaveId states'
         Left (fromException -> Just (err :: AsyncException)) -> throwIO err
         Left (err :: SomeException) -> do
           send (SRespError (pack (show err)))
-          throwAndLog saLogFunc err
+          throw reqId slaveId err
