@@ -50,8 +50,7 @@ jobWorker
     -> (Redis -> RequestId -> request -> m response)
     -- ^ This function is run by the worker, for every request it
     -- receives.
-    -> m ()
-    -- REVIEW: Morally this returns 'Void'
+    -> m void
 jobWorker config@JobQueueConfig {..} f = do
     wid <- liftIO getWorkerId
     let withTag = withLogTag (LogTag ("worker-" ++ tshow (unWorkerId wid)))

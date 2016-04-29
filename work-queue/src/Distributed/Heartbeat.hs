@@ -3,28 +3,73 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
+module Distributed.Heartbeat
+    ( HeartbeatConfig(..)
+    , checkHeartbeats
+    , withCheckHeartbeats
+    , withHeartbeats
 
--- REVIEW TODO: Add explicit export list
-module Distributed.Heartbeat where
+    -- * Testing/debugging
+    , activeOrUnhandledWorkers
+    ) where
 
 import ClassyPrelude
 import Control.Concurrent.Lifted (threadDelay)
-import Control.Monad.Logger (logDebug)
+import Control.Monad.Logger (logDebug, logInfo)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Time.Clock.POSIX
-import Distributed.Heartbeat.Internal
-import Distributed.Redis
-import Distributed.Types
 import FP.Redis
 import FP.ThreadFileLogger
+import Control.Concurrent.Async.Lifted (race)
+import Data.Void (absurd)
+
+import Distributed.Redis
+import Distributed.Types
 
 -- TODO: add warnings when the check rate is too low compared to send
 -- rate.
 
+-- | Configuration of heartbeats, used by both the checker and sender.
+data HeartbeatConfig = HeartbeatConfig
+    { hcSenderIvl :: !Seconds
+    -- ^ How frequently heartbeats should be sent.
+    , hcCheckerIvl :: !Seconds
+    -- ^ How frequently heartbeats should be checked. Should be
+    -- substantially larger than 'hcSenderIvl'.
+    }
+
+-- | A sorted set of 'WorkerId's that are currently thought to be running. The
+-- score of each is its timestamp.
+heartbeatActiveKey :: Redis -> ZKey
+heartbeatActiveKey r = ZKey $ Key $ redisKeyPrefix r <> "heartbeat:active"
+
+-- | Timestamp for the last time the heartbeat check successfully ran.
+heartbeatLastCheckKey :: Redis -> VKey
+heartbeatLastCheckKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:last-check"
+
+-- | Returns all the heartbeats currently in redis. Should only be useful
+-- for testing/debugging
+activeOrUnhandledWorkers :: (MonadConnect m) => Redis -> m [WorkerId]
+activeOrUnhandledWorkers r =
+    map WorkerId <$> run r (zrange (heartbeatActiveKey r) 0 (-1) False)
+
 -- | Periodically check worker heartbeats. See #78 for a description of
 -- how this works.
+--
+-- Note that:
+--
+-- * @handleFailures@ could be called multiple times for a worker that has died only once,
+-- even if the "cleanup" function is correctly called.
+-- * If multiple 'checkHeartbeats' are waiting, each @handleFailures@ can be called with
+-- the same workers.
 checkHeartbeats
-    :: MonadConnect m => HeartbeatConfig -> Redis -> ([WorkerId] -> m ()) -> m void
+    :: (MonadConnect m)
+    => HeartbeatConfig -> Redis
+    -> ([WorkerId] -> m () -> m ())
+    -- ^ The second function is a "cleanup" function. It should be called by the
+    -- continuation when the worker failures have been handled. If it's not called,
+    -- the 'WorkerId's will show up again.
+    -> m void
 checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ do
     startTime <- liftIO getPOSIXTime
     let Seconds ivl = hcCheckerIvl config
@@ -44,19 +89,28 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
                         tshow usecs
             liftIO $ threadDelay usecs
         Just lastTime -> do
-            -- Blocks other checkers from starting, for the first half of the
-            -- heartbeat interval.
-            $logDebug "Trying to acquire heartbeat check mutex."
-            let mutexExpiry = Seconds (max 1 (ivl `div` 2))
-            gotMutex <- run r $ set (heartbeatMutexKey r) "" [NX, EX mutexExpiry]
-            when gotMutex $ do
-                $logDebug "Acquired heartbeat check mutex."
-                let ninf = -1 / 0
-                inactive <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac lastTime) False
-                handleFailures (map WorkerId inactive)
-                $logDebug "Setting timestamp for last heartbeat check"
-                setTimeAndWait
+            $logDebug ("Enough time has passed, checking if there are any inactive workers.")
+            let ninf = -1 / 0
+            inactives0 <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac lastTime) False
+            case inactives0 of
+                [] -> return ()
+                inactive : inactives -> do
+                    $logInfo ("Got inactive workers: " ++ tshow (inactive : inactives))
+                    handleFailures
+                        (map WorkerId (inactive : inactives))
+                        (void (run r (zrem (heartbeatActiveKey r) (inactive :| inactives))))
+            $logDebug "Setting timestamp for last heartbeat check"
+            setTimeAndWait
         Nothing -> setTimeAndWait
+
+withCheckHeartbeats
+    :: (MonadConnect m)
+    => HeartbeatConfig -> Redis
+    -> ([WorkerId] -> m () -> m ())
+    -> m a
+    -> m a
+withCheckHeartbeats conf redis handle cont =
+    fmap (either id absurd) (race cont (checkHeartbeats conf redis handle))
 
 -- | This periodically removes the worker's key from the set of
 -- inactive workers.  This set is periodically re-initialized and
@@ -67,14 +121,11 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
 -- Instead, a lesser time interval should be passed to
 -- 'sendHeartbeats', to be sure that the heartbeat is seen by every
 -- iteration of 'checkHeartbeats'.
-sendHeartbeats
-    :: MonadConnect m => HeartbeatConfig -> Redis -> WorkerId -> MVar () -> m void
-sendHeartbeats config r wid heartbeatSentVar = do
+withHeartbeats
+    :: MonadConnect m => HeartbeatConfig -> Redis -> WorkerId -> m a -> m a
+withHeartbeats config r wid cont = do
     sendHeartbeat
-    -- REVIEW TODO: It's probably a good idea to make this fail if the mvar is full already.
-    -- Alternatively, we can just pass an IO action instead of an 'MVar'.
-    void $ tryPutMVar heartbeatSentVar ()
-    forever $ do
+    fmap (either id absurd) $ race cont $ forever $ do
         let Seconds ivl = hcSenderIvl config
         liftIO $ threadDelay ((fromIntegral ivl `max` 1) * 1000 * 1000)
         sendHeartbeat

@@ -5,7 +5,22 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
 
-module Distributed.Redis where
+module Distributed.Redis
+    ( -- * Types
+      RedisConfig(..)
+    , defaultRedisConfig
+    , defaultRetryPolicy
+    , Redis(..)
+
+    -- * Initialization/running
+    , withRedis
+    , run
+    , run_
+
+    -- * Operations
+    , getRedisTime
+    , setRedisTime
+    ) where
 
 import           Control.Concurrent.Async (Async, async, withAsync, race)
 import           Control.Concurrent.Lifted (fork)
@@ -27,12 +42,55 @@ import qualified Data.Serialize as C
 import qualified Data.Text as T
 import           Data.Time.Clock.POSIX
 import           Data.Typeable (Typeable)
-import           Distributed.Types
 import           FP.Redis
 import           FP.Redis.Internal (recoveringWithReset)
 import           FP.Redis.Types.Internal (connectionInfo_)
 import           FP.ThreadFileLogger
 import           Safe (readMay)
+import           Distributed.Types
+
+-- Types
+-----------------------------------------------------------------------
+
+-- | Configuration of redis connection, along with a prefix for keys.
+data RedisConfig = RedisConfig
+    { rcConnectInfo :: !ConnectInfo
+    -- ^ Redis host and port.
+    , rcKeyPrefix :: !ByteString
+    -- ^ Prefix to prepend to redis keys.
+    }
+
+-- | Default settingfs for connecting to redis:
+--
+-- * Use port 6379 (redis default port)
+--
+-- * Use 'defaultRetryPolicy' to determine redis reconnect behavior.
+--
+-- * It will use \"job-queue:\" as a key prefix in redis. This should
+-- almost always get set to something else.
+defaultRedisConfig :: RedisConfig
+defaultRedisConfig = RedisConfig
+    { rcConnectInfo = (connectInfo "localhost")
+          { connectRetryPolicy = Just defaultRetryPolicy }
+    , rcKeyPrefix = "job-queue:"
+    }
+
+-- | This is the retry policy used for 'withRedis' and 'withSubscription'
+-- reconnects. If it fails 10 reconnects, with 1 second between each,
+-- then it gives up.
+defaultRetryPolicy :: RetryPolicy
+defaultRetryPolicy = limitRetries 10 <> constantDelay (1000 * 1000)
+
+-- | A connection to redis, along with a prefix for keys.
+data Redis = Redis
+    { redisConnection :: !Connection
+    -- ^ Connection to redis.
+    , redisKeyPrefix :: !ByteString
+    -- ^ Prefix to prepend to redis keys.
+    }
+
+-- Operations
+-----------------------------------------------------------------------
 
 -- | Connect to redis, and provide the connection to the inner action.
 -- When the inner action exits (either via return or exception), the

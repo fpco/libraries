@@ -18,6 +18,7 @@ import           Data.Streaming.NetworkMessage (NetworkMessageException)
 import qualified Data.Text as T
 import           Data.TypeFingerprint
 import           FP.Redis
+import           Data.Hashable (Hashable)
 
 -- * Logging
 
@@ -32,7 +33,7 @@ type LogFunc = Loc -> LogSource -> LogLevel -> LogStr -> IO ()
 --
 -- REVIEW: This is used only for job queue, not work queue.
 newtype WorkerId = WorkerId { unWorkerId :: ByteString }
-    deriving (Eq, Ord, Show, Serialize, IsString, Typeable)
+    deriving (Eq, Ord, Show, Serialize, IsString, Typeable, Hashable)
 
 instance Aeson.ToJSON WorkerId where
     toJSON = Aeson.String . T.pack . BS8.unpack . unWorkerId
@@ -49,6 +50,8 @@ instance Aeson.ToJSON RequestId where
     toJSON = Aeson.String . T.pack . BS8.unpack . unRequestId
 
 -- * Job-queue
+
+{-
 
 -- | Configuration of job-queue, used by both the client and worker.
 --
@@ -128,67 +131,6 @@ data JobRequest = JobRequest
 
 instance Serialize JobRequest
 
--- * Redis
-
--- | Configuration of redis connection, along with a prefix for keys.
-data RedisConfig = RedisConfig
-    { rcConnectInfo :: !ConnectInfo
-    -- ^ Redis host and port.
-    , rcKeyPrefix :: !ByteString
-    -- ^ Prefix to prepend to redis keys.
-    }
-
--- | Default settingfs for connecting to redis:
---
--- * Use port 6379 (redis default port)
---
--- * Use 'defaultRetryPolicy' to determine redis reconnect behavior.
---
--- * It will use \"job-queue:\" as a key prefix in redis. This should
--- almost always get set to something else.
-defaultRedisConfig :: RedisConfig
-defaultRedisConfig = RedisConfig
-    { rcConnectInfo = (connectInfo "localhost")
-          { connectRetryPolicy = Just defaultRetryPolicy }
-    , rcKeyPrefix = "job-queue:"
-    }
-
--- | This is the retry policy used for 'withRedis' and 'withSubscription'
--- reconnects. If it fails 10 reconnects, with 1 second between each,
--- then it gives up.
-defaultRetryPolicy :: RetryPolicy
-defaultRetryPolicy = limitRetries 10 <> constantDelay (1000 * 1000)
-
--- | A connection to redis, along with a prefix for keys.
-data Redis = Redis
-    { redisConnection :: !Connection
-    -- ^ Connection to redis.
-    , redisKeyPrefix :: !ByteString
-    -- ^ Prefix to prepend to redis keys.
-    }
-
--- * Heartbeat checker
-
--- | Configuration of heartbeats, used by both the checker and sender.
-data HeartbeatConfig = HeartbeatConfig
-    { hcSenderIvl :: !Seconds
-    -- ^ How frequently heartbeats should be sent.
-    , hcCheckerIvl :: !Seconds
-    -- ^ How frequently heartbeats should be checked. Should be
-    -- substantially larger than 'hcSenderIvl'.
-    }
-
--- | Default settings for the heartbeat checker:
---
--- * Heartbeats are checked every 30 seconds.
---
--- * Heartbeats are sent every 15 seconds.
-defaultHeartbeatConfig :: HeartbeatConfig
-defaultHeartbeatConfig = HeartbeatConfig
-    { hcSenderIvl = Seconds 15
-    , hcCheckerIvl = Seconds 30
-    }
-
 -- * Information for connecting to a worker
 
 data WorkerConnectInfo = WorkerConnectInfo
@@ -198,6 +140,7 @@ data WorkerConnectInfo = WorkerConnectInfo
     deriving (Eq, Show, Ord, Generic, Typeable)
 
 instance Serialize WorkerConnectInfo
+-}
 
 -- * Exceptions
 
