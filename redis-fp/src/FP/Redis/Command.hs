@@ -16,13 +16,11 @@ module FP.Redis.Command
     , module FP.Redis.Command.String
     , runCommand
     , runCommand_
-    , runCommands
-    , runCommands_
+    -- , runCommands
+    -- , runCommands_
     , sendCommand
-    , ignoreResult
-    , anyResult
-    , makeCommand )
-    where
+    , makeCommand
+    ) where
 
 -- TODO SHOULD: Improve blocking operations support (use connection pool, special BlockingCommand type?)
 -- TODO OPTIONAL: Track EVALs and resubmit after reconnection so that EVALSHA works reliably.
@@ -47,15 +45,16 @@ runCommand_ :: (MonadCommand m)
            => Connection -- ^ Connection
            -> CommandRequest a -- ^ Command to run
            -> m ()
-runCommand_ conn request = runCommand conn (ignoreResult request)
+runCommand_ conn request = void (runCommand conn request)
 
 -- | Send a command and return the response.
 runCommand :: (MonadCommand m)
            => Connection -- ^ Connection
            -> CommandRequest a -- ^ Command to run
            -> m a
-runCommand connection request = join (sendCommand connection request)
+runCommand connection request = sendCommand connection request
 
+{-
 -- | Send multiple commands and discard the responses.  The commands will be pipelined.
 runCommands_ :: (Traversable t, MonadCommand m)
             => Connection -- ^ Connection
@@ -81,3 +80,4 @@ sendCommand connection command = do
     (reqs, respAction) <- commandToRequestPair command
     mapM_ (sendRequest connection) reqs
     return respAction
+-}

@@ -16,6 +16,7 @@ import Control.Retry
 import Control.Concurrent.STM.TSQueue
 import qualified Data.ByteString.Char8 as BS8
 import Data.Data (Data)
+import qualified Data.Conduit.Network as CN
 
 -- | Monads for connecting.
 type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
@@ -77,22 +78,10 @@ data SetOption = EX Seconds -- ^ Set the specified expire time, in seconds
                | XX -- ^ Only set the key if it already exists
     deriving (Eq, Show, Ord, Data, Typeable, Generic)
 
--- | Used to notify main thread that connection is ready.
-type ConnectionMVar = MVar (Either SomeException (Async () -> Connection))
-
 -- | Connection mode.
 data Mode = Normal -- ^ Normal connection that receives commands and returns responses.
           | Subscribed -- ^ Connection that is subscribed to pub/sub channels.
     deriving (Eq, Show, Ord, Data, Typeable, Generic, Enum, Bounded)
-
--- | Requests queue state.
-data RequestQueueState = RQConnected (TSQueue Request)
-                       | RQLostConnection (TSQueue Request)
-                       | RQFinal Request
-                       | RQDisconnect
-
--- | Queue of requests.
-type RequestQueue = TVar RequestQueueState
 
 -- | Connection to the Redis server used for pub/sub subscriptions.
 newtype SubscriptionConnection = SubscriptionConnection Connection
@@ -107,61 +96,21 @@ data ConnectInfo = ConnectInfo
       connectHost                 :: !ByteString
       -- | Server's port (default 6379)
     , connectPort                 :: !Int
-      -- | Initial commands to send on connection.  These will be re-sent if the connection needs
-      -- to be re-established.  Most commonly used would be 'auth' and 'select'.  Use 'ignoreResult'
-      -- if the command you need doesn't return '()'.
-    , connectInitialCommands      :: [CommandRequest ()]
-      -- | Initial subscriptions for connection.  These will be re-subscribed if the connection
-      -- needs to be re-established.
-    , connectInitialSubscriptions :: [SubscriptionRequest]
-      -- | TODO: hide this
-    , connectSubscriptionCallback :: !(Maybe ([Response] -> IO ()))
-      -- | Retry policy for reconnecting if a connection is lost.
-    , connectRetryPolicy          :: !(Maybe RetryPolicy)
       -- | Log source string for MonadLogger messages
     , connectLogSource            :: !Text
-      -- | Maximum number of requests in the queue before blocking new requests.
-    , connectMaxRequestQueue      :: !Int }
-    deriving (Typeable, Generic)
+    } deriving (Typeable, Generic)
 
 -- | Connection to the Redis server used for regular commands.
 data Connection = Connection
     { connectionInfo_ :: !ConnectInfo
         -- ^ Original connection information
-    , connectionRequestQueue :: !RequestQueue
-        -- ^ Queue of requests pending being sent
-    , connectionThread :: !(Async ())
-        -- ^ Thread that manages the connection
+    , connectionAppData :: !CN.AppData
+    , connectionLeftover :: !(IORef ByteString)
     } deriving (Typeable, Generic)
 
--- | Regular command request.
-data CommandRequest a = (Result a) => CommandRequest (ResponseCallback -> Request)
-                      | CommandPure a
-                      | forall x. CommandAp (CommandRequest (x -> a)) (CommandRequest x)
-    deriving Typeable
+data CommandRequest a = (Result a) => CommandRequest !Request
 
-instance Functor CommandRequest where
-    fmap f (CommandPure x) = CommandPure (f x)
-    fmap f (CommandAp x y) = CommandAp (fmap (f.) x) y
-    fmap f x = CommandAp (CommandPure f) x
-
-instance Applicative CommandRequest where
-    pure = CommandPure
-    (<*>) = CommandAp
-
--- | A request to Redis
-data Request = Command { requestBuilder :: !Builder
-                       , requestCallback :: ResponseCallback
-                       }
-                  -- ^ A normal command request that expects a response
-             | Subscription { requestBuilder :: !Builder }
-                  -- ^ A subscription request
-    deriving (Typeable, Generic)
-
--- | Callback to receive responses.  This will be called with asynchronous exceptions masked.
-type ResponseCallback = (IO () -> IO ()) -- ^ Restore async exceptions
-                      -> Response -- ^ The response
-                      -> IO ()
+type Request = Builder
 
 -- | Types that can be passed as arguments to Redis commands.
 class Argument a where
@@ -274,11 +223,7 @@ data Response = SimpleString ByteString
     deriving (Eq, Show, Ord, Data, Typeable, Generic)
 
 -- | Exceptions thrown by Redis connection.
-data RedisException = ConnectionFailedException SomeException
-                    -- ^ Unable to connect to server
-                    | DisconnectedException
-                    -- ^ Unexpected disconnection from server
-                    | ProtocolException
+data RedisException = ProtocolException
                     -- ^ Invalid data received for protocol
                     | CommandException ByteString
                     -- ^ The server reported an error for your command

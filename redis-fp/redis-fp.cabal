@@ -30,7 +30,7 @@ library
                        FP.Redis.Command.String
                        FP.Redis.Connection
                        FP.Redis.Internal
-                       FP.Redis.PubSub
+                       -- FP.Redis.PubSub
                        FP.Redis.Mutex
                        FP.Redis.Mutex.Types
                        FP.Redis.Types
@@ -64,6 +64,8 @@ library
                       ,transformers
                       ,uuid
                       ,thread-file-logger
+                      ,lens
+                      ,streaming-commons
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall

@@ -14,10 +14,10 @@ module FP.Redis
     ( module FP.Redis.Types
     , module FP.Redis.Connection
     , module FP.Redis.Command
-    , module FP.Redis.PubSub )
-    where
+    , -- module FP.Redis.PubSub
+    ) where
 
 import FP.Redis.Types
 import FP.Redis.Connection
 import FP.Redis.Command
-import FP.Redis.PubSub
+-- import FP.Redis.PubSub
