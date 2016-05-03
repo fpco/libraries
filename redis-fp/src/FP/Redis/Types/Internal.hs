@@ -91,7 +91,7 @@ data RequestQueueState = RQConnected (TSQueue Request)
                        | RQDisconnect
 
 -- | Queue of requests.
-type RequestQueue = TMVar RequestQueueState
+type RequestQueue = TVar RequestQueueState
 
 -- | Possible results for getting next request.
 data NextRequest = NoRequest

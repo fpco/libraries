@@ -76,7 +76,7 @@ connect cinfo = do
         clientThread' = do
             (reqQueue, pendingRespQueue) <-
                 atomically ((,)
-                            <$> (newTMVar =<< RQConnected <$> newTSQueue)
+                            <$> (newTVar =<< RQConnected <$> newTSQueue)
                             <*> newTSQueue)
             let runClient :: m () -> RunInBase m IO -> IO (StM m ())
                 runClient resetRetries runInIO =
@@ -114,17 +114,16 @@ connect cinfo = do
                 requeue queue (map unSubscriptionRequest (reverse (connectInitialSubscriptions cinfo)))
                 requeue queue (reverse (DList.toList (concat (map fst initialRequestPairs))))
             requeueRequests :: STM ()
-            requeueRequests =
-                modifyTMVarSTM reqQueue $ \rqs -> do
-                    case rqs of
-                        RQConnected queue -> do
-                            requeueRequests' queue
-                            return (rqs,())
-                        RQLostConnection queue -> do
-                            requeueRequests' queue
-                            return (RQConnected queue,())
-                        RQFinal _ -> throwSTM DisconnectedException
-                        RQDisconnect -> throwSTM DisconnectedException
+            requeueRequests = do
+                rqs <- readTVar reqQueue
+                case rqs of
+                    RQConnected queue ->
+                        requeueRequests' queue
+                    RQLostConnection queue -> do
+                        requeueRequests' queue
+                        writeTVar reqQueue (RQConnected queue)
+                    RQFinal _ -> throwSTM DisconnectedException
+                    RQDisconnect -> throwSTM DisconnectedException
         atomically requeueRequests
         control (runThreads initialRequestPairs)
       where
@@ -184,37 +183,38 @@ connect cinfo = do
                             yieldReqs (Seq.singleton req)
         getNextRequest :: Bool -> STM NextRequest
         getNextRequest hasBatch = do
-            modifyTMVarSTM reqQueue $ \rqs -> do
-                pendingRespLen <- lengthTSQueue pendingRespQueue
-                let pendingRespFull = pendingRespLen >= maxPendingResponses
-                mreq <- if hasBatch
-                    then if pendingRespFull
-                        then -- If too many pending responses, don't batch any more requests.
-                             return NoRequest
-                        else case rqs of
-                            RQConnected queue -> do
-                                mreq <- tryReadTSQueue queue
-                                case mreq of
-                                    Nothing -> return NoRequest
-                                    Just req -> return (NextRequest req)
-                            RQLostConnection _ -> retry
-                            RQFinal req -> return (FinalRequest req)
-                            RQDisconnect -> retry
-                    else do
-                        when pendingRespFull retry
-                        case rqs of
-                            RQConnected queue -> NextRequest <$> readTSQueue queue
-                            RQLostConnection _ -> retry
-                            RQFinal req -> return (FinalRequest req)
-                            RQDisconnect -> retry
-                case mreq of
-                    NoRequest -> return (rqs, mreq)
-                    NextRequest req -> do
-                        writeTSQueue pendingRespQueue req
-                        return (rqs, mreq)
-                    FinalRequest req -> do
-                        writeTSQueue pendingRespQueue req
-                        return (RQDisconnect, mreq)
+            rqs <- readTVar reqQueue
+            pendingRespLen <- lengthTSQueue pendingRespQueue
+            let pendingRespFull = pendingRespLen >= maxPendingResponses
+            mreq <- if hasBatch
+                then if pendingRespFull
+                    then -- If too many pending responses, don't batch any more requests.
+                            return NoRequest
+                    else case rqs of
+                        RQConnected queue -> do
+                            mreq <- tryReadTSQueue queue
+                            case mreq of
+                                Nothing -> return NoRequest
+                                Just req -> return (NextRequest req)
+                        RQLostConnection _ -> retry
+                        RQFinal req -> return (FinalRequest req)
+                        RQDisconnect -> retry
+                else do
+                    when pendingRespFull retry
+                    case rqs of
+                        RQConnected queue -> NextRequest <$> readTSQueue queue
+                        RQLostConnection _ -> retry
+                        RQFinal req -> return (FinalRequest req)
+                        RQDisconnect -> retry
+            case mreq of
+                NoRequest -> return mreq
+                NextRequest req -> do
+                    writeTSQueue pendingRespQueue req
+                    return mreq
+                FinalRequest req -> do
+                    writeTSQueue pendingRespQueue req
+                    writeTVar reqQueue RQDisconnect
+                    return mreq
         waitPendingResponseSpace :: STM ()
         waitPendingResponseSpace = do
             -- This waits until there is extra space in the pending response queue, so that
@@ -236,15 +236,15 @@ connect cinfo = do
             logDebugNS logSource
                        ("respSink (mode=" ++ tshow mode ++ "): received: " ++ tshow mresp)
             case (mresp, mode) of
-                (Nothing, _) ->
+                (Nothing, _) -> atomically $ do
                     -- This ensures that no more requests will be attempted to
                     -- be sent over the dead connection.
-                    atomically $ modifyTMVarSTM reqQueue $ \rqs ->
-                        case rqs of
-                            RQConnected queue -> return (RQLostConnection queue, ())
-                            RQLostConnection _ -> return (rqs, ())
-                            RQFinal _ -> return (RQDisconnect, ())
-                            RQDisconnect -> return (rqs, ())
+                    rqs <- readTVar reqQueue
+                    case rqs of
+                        RQConnected queue -> writeTVar reqQueue (RQLostConnection queue)
+                        RQLostConnection _ -> return ()
+                        RQFinal _ -> writeTVar reqQueue RQDisconnect
+                        RQDisconnect -> return ()
                 (Just (_, resp), Normal) -> handleNormal resp
                 (Just (_, resp), Subscribed) -> handleSubscribed resp
         handleNormal :: Response -> Sink (PositionRange, Response) m ()
