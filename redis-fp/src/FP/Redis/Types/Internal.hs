@@ -11,6 +11,7 @@ import ClassyPrelude.Conduit hiding (Builder)
 import Blaze.ByteString.Builder (Builder)
 import Control.Concurrent.Async (Async)
 import Control.Monad.Logger
+import Control.Monad.Trans.Unlift (MonadBaseUnlift)
 import Control.Retry
 import Control.Concurrent.STM.TSQueue
 import qualified Data.ByteString.Char8 as BS8
@@ -20,7 +21,7 @@ import Data.Data (Data)
 type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
 
 -- | Monads for running commands.
-type MonadCommand m = (MonadIO m, MonadBaseControl IO m)
+type MonadCommand m = (MonadIO m, MonadBaseUnlift IO m)
 
 -- Newtype wrapper for redis top level key names.
 newtype Key = Key { unKey :: ByteString }
@@ -91,15 +92,7 @@ data RequestQueueState = RQConnected (TSQueue Request)
                        | RQDisconnect
 
 -- | Queue of requests.
-type RequestQueue = TMVar RequestQueueState
-
--- | Possible results for getting next request.
-data NextRequest = NoRequest
-                 | NextRequest Request
-                 | FinalRequest Request
-
--- | Queue of requests that are still awaiting responses.
-type PendingResponseQueue = TSQueue Request
+type RequestQueue = TVar RequestQueueState
 
 -- | Connection to the Redis server used for pub/sub subscriptions.
 newtype SubscriptionConnection = SubscriptionConnection Connection
@@ -127,11 +120,8 @@ data ConnectInfo = ConnectInfo
     , connectRetryPolicy          :: !(Maybe RetryPolicy)
       -- | Log source string for MonadLogger messages
     , connectLogSource            :: !Text
-      -- | Maximum number of requests to send together in a batch.  Should be less than
-      -- 'connectMaxPendingResponses'.
-    , connectRequestsPerBatch     :: !Int
-      -- | Maximum number of pending responses in the pipeline before blocking new requests.
-    , connectMaxPendingResponses  :: !Int }
+      -- | Maximum number of requests in the queue before blocking new requests.
+    , connectMaxRequestQueue      :: !Int }
     deriving (Typeable, Generic)
 
 -- | Connection to the Redis server used for regular commands.
@@ -140,8 +130,6 @@ data Connection = Connection
         -- ^ Original connection information
     , connectionRequestQueue :: !RequestQueue
         -- ^ Queue of requests pending being sent
-    , connectionPendingResponseQueue :: !PendingResponseQueue
-        -- ^ Queue of requests awaiting a response
     , connectionThread :: !(Async ())
         -- ^ Thread that manages the connection
     } deriving (Typeable, Generic)

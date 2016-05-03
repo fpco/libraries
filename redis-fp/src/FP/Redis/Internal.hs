@@ -37,29 +37,25 @@ makeCommand !cmd !args =
 
 -- | Add a request to the requests queue.  Blocks if waiting for too many responses.
 sendRequest :: (MonadCommand m) => Connection -> Request -> m ()
-sendRequest Connection{connectionInfo_, connectionRequestQueue, connectionPendingResponseQueue}
+sendRequest Connection{connectionInfo_, connectionRequestQueue}
             request =
     catch (atomically addRequest)
           (\BlockedIndefinitelyOnSTM -> throwIO DisconnectedException)
   where
     addRequest = do
-        modifyTMVarSTM connectionRequestQueue $ \rqs-> do
-            case rqs of
-                RQConnected requestQueue -> do
-                    addToQueue requestQueue
-                    return (rqs, ())
-                RQLostConnection requestQueue -> do
-                    -- We add our request to the "closed" queue because it might
-                    -- be in the process of auto-reconnecting.
-                    addToQueue requestQueue
-                    return (rqs, ())
-                RQFinal _ -> throwSTM DisconnectedException
-                RQDisconnect -> throwSTM DisconnectedException
+        rqs <- readTVar connectionRequestQueue
+        case rqs of
+            RQConnected requestQueue ->
+                addToQueue requestQueue
+            RQLostConnection requestQueue ->
+                -- We add our request to the "closed" queue because it might
+                -- be in the process of auto-reconnecting.
+                addToQueue requestQueue
+            RQFinal _ -> throwSTM DisconnectedException
+            RQDisconnect -> throwSTM DisconnectedException
     addToQueue requestQueue = do
         lr <- lengthTSQueue requestQueue
-        when (lr >= connectRequestsPerBatch connectionInfo_ * 2) retry
-        lp <- lengthTSQueue connectionPendingResponseQueue
-        when (lp >= connectMaxPendingResponses connectionInfo_) retry
+        when (lr >= connectMaxRequestQueue connectionInfo_) retry
         writeTSQueue requestQueue request
 
 -- | Disconnect from Redis server, optionally sending a final command before terminating.
@@ -84,15 +80,17 @@ disconnect' Connection{connectionRequestQueue,connectionThread}
     addRequest mreq =
         catch (atomically (addRequest' mreq))
               (\BlockedIndefinitelyOnSTM -> throwIO DisconnectedException)
-    addRequest' mreq =
-        modifyTMVarSTM connectionRequestQueue $ \rqs -> do
+    addRequest' mreq = do
+        rqs <- readTVar connectionRequestQueue
+        rqs' <-
             case rqs of
                 RQConnected _ -> case mreq of
-                                     Just req -> return (RQFinal req, ())
-                                     Nothing -> return (RQDisconnect, ())
-                RQLostConnection _ -> return (RQDisconnect, ())
+                                     Just req -> return (RQFinal req)
+                                     Nothing -> return RQDisconnect
+                RQLostConnection _ -> return RQDisconnect
                 RQFinal _ -> throwSTM DisconnectedException
                 RQDisconnect -> throwSTM DisconnectedException
+        writeTVar connectionRequestQueue rqs'
 
 -- | Convert 'CommandRequest' to a list of 'Request's and an action to get the response.
 commandToRequestPair :: (MonadIO m, MonadIO n)
@@ -179,14 +177,6 @@ recoveringWithReset (RetryPolicy policy) hs f = mask $ \restore -> do
                       else liftBase $ throwIO e'
                 | otherwise = recover hs'
           recover hs
-
--- | Modify the contents of a TMVar.  Retries if TMVar is empty.
-modifyTMVarSTM :: TMVar a -> (a -> STM (a, b)) -> STM b
-modifyTMVarSTM tmvar action = do
-    val <- takeTMVar tmvar
-    (val',result) <- action val
-    putTMVar tmvar val'
-    return result
 
 -- | Ignore a command's result.
 ignoreResult :: CommandRequest a -> CommandRequest ()

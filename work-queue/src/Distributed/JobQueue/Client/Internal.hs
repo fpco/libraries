@@ -1,6 +1,7 @@
 {-# OPTIONS_HADDOCK hide #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -18,6 +19,7 @@ import           Control.Concurrent.STM (check, retry)
 import           Control.Exception (AsyncException)
 import           Control.Monad.Logger (MonadLogger, logErrorS, logInfoS, logDebugS, logWarnS, runLoggingT)
 import           Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith, restoreM)
+import           Control.Monad.Trans.Unlift (MonadBaseUnlift)
 import qualified Data.ByteString.Char8 as BS8
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Data.Serialize (encode)
@@ -243,7 +245,7 @@ requestExists r k = do
 
 -- | Provides an 'STM' action to be able to wait on the response.
 waitForResponse ::
-       (MonadIO m, MonadBaseControl IO m, Sendable response)
+       (MonadIO m, MonadBaseUnlift IO m, Sendable response)
     => JobClient response
     -> RequestId
     -> m (STM (Maybe (Either DistributedException response)))
@@ -274,7 +276,7 @@ waitForResponse jc rid = do
 
 -- | Returns immediately with the request, if present.
 checkForResponse ::
-       (MonadIO m, MonadBaseControl IO m, Sendable response)
+       (MonadIO m, MonadBaseUnlift IO m, Sendable response)
     => JobClient response
     -> RequestId
     -> m (Maybe (Either DistributedException response))

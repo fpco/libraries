@@ -19,13 +19,13 @@ module FP.Redis.Connection
 import ClassyPrelude.Conduit hiding (Builder, connect)
 import Blaze.ByteString.Builder (Builder)
 import qualified Blaze.ByteString.Builder as Builder
-import qualified Control.Concurrent.Async as Async
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Control.Concurrent.STM (retry)
 import Control.Exception (AsyncException(ThreadKilled))
 import Control.Monad.Catch (Handler(..))
 import Control.Monad.Extra
 import Control.Monad.Logger
-import Control.Monad.Trans.Control (control, RunInBase, StM)
+import Control.Monad.Trans.Unlift (UnliftBase (..), askUnliftBase)
 import Data.Attoparsec.ByteString (takeTill)
 import Data.Attoparsec.ByteString.Char8
     (Parser, choice, char, isEndOfLine, endOfLine, decimal, signed, take, count)
@@ -33,7 +33,6 @@ import Data.Conduit.Attoparsec (conduitParser, PositionRange)
 import Data.Conduit.Blaze (unsafeBuilderToByteString, allocBuffer)
 import qualified Data.Conduit.Network as CN
 import qualified Data.DList as DList
-import qualified Data.Sequence as Seq
 
 import FP.Redis.Command
 import FP.Redis.Internal
@@ -59,9 +58,7 @@ connect :: forall m. (MonadConnect m)
 connect cinfo = do
     initialTag <- getLogTag
     connectionMVar <- newEmptyMVar
-    thread <- control $ \runInIO -> do
-        async <- Async.async (void (runInIO (clientThread initialTag connectionMVar)))
-        runInIO (return async)
+    thread <- Async.async (clientThread initialTag connectionMVar)
     eConnection <- takeMVarE ConnectionFailedException connectionMVar
     case eConnection of
         Left exception -> throwM (ConnectionFailedException exception)
@@ -74,25 +71,25 @@ connect cinfo = do
         catch clientThread' outerHandler
       where
         clientThread' = do
-            (reqQueue, pendingRespQueue) <-
+            (reqQueue, reqVar) <-
                 atomically ((,)
-                            <$> (newTMVar =<< RQConnected <$> newTSQueue)
-                            <*> newTSQueue)
-            let runClient :: m () -> RunInBase m IO -> IO (StM m ())
-                runClient resetRetries runInIO =
-                    CN.runTCPClient
+                            <$> (newTVar =<< RQConnected <$> newTSQueue)
+                            <*> newEmptyTMVar)
+            let runClient :: m () -> m ()
+                runClient resetRetries = do
+                    UnliftBase runInIO <- askUnliftBase
+                    liftIO $ CN.runTCPClient
                         (CN.clientSettings (connectPort cinfo) (connectHost cinfo))
                         (\appData -> runInIO $ do
                             resetRetries
-                            app initialTag reqQueue pendingRespQueue connectionMVar appData)
+                            app initialTag reqQueue reqVar connectionMVar appData)
             case connectRetryPolicy cinfo of
                 Just retryPolicy ->
                     forever (recoveringWithReset
                                retryPolicy
                                [\_ -> Handler retryHandler]
-                               (\resetRetries -> control (runClient resetRetries) :: m ()))
-                Nothing ->
-                    control (runClient (return ()))
+                               (\resetRetries -> runClient resetRetries))
+                Nothing -> runClient (return ())
         retryHandler :: IOException -> m Bool
         retryHandler e = do
             logErrorNS logSource ("Exception in Redis connection thread: " ++ tshow e)
@@ -102,133 +99,86 @@ connect cinfo = do
             _ <- tryPutMVar connectionMVar (Left (toException exception))
             throwM exception
 
-    app :: LogTag -> RequestQueue -> PendingResponseQueue -> ConnectionMVar -> CN.AppData -> m ()
-    app initialTag reqQueue pendingRespQueue connectionMVar appData = showEx "app" $ do
+    app :: LogTag -> RequestQueue -> TMVar Request -> ConnectionMVar -> CN.AppData -> m ()
+    app initialTag reqQueue reqVar connectionMVar appData = showEx "app" $ do
         initialRequestPairs <- mapM commandToRequestPair (connectInitialCommands cinfo)
         let requeue :: TSQueue Request -> [Request] -> STM ()
             requeue queue reqs = mapM_ (unGetTSQueue queue) reqs
             requeueRequests' :: TSQueue Request -> STM ()
             requeueRequests' queue = do
-                reqsReversed <- readAllReversedTSQueue pendingRespQueue
-                requeue queue reqsReversed
                 requeue queue (map unSubscriptionRequest (reverse (connectInitialSubscriptions cinfo)))
                 requeue queue (reverse (DList.toList (concat (map fst initialRequestPairs))))
             requeueRequests :: STM ()
-            requeueRequests =
-                modifyTMVarSTM reqQueue $ \rqs -> do
-                    case rqs of
-                        RQConnected queue -> do
-                            requeueRequests' queue
-                            return (rqs,())
-                        RQLostConnection queue -> do
-                            requeueRequests' queue
-                            return (RQConnected queue,())
-                        RQFinal _ -> throwSTM DisconnectedException
-                        RQDisconnect -> throwSTM DisconnectedException
+            requeueRequests = do
+                rqs <- readTVar reqQueue
+                case rqs of
+                    RQConnected queue ->
+                        requeueRequests' queue
+                    RQLostConnection queue -> do
+                        requeueRequests' queue
+                        writeTVar reqQueue (RQConnected queue)
+                    RQFinal _ -> throwSTM DisconnectedException
+                    RQDisconnect -> throwSTM DisconnectedException
         atomically requeueRequests
-        control (runThreads initialRequestPairs)
+        runThreads initialRequestPairs
       where
-        runThreads :: [((DList.DList Request),IO ())] -> (RunInBase m IO) -> IO (StM m ())
-        runThreads initialRequestPairs runInIO =
+        runThreads :: [((DList.DList Request),IO ())] -> m ()
+        runThreads initialRequestPairs = do
             Async.withAsync (Async.race_
-                                (runInIO (setLogTag initialTag >> reqThread))
-                                (runInIO (setLogTag initialTag >> respThread)))
-                            (runInIO . waitInitialResponses (map snd initialRequestPairs))
+                                (setLogTag initialTag >> reqThread)
+                                (setLogTag initialTag >> respThread))
+                            (waitInitialResponses (map snd initialRequestPairs))
         reqThread :: m ()
         reqThread = showEx "reqThread" $
-                    reqSource reqQueue pendingRespQueue
+                    reqSource reqQueue reqVar
                     =$ unsafeBuilderToByteString (allocBuffer 4096)
                     $$ CN.appSink appData
         respThread :: m ()
         respThread = showEx "respThread" $
                      CN.appSource appData
                      $= conduitParser responseParser
-                     $$ respSink reqQueue pendingRespQueue
+                     $$ respSink reqQueue reqVar
         waitInitialResponses :: [IO ()] -> Async.Async () -> m ()
         waitInitialResponses initialResponseActions async = showEx "waitInitialResponses" $ do
             _ <- catch (liftIO (sequence initialResponseActions))
                        initialResponseHandler
             -- Using `tryPutMVar' so we don't block when recovering after a disconnection
-            _ <- tryPutMVar connectionMVar (Right (Connection cinfo reqQueue pendingRespQueue))
-            liftIO (Async.wait async)
+            _ <- tryPutMVar connectionMVar (Right (Connection cinfo reqQueue))
+            Async.wait async
         initialResponseHandler :: RedisException -> m [()]
         initialResponseHandler exception = do
             _ <- tryPutMVar connectionMVar (Left (toException exception))
             throwM exception
 
-    reqSource :: RequestQueue -> PendingResponseQueue -> Source m Builder
-    reqSource reqQueue pendingRespQueue =
-        forever (loopBatch Seq.empty)
+    reqSource :: RequestQueue -> TMVar Request -> Source m Builder
+    reqSource reqQueue reqVar =
+        forever loopBatch
       where
-        loopBatch :: Seq Request -> Source m Builder
-        loopBatch reqs =
-            -- Combine multiple queued requests into batches
-            let reqsLen = Seq.length reqs
-            in if reqsLen >= requestsPerBatch
-                then -- Batch is full so send what we've batched
-                     yieldReqs reqs
-                else do
-                    -- Still space in batch so try to batch another request from the queue
-                    mreq <- atomically (getNextRequest (reqsLen > 0))
-                    case mreq of
-                        NoRequest -> do
-                            -- No more requests in queue, so yield send what we've batched
-                            yieldReqs reqs
-                            atomically waitPendingResponseSpace
-                        NextRequest req ->
-                            -- Another request in the queue, so batch it up
-                            loopBatch (reqs Seq.|> req)
-                        FinalRequest req -> do
-                            -- Only final QUIT command, so forget anything batched up
-                            -- and just send it.
-                            yieldReqs (Seq.singleton req)
-        getNextRequest :: Bool -> STM NextRequest
-        getNextRequest hasBatch = do
-            modifyTMVarSTM reqQueue $ \rqs -> do
-                pendingRespLen <- lengthTSQueue pendingRespQueue
-                let pendingRespFull = pendingRespLen >= maxPendingResponses
-                mreq <- if hasBatch
-                    then if pendingRespFull
-                        then -- If too many pending responses, don't batch any more requests.
-                             return NoRequest
-                        else case rqs of
-                            RQConnected queue -> do
-                                mreq <- tryReadTSQueue queue
-                                case mreq of
-                                    Nothing -> return NoRequest
-                                    Just req -> return (NextRequest req)
-                            RQLostConnection _ -> retry
-                            RQFinal req -> return (FinalRequest req)
-                            RQDisconnect -> retry
-                    else do
-                        when pendingRespFull retry
-                        case rqs of
-                            RQConnected queue -> NextRequest <$> readTSQueue queue
-                            RQLostConnection _ -> retry
-                            RQFinal req -> return (FinalRequest req)
-                            RQDisconnect -> retry
-                case mreq of
-                    NoRequest -> return (rqs, mreq)
-                    NextRequest req -> do
-                        writeTSQueue pendingRespQueue req
-                        return (rqs, mreq)
-                    FinalRequest req -> do
-                        writeTSQueue pendingRespQueue req
-                        return (RQDisconnect, mreq)
-        waitPendingResponseSpace :: STM ()
-        waitPendingResponseSpace = do
-            -- This waits until there is extra space in the pending response queue, so that
-            -- if the connection is saturated we still send multiple requests in batches.
-            size <- lengthTSQueue pendingRespQueue
-            when (size > maxPendingResponses - requestsPerBatch) retry
-        yieldReqs reqs = do
-            logDebugNS logSource
-                       ("reqSource: yielding: " ++
-                        tshow (map (Builder.toByteString . requestBuilder) reqs))
-            yield (concatMap requestBuilder reqs ++ Builder.flush)
+        loopBatch :: Source m Builder
+        loopBatch = do
+            -- Still space in batch so try to batch another request from the queue
+            req <- atomically getNextRequest
+            yieldReq req
+        getNextRequest :: STM Request
+        getNextRequest = do
+            rqs <- readTVar reqQueue
+            (req, isFinal) <-
+                case rqs of
+                    RQConnected queue -> (, False) <$> readTSQueue queue
+                    RQLostConnection _ -> retry
+                    RQFinal req -> return (req, True)
+                    RQDisconnect -> retry
+            when isFinal (writeTVar reqQueue RQDisconnect)
+            putTMVar reqVar req
+            return req
+        yieldReq req = do
+            let builder = requestBuilder req
+                bs = Builder.toByteString builder
+            logDebugNS logSource ("reqSource: yielding: " ++ tshow bs)
+            yield (builder ++ Builder.flush)
 
-    respSink :: RequestQueue -> PendingResponseQueue -> Sink (PositionRange, Response) m ()
-    respSink reqQueue pendingRespQueue = loop Normal
+    respSink :: RequestQueue -> TMVar Request -> Sink (PositionRange, Response) m ()
+    respSink reqQueue reqVar = loop Normal
       where
         loop :: Mode -> Sink (PositionRange, Response) m ()
         loop mode = do
@@ -236,15 +186,15 @@ connect cinfo = do
             logDebugNS logSource
                        ("respSink (mode=" ++ tshow mode ++ "): received: " ++ tshow mresp)
             case (mresp, mode) of
-                (Nothing, _) ->
+                (Nothing, _) -> atomically $ do
                     -- This ensures that no more requests will be attempted to
                     -- be sent over the dead connection.
-                    atomically $ modifyTMVarSTM reqQueue $ \rqs ->
-                        case rqs of
-                            RQConnected queue -> return (RQLostConnection queue, ())
-                            RQLostConnection _ -> return (rqs, ())
-                            RQFinal _ -> return (RQDisconnect, ())
-                            RQDisconnect -> return (rqs, ())
+                    rqs <- readTVar reqQueue
+                    case rqs of
+                        RQConnected queue -> writeTVar reqQueue (RQLostConnection queue)
+                        RQLostConnection _ -> return ()
+                        RQFinal _ -> writeTVar reqQueue RQDisconnect
+                        RQDisconnect -> return ()
                 (Just (_, resp), Normal) -> handleNormal resp
                 (Just (_, resp), Subscribed) -> handleSubscribed resp
         handleNormal :: Response -> Sink (PositionRange, Response) m ()
@@ -256,10 +206,7 @@ connect cinfo = do
                 Command _ _ -> loop Normal
                 Subscription _ -> handleSubscribed resp
         handleSubscribed :: Response -> Sink (PositionRange, Response) m ()
-        handleSubscribed resp = do
-            -- We don't actually need the pendingRespQueue in pub/sub mode, so we just try to
-            -- read from it (and ignore the result) to ensure it doesn't grow.
-            _ <- atomically (tryReadTSQueue pendingRespQueue)
+        handleSubscribed resp =
             case resp of
                 Array (Just message) -> do
                     forM_ (connectSubscriptionCallback cinfo) $ \cb -> liftIO (cb message)
@@ -269,7 +216,7 @@ connect cinfo = do
                 _ -> throwM ProtocolException
         sendResponse :: Response -> (forall b. IO b -> IO b) -> IO Request
         sendResponse resp restore = do
-            req <- atomically (readTSQueue pendingRespQueue)
+            req <- atomically (takeTMVar reqVar)
             case req of
                 Command _ respAction -> respAction restore resp
                 _ -> skip
@@ -288,10 +235,6 @@ connect cinfo = do
 
     logSource = connectLogSource cinfo
 
-    requestsPerBatch = connectRequestsPerBatch cinfo
-
-    maxPendingResponses = connectMaxPendingResponses cinfo
-
 -- | Disconnect from Redis server, sending a QUIT command before terminating.
 disconnect :: MonadCommand m => Connection -> m ()
 disconnect conn =
@@ -307,8 +250,7 @@ connectInfo host = ConnectInfo { connectHost = host
                                , connectSubscriptionCallback = Nothing
                                , connectRetryPolicy = Nothing
                                , connectLogSource = "REDIS"
-                               , connectRequestsPerBatch = 100
-                               , connectMaxPendingResponses = 1000 }
+                               , connectMaxRequestQueue = 100 }
 
 -- | Get original connect info from connection.
 connectionInfo :: Connection -> ConnectInfo

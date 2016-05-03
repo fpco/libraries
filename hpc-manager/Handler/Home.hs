@@ -3,6 +3,7 @@
 module Handler.Home where
 
 import Control.Monad.Logger
+import Control.Monad.Trans.Unlift (MonadBaseUnlift)
 import Data.Either
 import Data.Time.Clock
 import Distributed.JobQueue.Client (cancelRequest)
@@ -104,7 +105,7 @@ getStatusR = do
         setTitle "Compute Tier Status"
         $(widgetFile "status")
 
-getAndRenderRequest :: (MonadIO m, MonadBaseControl IO m) =>
+getAndRenderRequest :: (MonadIO m, MonadBaseUnlift IO m) =>
     UTCTime -> Redis -> RequestId -> m (Text, Text, Text)
 getAndRenderRequest start r k = do
     mrs <- getRequestStats r k
@@ -169,7 +170,7 @@ getRequestsR = do
 --------------------------------------------------------------------------------
 -- Utilities
 
-withRedis' :: (MonadIO m, MonadCatch m, MonadBaseControl IO m)
+withRedis' :: (MonadIO m, MonadCatch m, MonadBaseUnlift IO m)
            => Config -> (Redis -> LoggingT m a) -> m a
 withRedis' config =
     handleMismatchedSchema . runStdoutLoggingT . withRedis rc
@@ -179,7 +180,7 @@ withRedis' config =
         , rcKeyPrefix = redisPrefix config
         }
 
-handleMismatchedSchema :: (MonadIO m, MonadCatch m, MonadBaseControl IO m) => m a -> m a
+handleMismatchedSchema :: (MonadIO m, MonadCatch m, MonadBaseUnlift IO m) => m a -> m a
 handleMismatchedSchema = flip catch $ \ex ->
     case ex of
         MismatchedRedisSchemaVersion { actualRedisSchemaVersion = "" } ->
