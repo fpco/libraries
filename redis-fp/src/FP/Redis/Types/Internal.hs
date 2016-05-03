@@ -17,6 +17,7 @@ import Control.Concurrent.STM.TSQueue
 import qualified Data.ByteString.Char8 as BS8
 import Data.Data (Data)
 import qualified Data.Conduit.Network as CN
+import qualified Network.Socket as NS
 
 -- | Monads for connecting.
 type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
@@ -98,13 +99,13 @@ data ConnectInfo = ConnectInfo
     , connectPort                 :: !Int
       -- | Log source string for MonadLogger messages
     , connectLogSource            :: !Text
-    } deriving (Typeable, Generic)
+    } deriving (Typeable, Generic, Show)
 
 -- | Connection to the Redis server used for regular commands.
 data Connection = Connection
     { connectionInfo_ :: !ConnectInfo
         -- ^ Original connection information
-    , connectionAppData :: !CN.AppData
+    , connectionSocket :: !NS.Socket
     , connectionLeftover :: !(IORef ByteString)
     } deriving (Typeable, Generic)
 

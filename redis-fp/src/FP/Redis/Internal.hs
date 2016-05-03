@@ -28,6 +28,8 @@ import qualified Blaze.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as BSL
 import Control.Lens ((^.))
 import qualified Data.Streaming.Network as CN
+import qualified Network.Socket as NS
+import qualified Network.Socket.ByteString as NS
 
 import FP.Redis.Types.Internal
 import Control.Concurrent.STM.TSQueue
@@ -70,7 +72,9 @@ writeRequest :: forall m.
        (MonadCommand m)
     => Connection -> Request -> m ()
 writeRequest conn req = do
-    liftIO (mapM_ (connectionAppData conn ^. CN.writeLens) (BSL.toChunks (Builder.toLazyByteString req)))
+    liftIO $ mapM_
+        (NS.sendAll (connectionSocket conn))
+        (BSL.toChunks (Builder.toLazyByteString req))
 
 readResponse :: forall m.
        (MonadCommand m)
@@ -83,9 +87,10 @@ readResponse conn = do
   where
         go = \case
             Atto.Done leftover resp -> return (resp, leftover)
-            Atto.Fail _leftover _context _err -> throwM ProtocolException -- TODO better error
+            Atto.Fail _leftover _context _err ->
+                throwM ProtocolException -- TODO better error
             Atto.Partial cont -> do
-                bs <- connectionAppData conn ^. CN.readLens
+                bs <- CN.safeRecv (connectionSocket conn) 4096 -- TODO make this follow ClientSettings when we upgrade streaming-commons
                 go (cont bs)
 
 -- | Redis Response protocol parser (adapted from hedis)
