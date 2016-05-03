@@ -11,6 +11,7 @@ module Distributed.Redis
     , defaultRedisConfig
     , defaultRetryPolicy
     , Redis(..)
+    , NotifyChannel(..)
 
     -- * Initialization/running
     , withRedis
@@ -20,6 +21,10 @@ module Distributed.Redis
     -- * Operations
     , getRedisTime
     , setRedisTime
+
+    -- * Spurious utilities
+    , decodeOrErr
+    , decodeOrThrow
     ) where
 
 import           Control.Concurrent.Async (Async, async, withAsync, race)
@@ -219,28 +224,19 @@ sendNotify redis (NotifyChannel chan) = run_ redis $ publish chan ""
 
 -- * Serialize utilities
 
+decodeOrErr :: forall a. (Serialize a)
+            => String -> ByteString -> Either DistributedException a
+decodeOrErr src lbs =
+    case C.runGet (C.get <* (guard =<< C.isEmpty)) lbs of
+        Left err -> Left (DecodeError (T.pack src) (T.pack err))
+        Right x -> return x
+
 -- | Attempt to decode the given 'ByteString'.  If this fails, then
 -- throw a 'DecodeError' tagged with a 'String' indicating the source
 -- of the decode error.
 decodeOrThrow :: forall m a. (MonadIO m, Serialize a)
               => String -> ByteString -> m a
-decodeOrThrow src lbs =
-    case C.runGet (C.get <* (guard =<< C.isEmpty)) lbs of
-        Left err -> throwErr err
-        Right x -> return x
-  where
-    throwErr = liftIO . throwIO . DecodeError src
-
--- | Since the users of 'decodeOrThrow' attempt to ensure that types
--- and executable hashes match up, the occurance of this exception
--- indicates a bug in the library.
-data DecodeError = DecodeError
-    { deLoc :: String
-    , deErr :: String
-    }
-    deriving (Show, Typeable)
-
-instance Exception DecodeError
+decodeOrThrow src lbs = either (liftIO . throwIO) return (decodeOrErr src lbs)
 
 -- * Utilities for reading and writing timestamps
 

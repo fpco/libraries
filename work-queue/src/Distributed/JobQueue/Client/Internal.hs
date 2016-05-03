@@ -25,8 +25,11 @@ import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.TypeFingerprint
 import           Data.Typeable (Proxy(..))
 import           Data.Void (absurd, Void)
+{-
 import           Distributed.Heartbeat (checkHeartbeats)
 import           Distributed.Heartbeat.Internal (heartbeatActiveKey)
+-}
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Distributed.JobQueue.Internal
 import           Distributed.Redis
 import           Distributed.Types
@@ -38,21 +41,11 @@ import qualified STMContainers.Map as SM
 
 data JobClient response = JobClient
     { jcConfig :: !JobQueueConfig
-    , jcDispatch :: !(DispatchMap response)
+    , jcResponseWatchers :: !ResponseWatchers
     , jcRedis :: !Redis
-    , jcLogFunc :: !LogFunc
-    , jcKeepRunning :: !(IORef ())
-    -- ^ This IORef is not used for anything except its identity. We
-    -- want to detect when our @JobClient@ is no longer referenced by
-    -- the application, since at that point we can stop running the
-    -- background job client thread. However, weak pointers are only
-    -- reliable when attached to objects with identity (like an @IORef@
-    -- or @MVar@). So we keep such an @IORef@ in this data type and,
-    -- when initializing, create a weak reference to it.
     }
 
-type DispatchMap response =
-    SM.Map RequestId (TVar (Maybe (Either DistributedException response)))
+type ResponseWatchers = IORef (HMS.HashMap RequestId (NE.NonEmpty (TVar Bool)))
 
 -- | Start a new job-queue client, which will run forever. For most
 -- usecases, this should only be invoked once for the process, usually
@@ -66,60 +59,51 @@ type DispatchMap response =
 --    failures.
 --
 -- REVIEW TODO: The client is not run forever anymore. It's now garbage
--- collected.
+-- collected. Update comment.
 -- REVIEW: We need a thread here for the client to check the heartbeats and
 -- to subscribe to the channel receiving incoming response notifications.
-newJobClient
-    :: (MonadIO m, Sendable response)
-    => LogFunc
-    -> JobQueueConfig
-    -> m (JobClient response)
-newJobClient logFunc config@JobQueueConfig{..} = liftIO $ do
-    dispatch <- SM.newIO
-    inFlight <- newTVarIO 0
-    jobQueueClientAsync <- async (jobClientThread logFunc config dispatch inFlight)
-    -- See description of jcKeepRunning for the purpose of this strange
-    -- IORef and weak pointer business
-    keepRunning <- newIORef ()
-    _ <- mkWeakIORef keepRunning $ do
-        let logi = flip runLoggingT logFunc . $logInfoS "JobClient"
-        logi "Detected JobClient no longer used, checking / waiting for there to be no callbacks"
-        atomically $ do
-            check =<< SM.null dispatch
-            check . (0 ==) =<< readTVar inFlight
-        logi "Detected JobClient no longer used, and no longer has any callbacks, killing jobQueueClient thread"
-        cancel jobQueueClientAsync
-    let ci = rcConnectInfo jqcRedisConfig
-    conn <- runLoggingT (connect ci) logFunc
-    return JobClient
-        { jcConfig = config
-        , jcDispatch = dispatch
-        , jcRedis = Redis
-            { redisConnection = conn
-            , redisKeyPrefix = rcKeyPrefix jqcRedisConfig
-            }
-        , jcLogFunc = logFunc
-        , jcKeepRunning = keepRunning
-        }
+withJobClient :: forall m response a.
+       (MonadConnect m, Sendable response)
+    => JobQueueConfig
+    -> (JobClient response -> m a)
+    -> m a
+withJobClient config@JobQueueConfig{..} cont = do
+    dispatch <- newIORef HMS.empty
+    inFlight <- liftIO (newTVarIO 0)
+    let waitForNoCallbacks = do
+            let logi = $logInfoS "JobClient"
+            logi "JobClient winding down, checking / waiting for there to be no callbacks"
+            atomically $ do
+                check =<< SM.null dispatch
+                check . (0 ==) =<< readTVar inFlight
+    fmap (either absurd id) $ Async.race
+        (finally (jobClientThread config dispatch inFlight) waitForNoCallbacks)
+        (withConnection (rcConnectInfo jqcRedisConfig) $ \conn -> do
+            cont JobClient
+                { jcConfig = config
+                , jcDispatch = dispatch
+                , jcRedis = Redis
+                    { redisConnection = conn
+                    , redisKeyPrefix = rcKeyPrefix jqcRedisConfig
+                    }
+                })
 
-jobClientThread
-    :: forall response void.
-       Sendable response
-    => LogFunc -> JobQueueConfig -> DispatchMap response -> TVar Int -> IO void
-jobClientThread logFunc config dispatch inFlight =
-    flip runLoggingT logFunc $ forever $ do
-        -- TODO: use redis conn here too. My reluctance to make the
-        -- change now is that perhaps there is a subtle reason it is not
-        -- already that way.
-        eres <- try $ withRedis (jqcRedisConfig config) $
-            jobClientThread' config dispatch inFlight
-        case eres of
-            Right x -> absurd x
-            Left (fromException -> Just err) -> liftIO $ throwIO (err :: AsyncException)
-            Left err -> do
-                $logErrorS "JobClient" (pack (show err))
-                $logInfoS "JobClient" "Waiting a second and restarting job client after exception."
-                liftIO $ threadDelay (1000 * 1000)
+jobClientThread :: forall response void m.
+       (Sendable response, MonadCommand m)
+    => JobQueueConfig -> DispatchMap response -> m void
+jobClientThread config dispatch inFlight = do
+    -- TODO: use redis conn here too. My reluctance to make the
+    -- change now is that perhaps there is a subtle reason it is not
+    -- already that way.
+    eres <- try $ withRedis (jqcRedisConfig config) $
+        jobClientThread' config dispatch inFlight
+    case eres of
+        Right x -> absurd x
+        Left (fromException -> Just err) -> liftIO $ throwIO (err :: AsyncException)
+        Left err -> do
+            $logErrorS "JobClient" (pack (show err))
+            $logInfoS "JobClient" "Waiting a second and restarting job client after exception."
+            liftIO $ threadDelay (1000 * 1000)
 
 jobClientThread'
     :: forall response m void.
@@ -408,3 +392,4 @@ atomicallyReturnOrThrow f = liftIO $ atomically $ do
         Nothing -> retry
         Just (Left err) -> throwSTM err
         Just (Right x) -> return x
+-}

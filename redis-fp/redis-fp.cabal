@@ -62,6 +62,7 @@ library
                       ,transformers
                       ,uuid
                       ,thread-file-logger
+                      ,lifted-async
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall

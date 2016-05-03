@@ -12,7 +12,9 @@ import Data.List.NonEmpty
 import Data.Serialize (Serialize, encode)
 import Distributed.Redis
 import Distributed.Types
+import Distributed.Heartbeat
 import FP.Redis
+import Data.TypeFingerprint (TypeFingerprint)
 
 -- * Redis keys
 
@@ -146,3 +148,83 @@ getRequestEvents :: MonadCommand m => Redis -> RequestId -> m [(UTCTime, Request
 getRequestEvents r k =
     run r (lrange (requestEventsKey r k) 0 (-1)) >>=
     mapM (decodeOrThrow "getRequestEvents")
+
+-- * Config
+
+-- | Configuration of job-queue, used by both the client and worker.
+--
+-- REVIEW TODO: Take a look if it's worth having just one type for client
+-- and worker.
+data JobQueueConfig = JobQueueConfig
+    { jqcRedisConfig :: !RedisConfig
+    -- ^ Configuration of communication with redis.
+    , jqcHeartbeatConfig :: !HeartbeatConfig
+    -- ^ Configuration for heartbeat checking.
+    --
+    -- REVIEW: This config is used by both the client and the worker to
+    -- set up heartbeats. The documentation is elsewhere.
+    , jqcHeartbeatFailureExpiry :: !Seconds
+    -- ^ How long a heartbeat failure should stick around. This should
+    -- be a quite large amount of time, as the worker might eventually
+    -- reconnect, and it should know that it has been heartbeat-failure
+    -- collected. Garbage collecting them to save resources doesn't
+    -- matter very much. The main reason it matters is so that the UI
+    -- doesn't end up with tons of heartbeat failure records.
+    --
+    -- REVIEW: With "garbage collection" above we mean collection of
+    -- heartbeat-related data in redis.
+    , jqcRequestExpiry :: !Seconds
+    -- ^ The expiry time of the request data stored in redis. If it
+    -- takes longer than this time for the worker to attempt to fetch
+    -- the request data, it will fail and the request will be answered
+    -- with 'RequestMissingException'.
+    , jqcResponseExpiry :: !Seconds
+    -- ^ How many seconds the response data should be kept in redis. The
+    -- longer it's kept in redis, the more opportunity there is to
+    -- eliminate redundant work, if identical requests are made. A
+    -- longer expiry also allows more time between sending a response
+    -- notification and the client reading its data. If the client finds
+    -- that the response is missing, 'ResponseMissingException' is
+    -- thrown.
+    --
+    -- REVIEW: With "identical" here we're only talking about the request
+    -- id, so if we resubmit the request _with the same request id_, the
+    -- response will be cached. The body of the request is irrelevant.
+    , jqcEventExpiry :: !Seconds
+    -- ^ How many seconds an 'EventLogMessage' remains in redis.
+    , jqcCancelCheckIvl :: !Seconds
+    -- ^ How often the worker should poll redis for an indication that
+    -- the request has been cancelled.
+    }
+
+-- | Default settings for the job-queue:
+--
+-- * Uses 'defaultHeartbeatConfig'.
+--
+-- * Uses 'defaultRedisConfig'.
+--
+-- * Requests, responses, and heartbeat failures expire after an hour.
+--
+-- * 'EventLogMessage's expire after a day.
+--
+-- * Workers check for cancellation every 10 seconds.
+defaultJobQueueConfig :: JobQueueConfig
+defaultJobQueueConfig = JobQueueConfig
+    { jqcRedisConfig = defaultRedisConfig
+    , jqcHeartbeatConfig = defaultHeartbeatConfig
+    , jqcHeartbeatFailureExpiry = Seconds 3600 -- 1 hour
+    , jqcRequestExpiry = Seconds 3600
+    , jqcResponseExpiry = Seconds 3600
+    , jqcEventExpiry = Seconds (3600 * 24) -- 1 day
+    , jqcCancelCheckIvl = Seconds 10
+    }
+
+data JobRequest = JobRequest
+    { jrRequestTypeFingerprint, jrResponseTypeFingerprint :: !TypeFingerprint
+    , jrSchema :: !ByteString
+    -- REVIEW: This is a tag to detect if the deployment is compatible with the current
+    -- code.
+    , jrBody :: !ByteString
+    } deriving (Generic, Show, Typeable)
+
+instance Serialize JobRequest

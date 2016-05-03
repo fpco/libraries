@@ -15,12 +15,13 @@ import Control.Retry
 import Control.Concurrent.STM.TSQueue
 import qualified Data.ByteString.Char8 as BS8
 import Data.Data (Data)
+import Control.Concurrent.Async.Lifted.Safe (Forall, Pure)
 
 -- | Monads for connecting.
 type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
 
 -- | Monads for running commands.
-type MonadCommand m = (MonadIO m, MonadBaseControl IO m)
+type MonadCommand m = (MonadIO m, MonadBaseControl IO m, Forall (Pure m))
 
 -- Newtype wrapper for redis top level key names.
 newtype Key = Key { unKey :: ByteString }

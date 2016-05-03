@@ -5,6 +5,7 @@
 {-# LANGUAGE ViewPatterns #-}
 module Distributed.Heartbeat
     ( HeartbeatConfig(..)
+    , defaultHeartbeatConfig
     , checkHeartbeats
     , withCheckHeartbeats
     , withHeartbeats
@@ -36,6 +37,12 @@ data HeartbeatConfig = HeartbeatConfig
     , hcCheckerIvl :: !Seconds
     -- ^ How frequently heartbeats should be checked. Should be
     -- substantially larger than 'hcSenderIvl'.
+    }
+
+defaultHeartbeatConfig :: HeartbeatConfig
+defaultHeartbeatConfig = HeartbeatConfig
+    { hcSenderIvl = Seconds 15
+    , hcCheckerIvl = Seconds 30
     }
 
 -- | A sorted set of 'WorkerId's that are currently thought to be running. The
