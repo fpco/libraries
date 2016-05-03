@@ -11,6 +11,7 @@ import ClassyPrelude.Conduit hiding (Builder)
 import Blaze.ByteString.Builder (Builder)
 import Control.Concurrent.Async (Async)
 import Control.Monad.Logger
+import Control.Monad.Trans.Unlift (MonadBaseUnlift)
 import Control.Retry
 import Control.Concurrent.STM.TSQueue
 import qualified Data.ByteString.Char8 as BS8
@@ -20,7 +21,7 @@ import Data.Data (Data)
 type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
 
 -- | Monads for running commands.
-type MonadCommand m = (MonadIO m, MonadBaseControl IO m)
+type MonadCommand m = (MonadIO m, MonadBaseUnlift IO m)
 
 -- Newtype wrapper for redis top level key names.
 newtype Key = Key { unKey :: ByteString }

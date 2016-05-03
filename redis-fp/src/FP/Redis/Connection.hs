@@ -19,13 +19,13 @@ module FP.Redis.Connection
 import ClassyPrelude.Conduit hiding (Builder, connect)
 import Blaze.ByteString.Builder (Builder)
 import qualified Blaze.ByteString.Builder as Builder
-import qualified Control.Concurrent.Async as Async
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Control.Concurrent.STM (retry)
 import Control.Exception (AsyncException(ThreadKilled))
 import Control.Monad.Catch (Handler(..))
 import Control.Monad.Extra
 import Control.Monad.Logger
-import Control.Monad.Trans.Control (control, RunInBase, StM)
+import Control.Monad.Trans.Unlift (UnliftBase (..), askUnliftBase)
 import Data.Attoparsec.ByteString (takeTill)
 import Data.Attoparsec.ByteString.Char8
     (Parser, choice, char, isEndOfLine, endOfLine, decimal, signed, take, count)
@@ -59,9 +59,7 @@ connect :: forall m. (MonadConnect m)
 connect cinfo = do
     initialTag <- getLogTag
     connectionMVar <- newEmptyMVar
-    thread <- control $ \runInIO -> do
-        async <- Async.async (void (runInIO (clientThread initialTag connectionMVar)))
-        runInIO (return async)
+    thread <- Async.async (clientThread initialTag connectionMVar)
     eConnection <- takeMVarE ConnectionFailedException connectionMVar
     case eConnection of
         Left exception -> throwM (ConnectionFailedException exception)
@@ -78,9 +76,10 @@ connect cinfo = do
                 atomically ((,)
                             <$> (newTVar =<< RQConnected <$> newTSQueue)
                             <*> newTSQueue)
-            let runClient :: m () -> RunInBase m IO -> IO (StM m ())
-                runClient resetRetries runInIO =
-                    CN.runTCPClient
+            let runClient :: m () -> m ()
+                runClient resetRetries = do
+                    UnliftBase runInIO <- askUnliftBase
+                    liftIO $ CN.runTCPClient
                         (CN.clientSettings (connectPort cinfo) (connectHost cinfo))
                         (\appData -> runInIO $ do
                             resetRetries
@@ -90,9 +89,8 @@ connect cinfo = do
                     forever (recoveringWithReset
                                retryPolicy
                                [\_ -> Handler retryHandler]
-                               (\resetRetries -> control (runClient resetRetries) :: m ()))
-                Nothing ->
-                    control (runClient (return ()))
+                               (\resetRetries -> runClient resetRetries))
+                Nothing -> runClient (return ())
         retryHandler :: IOException -> m Bool
         retryHandler e = do
             logErrorNS logSource ("Exception in Redis connection thread: " ++ tshow e)
@@ -125,14 +123,14 @@ connect cinfo = do
                     RQFinal _ -> throwSTM DisconnectedException
                     RQDisconnect -> throwSTM DisconnectedException
         atomically requeueRequests
-        control (runThreads initialRequestPairs)
+        runThreads initialRequestPairs
       where
-        runThreads :: [((DList.DList Request),IO ())] -> (RunInBase m IO) -> IO (StM m ())
-        runThreads initialRequestPairs runInIO =
+        runThreads :: [((DList.DList Request),IO ())] -> m ()
+        runThreads initialRequestPairs =
             Async.withAsync (Async.race_
-                                (runInIO (setLogTag initialTag >> reqThread))
-                                (runInIO (setLogTag initialTag >> respThread)))
-                            (runInIO . waitInitialResponses (map snd initialRequestPairs))
+                                (setLogTag initialTag >> reqThread)
+                                (setLogTag initialTag >> respThread))
+                            (waitInitialResponses (map snd initialRequestPairs))
         reqThread :: m ()
         reqThread = showEx "reqThread" $
                     reqSource reqQueue pendingRespQueue
@@ -149,7 +147,7 @@ connect cinfo = do
                        initialResponseHandler
             -- Using `tryPutMVar' so we don't block when recovering after a disconnection
             _ <- tryPutMVar connectionMVar (Right (Connection cinfo reqQueue pendingRespQueue))
-            liftIO (Async.wait async)
+            Async.wait async
         initialResponseHandler :: RedisException -> m [()]
         initialResponseHandler exception = do
             _ <- tryPutMVar connectionMVar (Left (toException exception))

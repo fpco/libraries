@@ -50,10 +50,12 @@ library
                       ,deepseq
                       ,exceptions
                       ,dlist
+                      ,lifted-async
                       ,lifted-base
                       ,monad-control
                       ,monad-extras
                       ,monad-logger
+                      ,monad-unlift
                       ,retry
                       ,safe
                       ,semigroups
