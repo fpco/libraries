@@ -83,6 +83,7 @@ test-suite test
                      , stm
                      , monad-control
   ghc-options:         -Wall -threaded
+  default-language:    Haskell2010
 
 test-suite fuzz-test
   type:                exitcode-stdio-1.0
@@ -104,3 +105,4 @@ test-suite fuzz-test
                      , semigroups
                      , vector
   ghc-options:         -Wall -threaded
+  default-language:    Haskell2010
