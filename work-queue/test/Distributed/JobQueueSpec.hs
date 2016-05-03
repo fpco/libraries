@@ -233,7 +233,7 @@ newJobClient config = do
                     Just _ -> do
                         threadDelay (100 * 1000)
                         loop (ix - 1)
-        loop 100
+        loop (100 :: Int)
     return jc
 
 runXorWorker :: ResourceT IO (Async ())

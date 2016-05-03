@@ -64,6 +64,7 @@ library
                      , list-t
                      , monad-control
                      , monad-logger
+                     , monad-unlift
                      , mono-traversable
                      , mtl
                      , network
