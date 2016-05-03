@@ -71,10 +71,10 @@ connect cinfo = do
         catch clientThread' outerHandler
       where
         clientThread' = do
-            (reqQueue, pendingRespQueue) <-
+            (reqQueue, reqVar) <-
                 atomically ((,)
                             <$> (newTVar =<< RQConnected <$> newTSQueue)
-                            <*> newTSQueue)
+                            <*> newEmptyTMVar)
             let runClient :: m () -> m ()
                 runClient resetRetries = do
                     UnliftBase runInIO <- askUnliftBase
@@ -82,7 +82,7 @@ connect cinfo = do
                         (CN.clientSettings (connectPort cinfo) (connectHost cinfo))
                         (\appData -> runInIO $ do
                             resetRetries
-                            app initialTag reqQueue pendingRespQueue connectionMVar appData)
+                            app initialTag reqQueue reqVar connectionMVar appData)
             case connectRetryPolicy cinfo of
                 Just retryPolicy ->
                     forever (recoveringWithReset
@@ -99,15 +99,13 @@ connect cinfo = do
             _ <- tryPutMVar connectionMVar (Left (toException exception))
             throwM exception
 
-    app :: LogTag -> RequestQueue -> PendingResponseQueue -> ConnectionMVar -> CN.AppData -> m ()
-    app initialTag reqQueue pendingRespQueue connectionMVar appData = showEx "app" $ do
+    app :: LogTag -> RequestQueue -> TMVar Request -> ConnectionMVar -> CN.AppData -> m ()
+    app initialTag reqQueue reqVar connectionMVar appData = showEx "app" $ do
         initialRequestPairs <- mapM commandToRequestPair (connectInitialCommands cinfo)
         let requeue :: TSQueue Request -> [Request] -> STM ()
             requeue queue reqs = mapM_ (unGetTSQueue queue) reqs
             requeueRequests' :: TSQueue Request -> STM ()
             requeueRequests' queue = do
-                reqsReversed <- readAllReversedTSQueue pendingRespQueue
-                requeue queue reqsReversed
                 requeue queue (map unSubscriptionRequest (reverse (connectInitialSubscriptions cinfo)))
                 requeue queue (reverse (DList.toList (concat (map fst initialRequestPairs))))
             requeueRequests :: STM ()
@@ -125,35 +123,35 @@ connect cinfo = do
         runThreads initialRequestPairs
       where
         runThreads :: [((DList.DList Request),IO ())] -> m ()
-        runThreads initialRequestPairs =
+        runThreads initialRequestPairs = do
             Async.withAsync (Async.race_
                                 (setLogTag initialTag >> reqThread)
                                 (setLogTag initialTag >> respThread))
                             (waitInitialResponses (map snd initialRequestPairs))
         reqThread :: m ()
         reqThread = showEx "reqThread" $
-                    reqSource reqQueue pendingRespQueue
+                    reqSource reqQueue reqVar
                     =$ unsafeBuilderToByteString (allocBuffer 4096)
                     $$ CN.appSink appData
         respThread :: m ()
         respThread = showEx "respThread" $
                      CN.appSource appData
                      $= conduitParser responseParser
-                     $$ respSink reqQueue pendingRespQueue
+                     $$ respSink reqQueue reqVar
         waitInitialResponses :: [IO ()] -> Async.Async () -> m ()
         waitInitialResponses initialResponseActions async = showEx "waitInitialResponses" $ do
             _ <- catch (liftIO (sequence initialResponseActions))
                        initialResponseHandler
             -- Using `tryPutMVar' so we don't block when recovering after a disconnection
-            _ <- tryPutMVar connectionMVar (Right (Connection cinfo reqQueue pendingRespQueue))
+            _ <- tryPutMVar connectionMVar (Right (Connection cinfo reqQueue))
             Async.wait async
         initialResponseHandler :: RedisException -> m [()]
         initialResponseHandler exception = do
             _ <- tryPutMVar connectionMVar (Left (toException exception))
             throwM exception
 
-    reqSource :: RequestQueue -> PendingResponseQueue -> Source m Builder
-    reqSource reqQueue pendingRespQueue =
+    reqSource :: RequestQueue -> TMVar Request -> Source m Builder
+    reqSource reqQueue reqVar =
         forever loopBatch
       where
         loopBatch :: Source m Builder
@@ -164,32 +162,23 @@ connect cinfo = do
         getNextRequest :: STM Request
         getNextRequest = do
             rqs <- readTVar reqQueue
-            pendingRespLen <- lengthTSQueue pendingRespQueue
-            let pendingRespFull = pendingRespLen >= maxPendingResponses
-            (req, isFinal) <- do
-                when pendingRespFull retry
+            (req, isFinal) <-
                 case rqs of
                     RQConnected queue -> (, False) <$> readTSQueue queue
                     RQLostConnection _ -> retry
                     RQFinal req -> return (req, True)
                     RQDisconnect -> retry
             when isFinal (writeTVar reqQueue RQDisconnect)
-            writeTSQueue pendingRespQueue req
+            putTMVar reqVar req
             return req
-        waitPendingResponseSpace :: STM ()
-        waitPendingResponseSpace = do
-            -- This waits until there is extra space in the pending response queue, so that
-            -- if the connection is saturated we still send multiple requests in batches.
-            size <- lengthTSQueue pendingRespQueue
-            when (size > maxPendingResponses - requestsPerBatch) retry
         yieldReq req = do
             let builder = requestBuilder req
                 bs = Builder.toByteString builder
             logDebugNS logSource ("reqSource: yielding: " ++ tshow bs)
             yield (builder ++ Builder.flush)
 
-    respSink :: RequestQueue -> PendingResponseQueue -> Sink (PositionRange, Response) m ()
-    respSink reqQueue pendingRespQueue = loop Normal
+    respSink :: RequestQueue -> TMVar Request -> Sink (PositionRange, Response) m ()
+    respSink reqQueue reqVar = loop Normal
       where
         loop :: Mode -> Sink (PositionRange, Response) m ()
         loop mode = do
@@ -217,10 +206,7 @@ connect cinfo = do
                 Command _ _ -> loop Normal
                 Subscription _ -> handleSubscribed resp
         handleSubscribed :: Response -> Sink (PositionRange, Response) m ()
-        handleSubscribed resp = do
-            -- We don't actually need the pendingRespQueue in pub/sub mode, so we just try to
-            -- read from it (and ignore the result) to ensure it doesn't grow.
-            _ <- atomically (tryReadTSQueue pendingRespQueue)
+        handleSubscribed resp =
             case resp of
                 Array (Just message) -> do
                     forM_ (connectSubscriptionCallback cinfo) $ \cb -> liftIO (cb message)
@@ -230,7 +216,7 @@ connect cinfo = do
                 _ -> throwM ProtocolException
         sendResponse :: Response -> (forall b. IO b -> IO b) -> IO Request
         sendResponse resp restore = do
-            req <- atomically (readTSQueue pendingRespQueue)
+            req <- atomically (takeTMVar reqVar)
             case req of
                 Command _ respAction -> respAction restore resp
                 _ -> skip
@@ -249,10 +235,6 @@ connect cinfo = do
 
     logSource = connectLogSource cinfo
 
-    requestsPerBatch = connectRequestsPerBatch cinfo
-
-    maxPendingResponses = connectMaxPendingResponses cinfo
-
 -- | Disconnect from Redis server, sending a QUIT command before terminating.
 disconnect :: MonadCommand m => Connection -> m ()
 disconnect conn =
@@ -268,8 +250,7 @@ connectInfo host = ConnectInfo { connectHost = host
                                , connectSubscriptionCallback = Nothing
                                , connectRetryPolicy = Nothing
                                , connectLogSource = "REDIS"
-                               , connectRequestsPerBatch = 100
-                               , connectMaxPendingResponses = 1000 }
+                               , connectMaxRequestQueue = 100 }
 
 -- | Get original connect info from connection.
 connectionInfo :: Connection -> ConnectInfo

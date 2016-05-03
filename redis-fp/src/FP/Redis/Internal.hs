@@ -37,7 +37,7 @@ makeCommand !cmd !args =
 
 -- | Add a request to the requests queue.  Blocks if waiting for too many responses.
 sendRequest :: (MonadCommand m) => Connection -> Request -> m ()
-sendRequest Connection{connectionInfo_, connectionRequestQueue, connectionPendingResponseQueue}
+sendRequest Connection{connectionInfo_, connectionRequestQueue}
             request =
     catch (atomically addRequest)
           (\BlockedIndefinitelyOnSTM -> throwIO DisconnectedException)
@@ -55,9 +55,7 @@ sendRequest Connection{connectionInfo_, connectionRequestQueue, connectionPendin
             RQDisconnect -> throwSTM DisconnectedException
     addToQueue requestQueue = do
         lr <- lengthTSQueue requestQueue
-        when (lr >= connectRequestsPerBatch connectionInfo_ * 2) retry
-        lp <- lengthTSQueue connectionPendingResponseQueue
-        when (lp >= connectMaxPendingResponses connectionInfo_) retry
+        when (lr >= connectMaxRequestQueue connectionInfo_) retry
         writeTSQueue requestQueue request
 
 -- | Disconnect from Redis server, optionally sending a final command before terminating.

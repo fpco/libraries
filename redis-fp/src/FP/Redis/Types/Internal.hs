@@ -94,9 +94,6 @@ data RequestQueueState = RQConnected (TSQueue Request)
 -- | Queue of requests.
 type RequestQueue = TVar RequestQueueState
 
--- | Queue of requests that are still awaiting responses.
-type PendingResponseQueue = TSQueue Request
-
 -- | Connection to the Redis server used for pub/sub subscriptions.
 newtype SubscriptionConnection = SubscriptionConnection Connection
     deriving (Typeable, Generic)
@@ -123,11 +120,8 @@ data ConnectInfo = ConnectInfo
     , connectRetryPolicy          :: !(Maybe RetryPolicy)
       -- | Log source string for MonadLogger messages
     , connectLogSource            :: !Text
-      -- | Maximum number of requests to send together in a batch.  Should be less than
-      -- 'connectMaxPendingResponses'.
-    , connectRequestsPerBatch     :: !Int
-      -- | Maximum number of pending responses in the pipeline before blocking new requests.
-    , connectMaxPendingResponses  :: !Int }
+      -- | Maximum number of requests in the queue before blocking new requests.
+    , connectMaxRequestQueue      :: !Int }
     deriving (Typeable, Generic)
 
 -- | Connection to the Redis server used for regular commands.
@@ -136,8 +130,6 @@ data Connection = Connection
         -- ^ Original connection information
     , connectionRequestQueue :: !RequestQueue
         -- ^ Queue of requests pending being sent
-    , connectionPendingResponseQueue :: !PendingResponseQueue
-        -- ^ Queue of requests awaiting a response
     , connectionThread :: !(Async ())
         -- ^ Thread that manages the connection
     } deriving (Typeable, Generic)
