@@ -33,7 +33,6 @@ import Data.Conduit.Attoparsec (conduitParser, PositionRange)
 import Data.Conduit.Blaze (unsafeBuilderToByteString, allocBuffer)
 import qualified Data.Conduit.Network as CN
 import qualified Data.DList as DList
-import qualified Data.Sequence as Seq
 
 import FP.Redis.Command
 import FP.Redis.Internal
@@ -155,75 +154,39 @@ connect cinfo = do
 
     reqSource :: RequestQueue -> PendingResponseQueue -> Source m Builder
     reqSource reqQueue pendingRespQueue =
-        forever (loopBatch Seq.empty)
+        forever loopBatch
       where
-        loopBatch :: Seq Request -> Source m Builder
-        loopBatch reqs =
-            -- Combine multiple queued requests into batches
-            let reqsLen = Seq.length reqs
-            in if reqsLen >= requestsPerBatch
-                then -- Batch is full so send what we've batched
-                     yieldReqs reqs
-                else do
-                    -- Still space in batch so try to batch another request from the queue
-                    mreq <- atomically (getNextRequest (reqsLen > 0))
-                    case mreq of
-                        NoRequest -> do
-                            -- No more requests in queue, so yield send what we've batched
-                            yieldReqs reqs
-                            atomically waitPendingResponseSpace
-                        NextRequest req ->
-                            -- Another request in the queue, so batch it up
-                            loopBatch (reqs Seq.|> req)
-                        FinalRequest req -> do
-                            -- Only final QUIT command, so forget anything batched up
-                            -- and just send it.
-                            yieldReqs (Seq.singleton req)
-        getNextRequest :: Bool -> STM NextRequest
-        getNextRequest hasBatch = do
+        loopBatch :: Source m Builder
+        loopBatch = do
+            -- Still space in batch so try to batch another request from the queue
+            req <- atomically getNextRequest
+            yieldReq req
+        getNextRequest :: STM Request
+        getNextRequest = do
             rqs <- readTVar reqQueue
             pendingRespLen <- lengthTSQueue pendingRespQueue
             let pendingRespFull = pendingRespLen >= maxPendingResponses
-            mreq <- if hasBatch
-                then if pendingRespFull
-                    then -- If too many pending responses, don't batch any more requests.
-                            return NoRequest
-                    else case rqs of
-                        RQConnected queue -> do
-                            mreq <- tryReadTSQueue queue
-                            case mreq of
-                                Nothing -> return NoRequest
-                                Just req -> return (NextRequest req)
-                        RQLostConnection _ -> retry
-                        RQFinal req -> return (FinalRequest req)
-                        RQDisconnect -> retry
-                else do
-                    when pendingRespFull retry
-                    case rqs of
-                        RQConnected queue -> NextRequest <$> readTSQueue queue
-                        RQLostConnection _ -> retry
-                        RQFinal req -> return (FinalRequest req)
-                        RQDisconnect -> retry
-            case mreq of
-                NoRequest -> return mreq
-                NextRequest req -> do
-                    writeTSQueue pendingRespQueue req
-                    return mreq
-                FinalRequest req -> do
-                    writeTSQueue pendingRespQueue req
-                    writeTVar reqQueue RQDisconnect
-                    return mreq
+            (req, isFinal) <- do
+                when pendingRespFull retry
+                case rqs of
+                    RQConnected queue -> (, False) <$> readTSQueue queue
+                    RQLostConnection _ -> retry
+                    RQFinal req -> return (req, True)
+                    RQDisconnect -> retry
+            when isFinal (writeTVar reqQueue RQDisconnect)
+            writeTSQueue pendingRespQueue req
+            return req
         waitPendingResponseSpace :: STM ()
         waitPendingResponseSpace = do
             -- This waits until there is extra space in the pending response queue, so that
             -- if the connection is saturated we still send multiple requests in batches.
             size <- lengthTSQueue pendingRespQueue
             when (size > maxPendingResponses - requestsPerBatch) retry
-        yieldReqs reqs = do
-            logDebugNS logSource
-                       ("reqSource: yielding: " ++
-                        tshow (map (Builder.toByteString . requestBuilder) reqs))
-            yield (concatMap requestBuilder reqs ++ Builder.flush)
+        yieldReq req = do
+            let builder = requestBuilder req
+                bs = Builder.toByteString builder
+            logDebugNS logSource ("reqSource: yielding: " ++ tshow bs)
+            yield (builder ++ Builder.flush)
 
     respSink :: RequestQueue -> PendingResponseQueue -> Sink (PositionRange, Response) m ()
     respSink reqQueue pendingRespQueue = loop Normal

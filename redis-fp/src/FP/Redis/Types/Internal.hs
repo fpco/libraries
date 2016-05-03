@@ -94,11 +94,6 @@ data RequestQueueState = RQConnected (TSQueue Request)
 -- | Queue of requests.
 type RequestQueue = TVar RequestQueueState
 
--- | Possible results for getting next request.
-data NextRequest = NoRequest
-                 | NextRequest Request
-                 | FinalRequest Request
-
 -- | Queue of requests that are still awaiting responses.
 type PendingResponseQueue = TSQueue Request
 
