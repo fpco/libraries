@@ -69,60 +69,29 @@ withJobClient :: forall m response a.
     -> m a
 withJobClient config@JobQueueConfig{..} cont = do
     dispatch <- newIORef HMS.empty
-    inFlight <- liftIO (newTVarIO 0)
-    let waitForNoCallbacks = do
-            let logi = $logInfoS "JobClient"
-            logi "JobClient winding down, checking / waiting for there to be no callbacks"
-            atomically $ do
-                check =<< SM.null dispatch
-                check . (0 ==) =<< readTVar inFlight
-    fmap (either absurd id) $ Async.race
-        (finally (jobClientThread config dispatch inFlight) waitForNoCallbacks)
-        (withConnection (rcConnectInfo jqcRedisConfig) $ \conn -> do
-            cont JobClient
+    withRedis jqcRedisConfig $ \r -> do
+        let jc = JobClient
                 { jcConfig = config
                 , jcDispatch = dispatch
-                , jcRedis = Redis
-                    { redisConnection = conn
-                    , redisKeyPrefix = rcKeyPrefix jqcRedisConfig
-                    }
-                })
+                , jcRedis = r
+                }
+        fmap (either absurd id) (Async.race (jobClientThread jc) (cont jc))
 
 jobClientThread :: forall response void m.
        (Sendable response, MonadCommand m)
-    => JobQueueConfig -> DispatchMap response -> m void
-jobClientThread config dispatch inFlight = do
-    -- TODO: use redis conn here too. My reluctance to make the
-    -- change now is that perhaps there is a subtle reason it is not
-    -- already that way.
-    eres <- try $ withRedis (jqcRedisConfig config) $
-        jobClientThread' config dispatch inFlight
-    case eres of
-        Right x -> absurd x
-        Left (fromException -> Just err) -> liftIO $ throwIO (err :: AsyncException)
-        Left err -> do
-            $logErrorS "JobClient" (pack (show err))
-            $logInfoS "JobClient" "Waiting a second and restarting job client after exception."
-            liftIO $ threadDelay (1000 * 1000)
-
-jobClientThread'
-    :: forall response m void.
-       (MonadConnect m, Sendable response)
-    => JobQueueConfig -> DispatchMap response -> TVar Int -> Redis -> m void
-jobClientThread' config dispatch inFlight redis = do
-    setRedisSchemaVersion redis
-    result <- liftBaseWith $ \restore ->
-        race (restore (checker :: m Void)) (restore (subscriber :: m Void))
-    case result of
-        Left v -> absurd =<< restoreM v
-        Right v -> absurd =<< restoreM v
+    => JobClient response -> m void
+jobClientThread JobClient{..} = do
+    setRedisSchemaVersion jcRedis
+    fmap (either absurd absurd) (Async.race checker subscriber)
   where
-    checker = checkHeartbeats (jqcHeartbeatConfig config) redis $ \inactive -> do
-        reenqueuedSome <- fmap or $ forM inactive $
-            handleWorkerFailure redis (jqcHeartbeatFailureExpiry config)
-        when reenqueuedSome $ do
-            $logDebugS "JobClient" "Notifying that some requests were re-enqueued"
-            sendNotify redis (requestChannel redis)
+    checker =
+        checkHeartbeats (jqcHeartbeatConfig jcConfig) jcRedis $ \inactive cleanup -> do
+            reenqueuedSome <- fmap or $ forM inactive $
+                handleWorkerFailure redis (jqcHeartbeatFailureExpiry config)
+            when reenqueuedSome $ do
+                $logDebugS "JobClient" "Notifying that some requests were re-enqueued"
+                sendNotify redis (requestChannel redis)
+
     subscriber = withLogTag (LogTag "jobClient") $
         withSubscription redis (responseChannel redis) handleConnect $ \rid ->
             handleResponse (RequestId rid)

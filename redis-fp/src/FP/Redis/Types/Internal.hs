@@ -14,9 +14,10 @@ import Control.Monad.Trans.Unlift (MonadBaseUnlift)
 import qualified Data.ByteString.Char8 as BS8
 import Data.Data (Data)
 import qualified Network.Socket as NS
+import Control.Retry (RetryPolicy)
 
 -- | Monads for connecting.
-type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
+type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m, MonadMask m)
 
 -- | Monads for running commands.
 type MonadCommand m = (MonadIO m, MonadBaseUnlift IO m)
@@ -90,7 +91,8 @@ data ConnectInfo = ConnectInfo
     , connectPort                 :: !Int
       -- | Log source string for MonadLogger messages
     , connectLogSource            :: !Text
-    } deriving (Typeable, Generic, Show)
+    , connectRetryPolicy          :: !(Maybe RetryPolicy)
+    } deriving (Typeable, Generic)
 
 -- | Connection to the Redis server used for regular commands.
 --

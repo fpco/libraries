@@ -1,6 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude, OverloadedStrings, ScopedTypeVariables, TypeFamilies,
              DeriveDataTypeable, FlexibleContexts, FlexibleInstances, RankNTypes, GADTs,
-             ConstraintKinds, NamedFieldPuns, TupleSections, LambdaCase #-}
+             ConstraintKinds, NamedFieldPuns, TupleSections, LambdaCase, TemplateHaskell #-}
 
 -- | Redis connection handling.
 
@@ -25,15 +25,27 @@ import qualified Network.Socket as NS
 import Control.Lens ((^.))
 import qualified Data.Streaming.Network as CN
 import qualified Data.Conduit.Network as CN
+import Control.Retry (recovering)
+import Control.Monad.Catch (Handler(..))
+import Control.Monad.Logger
 
 import FP.Redis.Command
 import FP.Redis.Internal
 import FP.Redis.Types.Internal
 
-connect :: (MonadCommand m) => ConnectInfo -> m Connection
+connect :: (MonadConnect m) => ConnectInfo -> m Connection
 connect cinfo = do
     let cs = CN.clientSettings (connectPort cinfo) (connectHost cinfo)
-    (s, _address) <- liftIO (CN.getSocketFamilyTCP (CN.getHost cs) (cs ^. CN.portLens) (CN.getAddrFamily cs))
+    let retry m = case connectRetryPolicy cinfo of
+            Nothing -> liftIO m
+            Just policy -> recovering
+                policy
+                [\_ -> Handler $ \(err :: IOError) -> do
+                    $logWarn ("Got IOError " ++ tshow err ++ " when trying to connect to redis, will retry")
+                    return True]
+                (liftIO m)
+    (s, _address) <-
+        retry (CN.getSocketFamilyTCP (CN.getHost cs) (cs ^. CN.portLens) (CN.getAddrFamily cs))
     leftoverRef <- newIORef ""
     return Connection
         { connectionInfo_ = cinfo
@@ -65,7 +77,9 @@ connectInfo :: ByteString -- ^ Server's hostname
             -> ConnectInfo
 connectInfo host = ConnectInfo { connectHost = host
                                , connectPort = 6379
-                               , connectLogSource = "REDIS" }
+                               , connectLogSource = "REDIS"
+                               , connectRetryPolicy = Nothing 
+                               }
 
 -- | Get original connect info from connection.
 connectionInfo :: Connection -> ConnectInfo

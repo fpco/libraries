@@ -5,10 +5,12 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE MultiWayIf #-}
 
 -- This module provides a job-queue with heartbeat checking.
 module Distributed.JobQueue.Worker
     ( jobWorker
+    , CancelOrReenqueue(..)
     -- , runJQWorker
     ) where
 
@@ -47,8 +49,8 @@ import qualified Control.Concurrent.Async.Lifted.Safe as Async
 -- REVIEW TODO: Here there is some ambiguity on when we "save" a worker: for example
 -- some redis operations are 'try'd, some arent. I propose to never cach exceptions
 -- apart in a top-level handler, and when we run the user provided function.
-jobWorker
-    :: (MonadConnect m, Sendable request, Sendable response)
+jobWorker ::
+       (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
     -> (Redis -> RequestId -> request -> m (Either CancelOrReenqueue response))
     -- ^ This function is run by the worker, for every request it
@@ -61,22 +63,18 @@ jobWorker config@JobQueueConfig {..} f = do
         $logDebug "Starting heartbeats"
         withHeartbeats jqcHeartbeatConfig r wid $ do
             $logDebug "Initial heartbeat sent, starting worker"
-            -- REVIEW TODO: Restore notifications once we have faith in redis-fp
-            notifyVar :: MVar () <- newEmptyMVar
-            let notifyLoop = forever $ liftIO $ do
-                    threadDelay (25 * 1000)
-                    void (tryPutMVar notifyVar ())
-            fmap (either id absurd) $ Async.race
-                (jobWorkerThread config r wid (takeMVar notifyVar) (f r))
-                notifyLoop
+            withSubscribedNotifyChannel
+                (rcConnectInfo jqcRedisConfig)
+                (Milliseconds 25)
+                (requestChannel r)
+                (\waitForReq -> jobWorkerThread config r wid waitForReq (f r))
 
 data CancelOrReenqueue
     = Cancel
     | Reenqueue
     deriving (Eq, Show)
 
-jobWorkerThread
-    :: forall request response m void.
+jobWorkerThread :: forall request response m void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
     -> Redis
@@ -86,7 +84,7 @@ jobWorkerThread
     -> (RequestId -> request -> m (Either CancelOrReenqueue response))
     -> m void
 jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
-    mbRidbs <- run r (rpoplpush (requestsKey r) (LKey (activeKey r wid)))
+    mbRidbs <- run r (rpoplpush (requestsKey r) (activeKey r wid))
     forM_ mbRidbs $ \ridBs -> do
         let rid = RequestId ridBs
         mbReqBs <- receiveRequest r wid rid
@@ -107,16 +105,16 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
                         Right (Right (Left Reenqueue)) -> return Nothing
                         Right (Right (Left Cancel)) -> return (Just (Left (RequestCanceled rid)))
                         Right (Right (Right res)) -> return (Just (Right res))
-        let gotX msg = do
-            $logInfo ("Request " ++ tshow rid ++ " got " ++ msg)
+        let gotX msg = "Request " ++ tshow rid ++ " got " ++ msg
         case mbRespOrErr of
             Nothing -> do
-                gotX "reenqueue"
+                $logInfo (gotX "reenqueue")
+                -- REVIEW TODO I don't understand why this would re-enqueue it.
                 addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
             Just res -> do
                 case res of
-                    Left err -> gotX ("exception: " ++ tshow err)
-                    Right _ -> $logDebug ("Request " ++ tshow rid ++ " got respose")
+                    Left err -> $logWarn (gotX ("exception: " ++ tshow err))
+                    Right _ -> $logDebug (gotX ("Request " ++ tshow rid ++ " got respose"))
                 sendResponse r jqcResponseExpiry wid rid (encode res)
                 addRequestEvent r rid (RequestWorkFinished wid)
     -- Wait for notification only if we've already consumed all the available requests
@@ -177,29 +175,39 @@ sendResponse ::
     -> m ()
 sendResponse r expiry wid k x = do
     -- Store the response data, and notify the client that it's ready.
-    run_ r $ set (responseDataKey r k) x [EX expiry]
-    run_ r $ publish (responseChannel r) (unRequestId k)
+    run_ r (set (responseDataKey r k) x [EX expiry])
+    run_ r (publish (responseChannel r) (unRequestId k))
     -- Remove the RequestId associated with this response, from the
     -- list of in-progress requests.
-    let ak = LKey (activeKey r wid)
-    removed <- try $ run r $ lrem ak 1 (unRequestId k)
-    case removed :: Either RedisException Int64 of
-        Right 1 -> do
-            -- Remove the request data, as it's no longer needed.  We don't
-            -- check if the removal succeeds, as this may not be the first
-            -- time a response is sent for the request.  See the error message
-            -- above.
-            run_ r (del (unVKey (requestDataKey r k) :| []))
-        _ -> $logWarn $
-            tshow k <>
-            " isn't a member of active queue (" <>
-            tshow ak <>
-            "), likely indicating that a heartbeat failure happened, causing it to be erroneously re-enqueued.  This doesn't affect correctness, but could mean that redundant work is performed."
+    --
+    -- Note that we expect this list to either be empty or to contain
+    -- exactly this request id.
+    let ak = (activeKey r wid)
+    removed <- run r (lrem ak 1 (unRequestId k))
+    if  | removed == 1 ->
+            return ()
+        | removed == 0 ->
+            $logWarn $
+                tshow k <>
+                " isn't a member of active queue (" <>
+                tshow ak <>
+                "), likely indicating that a heartbeat failure happened, causing it to be erroneously re-enqueued.  This doesn't affect correctness, but could mean that redundant work is performed."
+        | True ->
+            throwM (InternalJobQueueException ("Expecting 0 or 1 removals from active key " ++ tshow ak ++ ", but got " ++ tshow removed))
+    -- Check no active requests are present. This is just for safety.
+    remaining <- run r (llen ak)
+    unless (remaining == 0) $
+        throwM (InternalJobQueueException ("Expecting 0 active requests for active key " ++ tshow ak ++ ", but got " ++ tshow remaining))
+    -- Remove the request data, as it's no longer needed.  We don't
+    -- check if the removal succeeds, since there might be contention
+    -- in processing the request when a worker is detected to be dead
+    -- when it shouldn't be.
+    run_ r (del (unVKey (requestDataKey r k) :| []))
     -- Store when the response was stored.
     responseTime <- liftIO getPOSIXTime
     setRedisTime r (responseTimeKey r k) responseTime [EX expiry]
 
-watchForCancel :: forall m void. (MonadConnect m) => Redis -> RequestId -> Seconds -> m ()
+watchForCancel :: forall m. (MonadConnect m) => Redis -> RequestId -> Seconds -> m ()
 watchForCancel r k ivl = loop
   where
     loop :: m ()
@@ -226,10 +234,12 @@ wrapException ex =
 getWorkerId :: IO WorkerId
 getWorkerId = do
     -- REVIEW TODO: Why do we do this process id?
+    {-
     pid <- getProcessID
     (w1, w2, w3, w4) <- toWords <$> UUID.nextRandom
     let w1' = w1 `xor` fromIntegral pid
-    return $ WorkerId $ UUID.toASCIIBytes $ UUID.fromWords w1' w2 w3 w4
+    -}
+    WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom
 
 -- * Running a JobQueue worker
 

@@ -49,14 +49,10 @@ responseChannel r = Channel $ redisKeyPrefix r <> "response-channel"
 responseTimeKey :: Redis -> RequestId -> VKey
 responseTimeKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestId k <> ":time"
 
--- | Given a 'WorkerId', computes the name of a redis key which usually
--- contains a list.  This list holds the items the worker is currently
--- working on.
---
--- See the documentation for 'Distributed.RedisQueue.HeartbeatFailure'
--- for more information on why this is not an 'LKey'.
-activeKey :: Redis -> WorkerId -> Key
-activeKey r k = Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
+-- | Contains the request a given worker is working on. Is either empty
+-- or has one element.
+activeKey :: Redis -> WorkerId -> LKey
+activeKey r k = LKey $ Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
 
 -- | Key which is filled with the value 'cancelValue' when the request gets
 -- canceled.
@@ -80,7 +76,7 @@ redisSchemaKey r = VKey $ Key $ redisKeyPrefix r <> "version"
 
 -- | Checks if the redis schema version is correct.  If not present, then the
 -- key gets set.
-setRedisSchemaVersion :: (MonadCommand m, MonadLogger m) => Redis -> m ()
+setRedisSchemaVersion :: (MonadConnect m) => Redis -> m ()
 setRedisSchemaVersion r = do
     mv <- run r $ get (redisSchemaKey r)
     case mv of
@@ -91,7 +87,7 @@ setRedisSchemaVersion r = do
     run_ r $ set (redisSchemaKey r) redisSchemaVersion []
 
 -- | Throws 'MismatchedRedisSchemaVersion' if it's wrong or unset.
-checkRedisSchemaVersion :: MonadCommand m => Redis -> m ()
+checkRedisSchemaVersion :: MonadConnect m => Redis -> m ()
 checkRedisSchemaVersion r = do
     v <- fmap (fromMaybe "") $ run r $ get (redisSchemaKey r)
     when (v /= redisSchemaVersion) $ liftIO $ throwIO MismatchedRedisSchemaVersion
@@ -126,7 +122,7 @@ requestEventsKey :: Redis -> RequestId -> LKey
 requestEventsKey r k = LKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k <> ":events"
 
 -- | Adds a 'RequestEvent', with the timestamp set to the current time.
-addRequestEvent :: (MonadCommand m, MonadLogger m) => Redis -> RequestId -> RequestEvent -> m ()
+addRequestEvent :: (MonadConnect m) => Redis -> RequestId -> RequestEvent -> m ()
 addRequestEvent r k x = do
     now <- liftIO getCurrentTime
     run_ r $ rpush (requestEventsKey r k) (encode (now, x) :| [])
@@ -137,14 +133,14 @@ addRequestEvent r k x = do
         }
 
 -- | Adds 'RequestEnqueued' event and sets expiry on the events list.
-addRequestEnqueuedEvent :: (MonadCommand m, MonadLogger m) => JobQueueConfig -> Redis -> RequestId -> m ()
+addRequestEnqueuedEvent :: (MonadConnect m) => JobQueueConfig -> Redis -> RequestId -> m ()
 addRequestEnqueuedEvent config r k = do
     addRequestEvent r k RequestEnqueued
     expirySet <- run r $ expire (unLKey (requestEventsKey r k)) (jqcEventExpiry config)
     unless expirySet $ liftIO $ throwIO (InternalJobQueueException "Failed to set request events expiry")
 
 -- | Gets all of the events which have been added for the specified request.
-getRequestEvents :: MonadCommand m => Redis -> RequestId -> m [(UTCTime, RequestEvent)]
+getRequestEvents :: MonadConnect m => Redis -> RequestId -> m [(UTCTime, RequestEvent)]
 getRequestEvents r k =
     run r (lrange (requestEventsKey r k) 0 (-1)) >>=
     mapM (decodeOrThrow "getRequestEvents")

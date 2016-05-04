@@ -4,6 +4,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Distributed.Redis where
 {-
@@ -29,8 +30,8 @@ module Distributed.Redis where
     ) where
 -}
 
-import           Control.Concurrent.Async (Async, async, withAsync, race)
-import           Control.Concurrent.Lifted (fork)
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import           Control.Concurrent.Lifted (fork, threadDelay)
 import           Control.Concurrent.MVar.Lifted
 import           Control.Exception (BlockedIndefinitelyOnMVar(..))
 import           Control.Exception.Lifted (Exception, throwIO, catch)
@@ -54,6 +55,7 @@ import           FP.Redis.Types.Internal (connectionInfo_)
 import           FP.ThreadFileLogger
 import           Safe (readMay)
 import           Distributed.Types
+import           Data.Void (absurd)
 
 -- Types
 -----------------------------------------------------------------------
@@ -64,6 +66,7 @@ data RedisConfig = RedisConfig
     -- ^ Redis host and port.
     , rcKeyPrefix :: !ByteString
     -- ^ Prefix to prepend to redis keys.
+    , rcMaxConnections :: !Int
     }
 
 -- | Default settingfs for connecting to redis:
@@ -77,17 +80,16 @@ data RedisConfig = RedisConfig
 defaultRedisConfig :: RedisConfig
 defaultRedisConfig = RedisConfig
     { rcConnectInfo = (connectInfo "localhost")
-          {- { connectRetryPolicy = Just defaultRetryPolicy } -}
+          { connectRetryPolicy = Just defaultRetryPolicy }
     , rcKeyPrefix = "job-queue:"
+    , rcMaxConnections = 10
     }
 
-{-
 -- | This is the retry policy used for 'withRedis' and 'withSubscription'
 -- reconnects. If it fails 10 reconnects, with 1 second between each,
 -- then it gives up.
 defaultRetryPolicy :: RetryPolicy
 defaultRetryPolicy = limitRetries 10 <> constantDelay (1000 * 1000)
--}
 
 -- | A connection to redis, along with a prefix for keys.
 data Redis = Redis
@@ -105,67 +107,24 @@ data Redis = Redis
 -- connection is released.
 withRedis :: MonadConnect m => RedisConfig -> (Redis -> m a) -> m a
 withRedis RedisConfig{..} f =
-    withManagedConnection rcConnectInfo $ \conn -> f Redis
+    withManagedConnection rcConnectInfo rcMaxConnections $ \conn -> f Redis
         { redisConnection = conn
         , redisKeyPrefix = rcKeyPrefix
         }
 
 -- | Convenient utility for creating a 'RedisConfig'.
-mkRedisConfig :: ByteString -> Int -> Maybe RetryPolicy -> ByteString -> RedisConfig
-mkRedisConfig host port mpolicy prefix = RedisConfig
+mkRedisConfig :: ByteString -> Int -> Maybe RetryPolicy -> ByteString -> Int -> RedisConfig
+mkRedisConfig host port mpolicy prefix maxConns = RedisConfig
     { rcConnectInfo = (connectInfo host)
         { connectPort = port
-        -- , connectRetryPolicy = mpolicy
+        , connectRetryPolicy = mpolicy
         }
     , rcKeyPrefix = prefix
+    , rcMaxConnections = maxConns
     }
 
 redisConnectInfo :: Redis -> ConnectInfo
 redisConnectInfo = managedConnectInfo . redisConnection
-
-{-
--- | This creates a subscription to a redis channel. An @IO () -> m ()@
--- action is invoked every time the subscription is established
--- (initially, and on re-connect). The provided @IO ()@ allows you to
--- deactivate the subscription.
---
--- The @ByteString -> m ()@ action is run for every message received on
--- the 'Channel'.
---
--- Note that this never returns (its return type is @void@). When the
--- disconnect action @IO ()@ is invoked, or we run out of reconnect
--- retries, this will throw DisconnectedException.
---
--- See https://github.com/fpco/libraries/issues/54 for why this needs to
--- exist.
-withSubscription
-    :: MonadConnect m
-    => Redis
-    -> Channel
-    -> (IO () -> m ())
-    -> (ByteString -> m ())
-    -> m void
-withSubscription r chan connected f = do
-    expectingDisconnect <- newIORef False
-    let subs = subscribe (chan :| []) :| []
-        ci = (redisConnectInfo r) { connectRetryPolicy = Nothing }
-        handler = Handler $ \ex -> case ex of
-            DisconnectedException -> not <$> readIORef expectingDisconnect
-            _ -> return False
-    forever $ recoveringWithReset defaultRetryPolicy [\_ -> handler] $ \resetRetries -> do
-        $logDebugS "withSubscription" ("Subscribing to " <> T.pack (show chan))
-        withSubscriptionsWrappedConn ci subs $ \conn -> return $ \msg ->
-            case msg of
-                Unsubscribe {} -> $logErrorS "withSubscription" "Unexpected Unsubscribe"
-                Subscribe {} -> do
-                    $logDebugS "withSubscription" ("Subscribed to " <> T.pack (show chan))
-                    resetRetries
-                    connected $ do
-                        writeIORef expectingDisconnect True
-                        -- Disconnecting can block, so fork a thread.
-                        void $ fork $ disconnectSub conn
-                Message _ x -> f x
--}
 
 -- | Convenience function to run a redis command.
 run :: MonadConnect m => Redis -> CommandRequest a -> m a
@@ -179,14 +138,31 @@ run_ redis cmd = useConnection (redisConnection redis) (\conn -> runCommand_ con
 
 newtype NotifyChannel = NotifyChannel Channel
 
-withSubscribedNotifyChannel
-    :: MonadConnect m
+withSubscribedNotifyChannel :: forall m a.
+       (MonadConnect m)
     => ConnectInfo
+    -> Milliseconds
+    -- ^ Since subscriptions are not reliable, we also call the notification
+    -- action every X milliseconds.
     -> NotifyChannel
     -> (m () -> m a)
     -> m a
-withSubscribedNotifyChannel cinfo (NotifyChannel chan) cont =
-    withSubscriptionsManaged cinfo (chan :| []) (\getMsg -> cont (void getMsg))
+withSubscribedNotifyChannel cinfo (Milliseconds millis) (NotifyChannel chan) cont = do
+    notifyVar :: MVar () <- newEmptyMVar
+    let subscriptionLoop :: forall b void. m b -> m void
+        subscriptionLoop getMsg = forever $ do
+            void getMsg
+            void (tryPutMVar notifyVar ())
+    let delayLoop :: forall void. m void
+        delayLoop = forever $ do
+            void (tryPutMVar notifyVar ())
+            threadDelay (fromIntegral millis * 1000)
+    fmap (either id (either absurd absurd)) $
+        Async.race
+            (cont (takeMVar notifyVar))
+            (Async.race
+                (withSubscriptionsManaged cinfo (chan :| []) subscriptionLoop)
+                delayLoop)
 
 sendNotify
     :: MonadConnect m
