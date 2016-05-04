@@ -1,112 +1,119 @@
 {-# LANGUAGE NoImplicitPrelude, OverloadedStrings, ScopedTypeVariables, TypeFamilies,
              DeriveDataTypeable, FlexibleContexts, FlexibleInstances, RankNTypes, GADTs,
-             ConstraintKinds, NamedFieldPuns, BangPatterns #-}
+             ConstraintKinds, NamedFieldPuns, BangPatterns, TemplateHaskell #-}
 
 -- | Redis publish/subscribe.
 -- See <http://redis.io/commands#pubsub>.
 
 module FP.Redis.PubSub
     ( module FP.Redis.Command.PubSub
-    , withSubscriptionsWrapped
-    , withSubscriptionsWrappedConn
-    , withSubscriptionsEx
-    , withSubscriptionsExConn
-    , disconnectSub
+    , withSubscriptions
+    , withSubscriptionsManaged
     , subscribe
     , psubscribe
     , unsubscribe
     , punsubscribe
-    , makeSubscription
+    -- , makeSubscription
     , sendSubscription
-    , sendSubscriptions )
-    where
+    , sendSubscriptions
+    ) where
 
 --TODO SHOULD: use a connection pool, and re-use a single connection for all subscriptions
 
 import ClassyPrelude.Conduit hiding (connect)
 import Control.DeepSeq (deepseq)
-import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..))
 import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty)
+import Data.Void (absurd, Void)
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Data.HashSet as HS
 
 import FP.Redis.Connection
 import FP.Redis.Internal
 import FP.Redis.Types.Internal
 import FP.Redis.Command.PubSub
 
--- | Like 'withSubscriptionsEx', but wraps the callback in an exception handler so it continues
--- to be called for new messages even if it throws an exception.
-withSubscriptionsWrapped :: MonadConnect m
-                         => ConnectInfo -- ^ Redis connection info
-                         -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
-                         -> (Message -> m ()) -- ^ Callback to receive messages
-                         -> m void
-withSubscriptionsWrapped connectionInfo_ subscriptions callback =
-    withSubscriptionsWrappedConn connectionInfo_ subscriptions (\_ -> return callback)
-
--- | This provides the connection being used for the subscription, so
--- that it can be cancelled with 'disconnect'.  Ideally, other
--- approaches would allow this:
--- https://github.com/fpco/libraries/issues/34
-withSubscriptionsWrappedConn :: MonadConnect m
-                             => ConnectInfo -- ^ Redis connection info
-                             -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
-                             -> (SubscriptionConnection -> m (Message -> m ())) -- ^ Callback to receive messages
-                             -> m void
-withSubscriptionsWrappedConn connectionInfo_ subscriptions callback' =
-    withSubscriptionsExConn connectionInfo_ subscriptions wrappedCallback
-    where
-      wrappedCallback conn = do
-          callback <- callback' conn
-          return $ \msg -> catchAny (callback msg) callbackHandler
-      callbackHandler ex =
-          logErrorNS (connectLogSource connectionInfo_)
-                     ("withSubscriptionsWrappedConn callbackHandler: " ++ tshow ex)
-
--- | Open a connection that will listen for pub/sub messages.  Since a connection subscribed
--- to any channels switches to a different mode, regular command and subscriptions cannot
--- be multiplexed in a single connection.
+-- | Simplified version of 'withSubscriptions' that lets us try to recover from
+-- connection death better.
 --
--- Note: pub/sub channels exist in a namespace that does not consider the 'select'ed database,
--- so be sure to prefix them if you need to separate namespaces.
---
--- TODO MAYBE: Auto-resubscribe to any subscriptions that were active when auto-reconnecting,
--- instead of just the `initialSubscriptions'.
-withSubscriptionsEx :: MonadConnect m
-                    => ConnectInfo -- ^ Redis connection info
-                    -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
-                    -> (Message -> m ()) -- ^ Callback to receive messages
-                    -> m void
-withSubscriptionsEx connectionInfo_ subscriptions callback =
-    withSubscriptionsExConn connectionInfo_ subscriptions (\_ -> return callback)
-
--- | This provides the connection being used for the subscription, so
--- that it can be cancelled with 'disconnect'.  Ideally, other
--- approaches would allow this:
--- https://github.com/fpco/libraries/issues/34
-withSubscriptionsExConn :: MonadConnect m
-                        => ConnectInfo -- ^ Redis connection info
-                        -> NonEmpty SubscriptionRequest -- ^ List of subscriptions
-                        -> (SubscriptionConnection -> m (Message -> m ())) -- ^ Callback to receive messages
-                        -> m void
-withSubscriptionsExConn connectionInfo_ subscriptions callback' = do
-    messageChan <- newChan
-    bracket
-        (SubscriptionConnection <$> connect connectionInfo_
-            {connectSubscriptionCallback = Just (writeChan messageChan)
-            ,connectInitialSubscriptions =
-            connectInitialSubscriptions connectionInfo_ ++ toList subscriptions})
-        disconnectSub
-        (\conn -> do
-            callback <- callback' conn
-            forever (loop callback messageChan))
+-- Note that:
+-- * Some messages might be lost
+-- * The continuation will be called multiple times -- when the connection is reconnected
+-- we call it again
+-- * The continuation is expected to be interrupted at any time.
+withSubscriptionsManaged :: forall m a.
+       (MonadConnect m)
+    => ConnectInfo
+    -> NonEmpty Channel -- ^ Channels to subscribe to
+    -> (m (Channel, ByteString) -> m a)
+    -> m a
+withSubscriptionsManaged cinfo chans cont = go
   where
-    loop callback messageChan = do
-        msg <- catch (readChan messageChan)
-                     (\BlockedIndefinitelyOnMVar -> throwM DisconnectedException)
-        case decodeMessage msg of
-            Just msg' -> callback msg'
-            Nothing -> throwM ProtocolException
+    chansSet = HS.fromList (toList chans)
+
+    pickRightMsgs waitForMsg = do
+        msg <- waitForMsg
+        case msg of
+            Message chan msgBytes -> if HS.member chan chansSet
+                then return (chan, msgBytes)
+                else throwM (ProtocolException ("Got message on unsubscribed channel " ++ tshow chan))
+            _ -> throwM (ProtocolException ("Excepted Message but got " ++ tshow msg))
+
+    go = do
+        -- We retry if we fail _after_ we've sent the initial subscriptions. This should
+        -- give us a very good indication that after connecting the connection is healthy,
+        -- and we won't retry forever.
+        mbIoErr <-
+            withConnection cinfo $ \conn -> withSubscriptionsInternal conn $ \subConn waitForMsg -> do
+                -- Subscribe to all channels
+                sendSubscription subConn (subscribe chans)
+                -- Wait for all channels messages
+                forM_ chans $ \chan -> do
+                    msg <- waitForMsg
+                    case msg of
+                        Subscribe chan' _count | chan == chan' -> return ()
+                        _ -> throwM (ProtocolException ("Excepted Subscribe " ++ tshow chan ++ " Message, but got " ++ tshow msg))
+                -- Continue
+                cont (pickRightMsgs waitForMsg)
+        case mbIoErr of
+            Right x -> return x
+            Left err -> do
+                $logWarn ("Got IOError " ++ tshow err ++ " in subscribed connection, retrying")
+                go
+
+-- Note that this will fail as soon as the redis connection fails, and won't
+-- recover. You'll have to implement your own retrying mechanisms.
+--
+-- The 'SubscriptionConnection' is _not_ thread safe
+withSubscriptions ::
+       (MonadConnect m)
+    => ConnectInfo
+    -> (SubscriptionConnection -> m Message -> m a)
+    -- ^ The provided action blocks until a message is present
+    -> m a
+withSubscriptions cinfo cont =
+    either throwM return =<< withConnection cinfo (\conn -> withSubscriptionsInternal conn cont)
+
+withSubscriptionsInternal :: forall m a.
+       (MonadConnect m)
+    => Connection
+    -> (SubscriptionConnection -> m Message -> m a)
+    -> m (Either IOError a)
+withSubscriptionsInternal conn cont = do
+    chan :: TChan Message <- liftIO newTChanIO
+    let getMsg = atomically (readTChan chan)
+    res :: Either (Either IOError Void) a <- Async.race (try (go chan)) (cont (SubscriptionConnection conn) getMsg)
+    return (either (Left . either id absurd) Right res)
+  where
+    go chan = forever $ do
+        resp <- readResponse conn
+        msg <- case resp of
+            Array (Just message) -> case decodeMessage message of
+                Nothing -> throwM (ProtocolException "Could not decode subscription Message")
+                Just msg -> return msg
+            _ -> throwM (ProtocolException ("Expecting Array, got " ++ tshow resp))
+        atomically (writeTChan chan msg)
+
     decodeMessage [BulkString (Just "subscribe"),channel,subscriptionCount] =
         case (decodeResponse channel, decodeResponse subscriptionCount) of
             (Just channel', Just subscriptionCount') ->
@@ -124,40 +131,6 @@ withSubscriptionsExConn connectionInfo_ subscriptions callback' = do
             _ -> Nothing
     decodeMessage _ = Nothing
 
--- | Disconnect from Redis server.  This does /not/ issue a QUIT command
--- because doing so while subscribed is not permitted by the Redis protocol.
-disconnectSub :: MonadCommand m => SubscriptionConnection -> m ()
-disconnectSub (SubscriptionConnection conn) =
-    --TODO: would be cleanest to unsubscribe from all channels then issue a QUIT command.
-    disconnect' conn Nothing
-
---TODO SHOULD: Resurrect this code when we have support for re-establishing subscriptions after a
---reconnect.
-{-}
--- | Open a connection to listen for pub/sub messages
-withSubscriptionConnection :: forall m a. ( MonadCommand m
-                                          , MonadLogger m
-                                          , MonadCatch m )
-                           => ConnectInfo -- ^ Server connection info
-                           -> (SubscriptionConnection -> m a) -- ^ Inner action
-                           -> m a
-withSubscriptionConnection cinfo inner = do
-    messageBChan <- liftIO newBroadcastChan
-    withConnection
-        (cinfo{connectSubscriptionCallback = Just (writeBChan messageBChan)})
-        (\conn -> inner (SubscriptionConnection conn messageBChan))
-
--- | Listen for pub/sub messages.
-listenSubscriptionMessages :: forall m. (MonadIO m)
-                           => SubscriptionConnection -- ^ Server connection
-                           -> ([Response] -> m ()) -- ^ Callback to receive messages
-                           -> m ()
-listenSubscriptionMessages (SubscriptionConnection _ messageBChan) callback = do
-    --TODO: TEST connection dies and can't recover
-    listener <- liftIO (newBChanListener messageBChan)
-    forever (callback =<< liftIO (readBChan listener))
---}
-
 -- | Send multiple subscription commands.
 sendSubscriptions :: ( MonoFoldable (t SubscriptionRequest)
                      , MonadCommand m
@@ -173,7 +146,7 @@ sendSubscription :: (MonadCommand m)
                  -> SubscriptionRequest -- ^ Subscription command
                  -> m ()
 sendSubscription (SubscriptionConnection conn) (SubscriptionRequest request) =
-    sendRequest conn request
+    writeRequest conn request
 
 -- | Subscribes the client to the specified channels.
 subscribe :: NonEmpty Channel -- ^ Channels
@@ -199,4 +172,4 @@ punsubscribe channelPatterns = makeSubscription "PUNSUBSCRIBE" (fmap encodeArg c
 makeSubscription :: ByteString -> [ByteString] -> SubscriptionRequest
 makeSubscription !cmd !args =
     deepseq args $
-    SubscriptionRequest (Subscription (renderRequest (encodeArg cmd:(toList args))))
+    SubscriptionRequest (renderRequest (encodeArg cmd : args))

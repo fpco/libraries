@@ -1,6 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude, OverloadedStrings, ScopedTypeVariables, TypeFamilies,
              DeriveDataTypeable, FlexibleContexts, FlexibleInstances, RankNTypes, GADTs,
-             ConstraintKinds, NamedFieldPuns, ViewPatterns, BangPatterns #-}
+             ConstraintKinds, NamedFieldPuns, ViewPatterns, BangPatterns, LambdaCase #-}
 
 -- | Redis internal utilities.
 
@@ -9,118 +9,23 @@ module FP.Redis.Internal where
 import Blaze.ByteString.Builder (Builder)
 import qualified Blaze.ByteString.Builder as Builder
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Builder
-import ClassyPrelude.Conduit hiding (Builder)
-import Control.Concurrent (threadDelay)
-import qualified Control.Concurrent.Async as Async
-import Control.Concurrent.STM (retry)
+import ClassyPrelude.Conduit hiding (Builder, leftover)
 import Control.DeepSeq (deepseq)
-import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..), BlockedIndefinitelyOnSTM(..))
-import Control.Monad.Catch (Handler(Handler))
-import Control.Retry (RetryPolicy(RetryPolicy))
-import qualified Data.DList as DList
-import Data.Function (fix)
+import qualified Data.Attoparsec.ByteString as Atto
+import Data.Attoparsec.ByteString (takeTill)
+import Data.Attoparsec.ByteString.Char8
+    (Parser, choice, char, isEndOfLine, endOfLine, decimal, signed, take, count)
+import qualified Data.ByteString.Lazy as BSL
+import qualified Data.Streaming.Network as CN
+import qualified Network.Socket.ByteString as NS
 
 import FP.Redis.Types.Internal
-import Control.Concurrent.STM.TSQueue
-
--- | Like 'takeMVar', but convert wrap 'BlockedIndefinitelyOnMVar' exception in other exception.
-takeMVarE :: (MonadBaseControl IO m) => (SomeException -> RedisException) -> MVar a -> m a
-takeMVarE exception mvar =
-    catch (takeMVar mvar)
-          (\e@BlockedIndefinitelyOnMVar -> throwIO (exception (toException e)))
 
 -- | Make a command request
 makeCommand :: (Result a) => ByteString -> [ByteString] -> CommandRequest a
 makeCommand !cmd !args =
     deepseq args $
-    CommandRequest (Command (renderRequest (encodeArg cmd:args)))
-
--- | Add a request to the requests queue.  Blocks if waiting for too many responses.
-sendRequest :: (MonadCommand m) => Connection -> Request -> m ()
-sendRequest Connection{connectionInfo_, connectionRequestQueue, connectionPendingResponseQueue}
-            request =
-    catch (atomically addRequest)
-          (\BlockedIndefinitelyOnSTM -> throwIO DisconnectedException)
-  where
-    addRequest = do
-        modifyTMVarSTM connectionRequestQueue $ \rqs-> do
-            case rqs of
-                RQConnected requestQueue -> do
-                    addToQueue requestQueue
-                    return (rqs, ())
-                RQLostConnection requestQueue -> do
-                    -- We add our request to the "closed" queue because it might
-                    -- be in the process of auto-reconnecting.
-                    addToQueue requestQueue
-                    return (rqs, ())
-                RQFinal _ -> throwSTM DisconnectedException
-                RQDisconnect -> throwSTM DisconnectedException
-    addToQueue requestQueue = do
-        lr <- lengthTSQueue requestQueue
-        when (lr >= connectRequestsPerBatch connectionInfo_ * 2) retry
-        lp <- lengthTSQueue connectionPendingResponseQueue
-        when (lp >= connectMaxPendingResponses connectionInfo_) retry
-        writeTSQueue requestQueue request
-
--- | Disconnect from Redis server, optionally sending a final command before terminating.
-disconnect' :: MonadCommand m => Connection -> (Maybe (CommandRequest ())) -> m ()
-disconnect' Connection{connectionRequestQueue,connectionThread}
-            maybeFinalCommand = do
-    eres <- case maybeFinalCommand of
-        Just command ->
-            try $ do
-                (reqs, respAction) <- commandToRequestPair (ignoreResult command)
-                case toList reqs of
-                    [req] -> addRequest (Just req)
-                    _ -> error "FP.Redis.Internal.disconnect': final command must be single request"
-                respAction
-        Nothing -> try $ addRequest Nothing
-    liftIO (Async.cancel connectionThread)
-    case eres of
-        Left DisconnectedException -> return ()
-        Left err -> liftIO (throwIO err)
-        Right () -> return ()
-  where
-    addRequest mreq =
-        catch (atomically (addRequest' mreq))
-              (\BlockedIndefinitelyOnSTM -> throwIO DisconnectedException)
-    addRequest' mreq =
-        modifyTMVarSTM connectionRequestQueue $ \rqs -> do
-            case rqs of
-                RQConnected _ -> case mreq of
-                                     Just req -> return (RQFinal req, ())
-                                     Nothing -> return (RQDisconnect, ())
-                RQLostConnection _ -> return (RQDisconnect, ())
-                RQFinal _ -> throwSTM DisconnectedException
-                RQDisconnect -> throwSTM DisconnectedException
-
--- | Convert 'CommandRequest' to a list of 'Request's and an action to get the response.
-commandToRequestPair :: (MonadIO m, MonadIO n)
-                     => CommandRequest a
-                     -> m (DList.DList Request, n a)
-commandToRequestPair (CommandRequest command) = do
-    respMVar <- liftIO newEmptyMVar
-    let getResponse = do
-            resp <- takeMVarE (const DisconnectedException) respMVar
-            case resp of
-                Error msg -> liftIO (throwM (CommandException msg))
-                _ -> case decodeResponse resp of
-                    Just result -> return result
-                    Nothing -> throwM $ DecodeResponseException
-                        (Builder.toByteString $ requestBuilder request)
-                        resp
-        request = command (const (putMVar respMVar))
-    return (DList.singleton request, liftIO getResponse)
-commandToRequestPair (CommandPure val) =
-    return (DList.empty, return val)
-commandToRequestPair (CommandAp a b) = do
-    (aReqs,aAction) <- commandToRequestPair a
-    (bReqs,bAction) <- commandToRequestPair b
-    let resultAction = do
-            aResult <- aAction
-            bResult <- bAction
-            return (aResult bResult)
-    return (aReqs ++ bReqs, resultAction)
+    CommandRequest (renderRequest (encodeArg cmd:args))
 
 -- | Render list to Redis request protocol (adapted from hedis)
 renderRequest :: [ByteString] -> Builder
@@ -140,62 +45,63 @@ renderRequest req = concat (argCnt:args)
     star = Builder.copyByteString "*"
     dollar = Builder.copyByteString "$"
 
--- | Run an action and recover from a raised exception by potentially
--- retrying the action a number of times.  This behaves the same as
--- 'recovering', except it also provides the action the ability to
--- reset the retry counter.  This is useful when recovering from
--- exceptions that occur during the initialization of with-* style
--- functions which follow the bracket pattern.
-recoveringWithReset
-           :: (MonadBaseControl IO m, MonadIO m)
-           => RetryPolicy
-           -- ^ Just use 'def' for default settings
-           -> [(Int -> Handler m Bool)]
-           -- ^ Should a given exception be retried? Action will be
-           -- retried if this returns True.
-           -> (m () -> m a)
-           -- ^ Action to perform.  The @m ()@ action resets the retry
-           -- counter.
-           -> m a
-recoveringWithReset (RetryPolicy policy) hs f = mask $ \restore -> do
-  counter <- newIORef 0
-  fix $ \loop -> do
-    r <- try $ restore (f (writeIORef counter 0))
-    case r of
-      Right x -> return x
-      Left e -> do
-          n <- readIORef counter
-          let recover [] = liftBase $ throwIO e
-              recover ((($ n) -> Handler h) : hs')
-                | Just e' <- fromException e = do
-                    chk <- h e'
-                    if chk
-                      then case policy n of
-                        Just delay -> do
-                          liftBase $ threadDelay delay
-                          writeIORef counter $! n + 1
-                          loop
-                        Nothing -> liftBase $ throwIO e'
-                      else liftBase $ throwIO e'
-                | otherwise = recover hs'
-          recover hs
+sendCommand :: forall a m.
+       (MonadCommand m)
+    => Connection -> CommandRequest a -> m a
+sendCommand conn (CommandRequest req) = do
+    writeRequest conn req
+    resp <- readResponse conn
+    case resp of
+      Error err -> liftIO (throwM (CommandException err))
+      _ -> return ()
+    case decodeResponse resp of
+        Just result -> return result
+        Nothing -> liftIO (throwM (DecodeResponseException (Builder.toByteString req) resp))
 
--- | Modify the contents of a TMVar.  Retries if TMVar is empty.
-modifyTMVarSTM :: TMVar a -> (a -> STM (a, b)) -> STM b
-modifyTMVarSTM tmvar action = do
-    val <- takeTMVar tmvar
-    (val',result) <- action val
-    putTMVar tmvar val'
-    return result
+writeRequest :: forall m.
+       (MonadCommand m)
+    => Connection -> Request -> m ()
+writeRequest conn req = do
+    liftIO $ mapM_
+        (NS.sendAll (connectionSocket conn))
+        (BSL.toChunks (Builder.toLazyByteString req))
 
--- | Ignore a command's result.
-ignoreResult :: CommandRequest a -> CommandRequest ()
-ignoreResult (CommandRequest r) = CommandRequest r
-ignoreResult (CommandPure _) = CommandPure ()
-ignoreResult a = CommandAp (CommandPure (const ())) a
+readResponse :: forall m.
+       (MonadCommand m)
+    => Connection -> m Response
+readResponse conn = do
+    leftover0 <- readIORef (connectionLeftover conn)
+    (resp, leftover1) <- liftIO (go (Atto.parse responseParser leftover0))
+    writeIORef (connectionLeftover conn) leftover1
+    return resp
+  where
+        go = \case
+            Atto.Done leftover resp -> return (resp, leftover)
+            Atto.Fail _leftover _context _err ->
+                throwM (ProtocolException "Could not parse response") -- TODO better error
+            Atto.Partial cont -> do
+                bs <- CN.safeRecv (connectionSocket conn) 4096 -- TODO make this follow ClientSettings when we upgrade streaming-commons
+                go (cont bs)
 
--- | Use a general Redis 'Response' result instead of decoding it.
-anyResult :: (Result a) => CommandRequest a -> CommandRequest Response
-anyResult (CommandRequest r) = CommandRequest r
-anyResult (CommandPure v) = CommandPure (encodeResponse v)
-anyResult a = CommandAp (CommandPure encodeResponse) a
+-- | Redis Response protocol parser (adapted from hedis)
+responseParser :: Parser Response
+responseParser = response
+  where
+    response = choice [simpleString
+                      ,integer
+                      ,bulkString
+                      ,array
+                      ,error_]
+    simpleString = SimpleString <$> (char '+' *> takeTill isEndOfLine <* endOfLine)
+    error_ = Error <$> (char '-' *> takeTill isEndOfLine <* endOfLine)
+    integer = Integer <$> (char ':' *> signed decimal <* endOfLine)
+    bulkString = BulkString <$> do
+        len <- char '$' *> signed decimal <* endOfLine
+        if len < 0
+            then return Nothing
+            else Just <$> Data.Attoparsec.ByteString.Char8.take len <* endOfLine
+    array = Array <$> do
+        len <- char '*' *> signed decimal <* endOfLine
+        if len < 0
+            then return Nothing
+            else Just <$> count len response
