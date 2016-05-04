@@ -51,6 +51,9 @@ sendCommand :: forall a m.
 sendCommand conn (CommandRequest req) = do
     writeRequest conn req
     resp <- readResponse conn
+    case resp of
+      Error err -> liftIO (throwM (CommandException err))
+      _ -> return ()
     case decodeResponse resp of
         Just result -> return result
         Nothing -> liftIO (throwM (DecodeResponseException (Builder.toByteString req) resp))

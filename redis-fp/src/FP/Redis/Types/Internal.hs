@@ -93,6 +93,8 @@ data ConnectInfo = ConnectInfo
     } deriving (Typeable, Generic, Show)
 
 -- | Connection to the Redis server used for regular commands.
+--
+-- This connection is _not_ thread safe.
 data Connection = Connection
     { connectionInfo_ :: !ConnectInfo
         -- ^ Original connection information
