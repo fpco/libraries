@@ -9,16 +9,11 @@ module FP.Redis.Types.Internal where
 
 import ClassyPrelude.Conduit hiding (Builder)
 import Blaze.ByteString.Builder (Builder)
-import Control.Concurrent.Async (Async)
 import Control.Monad.Logger
 import Control.Monad.Trans.Unlift (MonadBaseUnlift)
-import Control.Retry
-import Control.Concurrent.STM.TSQueue
 import qualified Data.ByteString.Char8 as BS8
 import Data.Data (Data)
-import qualified Data.Conduit.Network as CN
 import qualified Network.Socket as NS
-import Data.Hashable (Hashable)
 
 -- | Monads for connecting.
 type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
@@ -79,11 +74,6 @@ data SetOption = EX Seconds -- ^ Set the specified expire time, in seconds
                | NX -- ^ Only set the key if it does not already exist
                | XX -- ^ Only set the key if it already exists
     deriving (Eq, Show, Ord, Data, Typeable, Generic)
-
--- | Connection mode.
-data Mode = Normal -- ^ Normal connection that receives commands and returns responses.
-          | Subscribed -- ^ Connection that is subscribed to pub/sub channels.
-    deriving (Eq, Show, Ord, Data, Typeable, Generic, Enum, Bounded)
 
 -- | Connection to the Redis server used for pub/sub subscriptions.
 newtype SubscriptionConnection = SubscriptionConnection Connection

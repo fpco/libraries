@@ -26,7 +26,6 @@ module FP.Redis.Command
 -- TODO OPTIONAL: Track EVALs and resubmit after reconnection so that EVALSHA works reliably.
 
 import ClassyPrelude.Conduit hiding (sequence)
-import Data.Traversable (sequence)
 
 import FP.Redis.Command.Connection
 import FP.Redis.Command.Generic

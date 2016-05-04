@@ -22,7 +22,6 @@ module FP.Redis.PubSub
 
 import ClassyPrelude.Conduit hiding (connect)
 import Control.DeepSeq (deepseq)
-import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..))
 import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty)
 import Data.Void (absurd, Void)

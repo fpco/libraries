@@ -8,16 +8,14 @@ module FP.Redis.Managed
     , newManagedConnection
     , destroyManagedConnection
     , withManagedConnection
+    , useConnection
     ) where
 
 import ClassyPrelude
 import Control.Monad.Logger
 
 import FP.Redis.Connection
-import FP.Redis.Command
-import FP.Redis.Internal
 import FP.Redis.Types.Internal
-import FP.ThreadFileLogger
 
 data ManagedConnection = ManagedConnection
     { mcConnection :: !(MVar Connection)

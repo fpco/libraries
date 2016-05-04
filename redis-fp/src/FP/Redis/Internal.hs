@@ -9,30 +9,17 @@ module FP.Redis.Internal where
 import Blaze.ByteString.Builder (Builder)
 import qualified Blaze.ByteString.Builder as Builder
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Builder
-import ClassyPrelude.Conduit hiding (Builder)
-import Control.Concurrent (threadDelay)
-import qualified Control.Concurrent.Async as Async
-import Control.Concurrent.STM (retry)
+import ClassyPrelude.Conduit hiding (Builder, leftover)
 import Control.DeepSeq (deepseq)
-import Control.Exception.Lifted (BlockedIndefinitelyOnMVar(..), BlockedIndefinitelyOnSTM(..))
-import Control.Monad.Catch (Handler(Handler))
-import Control.Retry (RetryPolicy(RetryPolicy))
-import qualified Data.DList as DList
-import Data.Function (fix)
 import qualified Data.Attoparsec.ByteString as Atto
 import Data.Attoparsec.ByteString (takeTill)
 import Data.Attoparsec.ByteString.Char8
     (Parser, choice, char, isEndOfLine, endOfLine, decimal, signed, take, count)
-import Data.Conduit.Attoparsec (conduitParser, PositionRange)
-import qualified Blaze.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as BSL
-import Control.Lens ((^.))
 import qualified Data.Streaming.Network as CN
-import qualified Network.Socket as NS
 import qualified Network.Socket.ByteString as NS
 
 import FP.Redis.Types.Internal
-import Control.Concurrent.STM.TSQueue
 
 -- | Make a command request
 makeCommand :: (Result a) => ByteString -> [ByteString] -> CommandRequest a

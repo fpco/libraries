@@ -21,29 +21,14 @@ module FP.Redis.Connection
 -- TODO OPTIONAL: Add a HasConnection class so clients don't need to pass Connections explicitly
 
 import ClassyPrelude.Conduit hiding (Builder, connect, leftover)
-import Blaze.ByteString.Builder (Builder)
-import qualified Blaze.ByteString.Builder as Builder
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import Control.Concurrent.STM (retry)
-import Control.Exception (AsyncException(ThreadKilled))
-import Control.Monad.Catch (Handler(..))
-import Control.Monad.Extra
-import Control.Monad.Logger
-import Control.Monad.Trans.Unlift (UnliftBase(..), askUnliftBase)
-import Control.Monad.Trans.Control (control)
-import Data.Conduit.Blaze (unsafeBuilderToByteString, allocBuffer)
-import qualified Data.Conduit.Network as CN
-import qualified Data.DList as DList
 import qualified Network.Socket as NS
 import Control.Lens ((^.))
 import qualified Data.Streaming.Network as CN
-import qualified Data.Streaming.Network as CN
+import qualified Data.Conduit.Network as CN
 
 import FP.Redis.Command
 import FP.Redis.Internal
 import FP.Redis.Types.Internal
-import Control.Concurrent.STM.TSQueue
-import FP.ThreadFileLogger
 
 connect :: (MonadCommand m) => ConnectInfo -> m Connection
 connect cinfo = do
