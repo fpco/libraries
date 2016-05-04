@@ -18,6 +18,7 @@ import qualified Data.ByteString.Char8 as BS8
 import Data.Data (Data)
 import qualified Data.Conduit.Network as CN
 import qualified Network.Socket as NS
+import Data.Hashable (Hashable)
 
 -- | Monads for connecting.
 type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m)
@@ -51,7 +52,7 @@ newtype ZKey = ZKey { unZKey :: Key }
 
 -- Newtype wrapper for redis channel names.
 newtype Channel = Channel { unChannel :: ByteString }
-    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument, IsString)
+    deriving (Eq, Show, Ord, Data, Typeable, Generic, Result, Argument, IsString, Hashable)
 
 -- Newtype wrapper for redis hash fields.
 newtype HashField = HashField { unHashField :: ByteString }
@@ -224,7 +225,7 @@ data Response = SimpleString ByteString
     deriving (Eq, Show, Ord, Data, Typeable, Generic)
 
 -- | Exceptions thrown by Redis connection.
-data RedisException = ProtocolException
+data RedisException = ProtocolException Text
                     -- ^ Invalid data received for protocol
                     | CommandException ByteString
                     -- ^ The server reported an error for your command

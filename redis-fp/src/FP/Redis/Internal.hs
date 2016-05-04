@@ -88,7 +88,7 @@ readResponse conn = do
         go = \case
             Atto.Done leftover resp -> return (resp, leftover)
             Atto.Fail _leftover _context _err ->
-                throwM ProtocolException -- TODO better error
+                throwM (ProtocolException "Could not parse response") -- TODO better error
             Atto.Partial cont -> do
                 bs <- CN.safeRecv (connectionSocket conn) 4096 -- TODO make this follow ClientSettings when we upgrade streaming-commons
                 go (cont bs)
