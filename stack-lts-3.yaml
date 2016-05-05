@@ -3,7 +3,6 @@ extra-deps:
   - hybrid-vectors-0.2
   - binary-orphans-0.1.2.0
 packages:
-  - ./json-conduit
   - ./redis-fp
   - ./thread-file-logger
   - ./work-queue
