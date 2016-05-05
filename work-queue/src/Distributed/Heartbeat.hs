@@ -69,6 +69,8 @@ activeOrUnhandledWorkers r =
 -- even if the "cleanup" function is correctly called.
 -- * If multiple 'checkHeartbeats' are waiting, each @handleFailures@ can be called with
 -- the same workers.
+--
+-- In other words, the continuation should be idempotent.
 checkHeartbeats
     :: (MonadConnect m)
     => HeartbeatConfig -> Redis
@@ -96,6 +98,9 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
                         tshow usecs
             liftIO $ threadDelay usecs
         Just lastTime -> do
+            -- Note that nothing prevents two checkers from checking up on
+            -- the workers at the same time. This is fine and part of the contract of the
+            -- function.
             $logDebug ("Enough time has passed, checking if there are any inactive workers.")
             let ninf = -1 / 0
             inactives0 <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac lastTime) False
@@ -116,8 +121,8 @@ withCheckHeartbeats
     -> ([WorkerId] -> m () -> m ())
     -> m a
     -> m a
-withCheckHeartbeats conf redis handle cont =
-    fmap (either id absurd) (race cont (checkHeartbeats conf redis handle))
+withCheckHeartbeats conf redis handle' cont =
+    fmap (either id absurd) (race cont (checkHeartbeats conf redis handle'))
 
 -- | This periodically removes the worker's key from the set of
 -- inactive workers.  This set is periodically re-initialized and

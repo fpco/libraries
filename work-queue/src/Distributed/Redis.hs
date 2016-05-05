@@ -6,14 +6,18 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Distributed.Redis where
-{-
+module Distributed.Redis
     ( -- * Types
       RedisConfig(..)
     , defaultRedisConfig
     , defaultRetryPolicy
     , Redis(..)
+    , redisConnectInfo
+
+    -- * Notifications
     , NotifyChannel(..)
+    , withSubscribedNotifyChannel
+    , sendNotify
 
     -- * Initialization/running
     , withRedis
@@ -28,31 +32,22 @@ module Distributed.Redis where
     , decodeOrErr
     , decodeOrThrow
     ) where
--}
 
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import           Control.Concurrent.Lifted (fork, threadDelay)
+import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.MVar.Lifted
-import           Control.Exception (BlockedIndefinitelyOnMVar(..))
-import           Control.Exception.Lifted (Exception, throwIO, catch)
+import           Control.Exception.Lifted (throwIO)
 import           Control.Monad (forever, void, guard)
-import           Control.Monad.Catch (Handler(Handler))
 import           Control.Monad.IO.Class
-import           Control.Monad.Logger
-import           Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import           Control.Retry
 import           Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
-import           Data.IORef.Lifted
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Data.Serialize (Serialize)
 import qualified Data.Serialize as C
 import qualified Data.Text as T
 import           Data.Time.Clock.POSIX
-import           Data.Typeable (Typeable)
 import           FP.Redis
-import           FP.Redis.Types.Internal (connectionInfo_)
-import           FP.ThreadFileLogger
 import           Safe (readMay)
 import           Distributed.Types
 import           Data.Void (absurd)
@@ -112,6 +107,7 @@ withRedis RedisConfig{..} f =
         , redisKeyPrefix = rcKeyPrefix
         }
 
+{-
 -- | Convenient utility for creating a 'RedisConfig'.
 mkRedisConfig :: ByteString -> Int -> Maybe RetryPolicy -> ByteString -> Int -> RedisConfig
 mkRedisConfig host port mpolicy prefix maxConns = RedisConfig
@@ -122,6 +118,7 @@ mkRedisConfig host port mpolicy prefix maxConns = RedisConfig
     , rcKeyPrefix = prefix
     , rcMaxConnections = maxConns
     }
+-}
 
 redisConnectInfo :: Redis -> ConnectInfo
 redisConnectInfo = managedConnectInfo . redisConnection

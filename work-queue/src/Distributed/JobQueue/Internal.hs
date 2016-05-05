@@ -6,7 +6,7 @@
 module Distributed.JobQueue.Internal where
 
 import ClassyPrelude
-import Control.Monad.Logger (MonadLogger, logWarn, logInfo)
+import Control.Monad.Logger (logWarn, logInfo)
 import qualified Data.Aeson as Aeson
 import Data.List.NonEmpty
 import Data.Serialize (Serialize, encode)
@@ -54,8 +54,7 @@ responseTimeKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestI
 activeKey :: Redis -> WorkerId -> LKey
 activeKey r k = LKey $ Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
 
--- | Key which is filled with the value 'cancelValue' when the request gets
--- canceled.
+-- | Channel to push cancellations.
 --
 -- This is essentially 'requestDataKey' with @:cancel@ added.
 cancelKey :: Redis -> RequestId -> VKey

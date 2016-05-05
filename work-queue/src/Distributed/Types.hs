@@ -8,8 +8,6 @@
 module Distributed.Types where
 
 import           ClassyPrelude hiding ((<>))
-import           Control.Monad.Logger (LogSource, LogLevel, LogStr, Loc)
-import           Control.Retry
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Char8 as BS8
 import           Data.Serialize (Serialize)
@@ -17,13 +15,6 @@ import           Data.Serialize.Orphans ()
 import           Data.Streaming.NetworkMessage (NetworkMessageException)
 import qualified Data.Text as T
 import           Data.TypeFingerprint
-import           FP.Redis
-import           Data.Hashable (Hashable)
-
--- * Logging
-
--- | Type of function used for logging.
-type LogFunc = Loc -> LogSource -> LogLevel -> LogStr -> IO ()
 
 -- * IDs used in Redis
 
@@ -191,3 +182,5 @@ instance Show DistributedException where
         "InternalJobQueueException " ++ show txt
     show (OtherException ty txt) =
         "OtherException " ++ show ty ++ " " ++ show txt
+    show (DecodeError loc err) =
+        "DecodeError " ++ show loc ++ " " ++ show err

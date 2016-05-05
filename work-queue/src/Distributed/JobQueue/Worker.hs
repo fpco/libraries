@@ -16,30 +16,24 @@ module Distributed.JobQueue.Worker
 
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (cancel, cancelWith, waitEither, race, withAsync)
 import Control.Exception (AsyncException)
 import Control.Monad.Logger
-import Data.Bits (xor)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Proxy
-import Data.Serialize (encode)
 import Data.Streaming.NetworkMessage (Sendable)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.TypeFingerprint (typeFingerprint)
 import Data.Typeable (typeOf)
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
-import Data.Serialize (Serialize)
 import Distributed.Heartbeat
 import Distributed.JobQueue.Internal
 import Distributed.Redis
 import Distributed.Types
 import FP.Redis
 import FP.ThreadFileLogger
-import System.Posix.Process (getProcessID)
-import Control.Monad.Trans.Control (control)
-import Data.Void (absurd)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import Data.Serialize (encode)
 
 -- | Implements a compute node which responds to requests and never
 -- returns.
@@ -65,7 +59,7 @@ jobWorker config@JobQueueConfig {..} f = do
             $logDebug "Initial heartbeat sent, starting worker"
             withSubscribedNotifyChannel
                 (rcConnectInfo jqcRedisConfig)
-                (Milliseconds 25)
+                (Milliseconds 100) -- Check anyway 10 times a second
                 (requestChannel r)
                 (\waitForReq -> jobWorkerThread config r wid waitForReq (f r))
 
@@ -182,7 +176,7 @@ sendResponse r expiry wid k x = do
     --
     -- Note that we expect this list to either be empty or to contain
     -- exactly this request id.
-    let ak = (activeKey r wid)
+    let ak = activeKey r wid
     removed <- run r (lrem ak 1 (unRequestId k))
     if  | removed == 1 ->
             return ()
@@ -203,6 +197,11 @@ sendResponse r expiry wid k x = do
     -- in processing the request when a worker is detected to be dead
     -- when it shouldn't be.
     run_ r (del (unVKey (requestDataKey r k) :| []))
+    -- Also remove from the requestsKey: it might be that the request has been
+    -- erroneously reenqueued.
+    removed' <- run r (lrem (requestsKey r) 0 (unRequestId k))
+    when (removed' > 0) $
+        $logWarn ("Expecting no request " <> tshow k <> " in requestsKey, but found " ++ tshow removed ++ ". This can happen with spurious heartbeat failures.")
     -- Store when the response was stored.
     responseTime <- liftIO getPOSIXTime
     setRedisTime r (responseTimeKey r k) responseTime [EX expiry]
