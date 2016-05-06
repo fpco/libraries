@@ -63,6 +63,8 @@ withSubscriptionsManaged cinfo chans cont = go
         -- We retry if we fail _after_ we've sent the initial subscriptions. This should
         -- give us a very good indication that after connecting the connection is healthy,
         -- and we won't retry forever.
+        --
+        -- REVIEW TODO: unsubscribe at the end.
         mbIoErr <-
             withConnection cinfo $ \conn -> withSubscriptionsInternal conn $ \subConn waitForMsg -> do
                 -- Subscribe to all channels

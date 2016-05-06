@@ -29,13 +29,13 @@ library
                        Distributed.JobQueue.Worker
                        Distributed.Redis
                        Distributed.Heartbeat
+                       Distributed.ConnectRequest
   other-modules:       Distributed.JobQueue.Internal
                        Data.Streaming.NetworkMessage
 --   exposed-modules:     Data.WorkQueue
 --                        Data.Streaming.NetworkMessage
 --                        Data.TypeFingerprint
 --                        Distributed.Types
---                        Distributed.ConnectRequest
 --                        Distributed.Stateful
 --                        Distributed.WorkQueue
 --                        Distributed.WorkQueue.CLI

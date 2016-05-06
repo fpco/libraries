@@ -40,21 +40,6 @@ newtype RequestId = RequestId { unRequestId :: ByteString }
 instance Aeson.ToJSON RequestId where
     toJSON = Aeson.String . T.pack . BS8.unpack . unRequestId
 
--- * Job-queue
-
-{-
-
--- * Information for connecting to a worker
-
-data WorkerConnectInfo = WorkerConnectInfo
-    { wciHost :: !ByteString
-    , wciPort :: !Int
-    }
-    deriving (Eq, Show, Ord, Generic, Typeable)
-
-instance Serialize WorkerConnectInfo
--}
-
 -- * Exceptions
 
 -- | Exceptions which are returned to the client by the job-queue.

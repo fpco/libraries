@@ -1,22 +1,33 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 module Distributed.ConnectRequest
-    ( requestWorker
+    ( WorkerConnectInfo(..)
+    , requestWorker
     , withConnectRequests
     ) where
 
-import Control.Concurrent.STM (atomically, check, STM)
-import Control.Exception.Lifted (finally)
 import Control.Monad (forever)
-import Control.Monad.IO.Class (liftIO)
-import Data.Foldable (forM_)
 import Data.List.NonEmpty
 import Data.Monoid ((<>))
 import Data.Serialize (encode)
 import Distributed.Redis
-import Distributed.Types
 import FP.Redis
+import Data.Serialize (Serialize)
+import Data.ByteString (ByteString)
+import Data.Typeable (Typeable)
+import GHC.Generics (Generic)
+
+-- * Information for connecting to a worker
+
+data WorkerConnectInfo = WorkerConnectInfo
+    { wciHost :: !ByteString
+    , wciPort :: !Int
+    }
+    deriving (Eq, Show, Ord, Generic, Typeable)
+
+instance Serialize WorkerConnectInfo
 
 -- | This command is used by a worker to request that another worker
 -- connects to it.
@@ -46,39 +57,28 @@ import FP.Redis
 -- These caveats are not necessitated by any aspect of the overall
 -- design, and may be resolved in the future.
 requestWorker
-    :: MonadCommand m
+    :: MonadConnect m
     => Redis
     -> WorkerConnectInfo
     -> m ()
 requestWorker r wci = do
     let encoded = encode wci
-    run_ r $ lpush (workerRequestsKey r) (encoded :| [])
+    run_ r (lpush (workerRequestsKey r) (encoded :| []))
     sendNotify r (workerRequestsNotify r)
 
-withConnectRequests :: MonadConnect m => STM Bool -> Redis -> (WorkerConnectInfo -> m ()) -> m void
-withConnectRequests enabled r f = do
-    (notifyVar, unsub) <- subscribeToNotify r (workerRequestsNotify r)
-    (`finally` liftIO unsub) $ forever $ do
-        mwci <- popWorkerRequest r
-        forM_ mwci $ \wci -> do
-            isEnabled <- liftIO $ atomically enabled
-            if isEnabled
-                then f wci
-                else unpopWorkerRequest r wci
-        -- Wait for a notification. Then, wait for receiving connect
-        -- requests to be enabled.
-        takeMVarE notifyVar NoLongerWaitingForWorkerRequest
-        liftIO $ atomically $ enabled >>= check
+withConnectRequests :: MonadConnect m => Redis -> (WorkerConnectInfo -> m ()) -> m void
+withConnectRequests redis f = do
+    withSubscribedNotifyChannel (managedConnectInfo (redisConnection redis)) (Milliseconds 100) (workerRequestsNotify redis) $
+        \waitNotification -> forever $ do
+            waitNotification
+            mapM f =<< popWorkerRequest redis
 
-popWorkerRequest :: MonadCommand m => Redis -> m (Maybe WorkerConnectInfo)
+-- REVIEW TODO: Do not "pop" this, instead just peek it, so that we can easily requests
+-- slaves "forever".
+popWorkerRequest :: MonadConnect m => Redis -> m (Maybe WorkerConnectInfo)
 popWorkerRequest r =
     run r (rpop (workerRequestsKey r)) >>=
     mapM (decodeOrThrow "popWorkerRequest")
-
-unpopWorkerRequest :: MonadCommand m => Redis -> WorkerConnectInfo -> m ()
-unpopWorkerRequest r =
-    run_ r . lpush (workerRequestsKey r) . (:| []) . encode
-
 
 -- | Channel used for notifying that there's a new ConnectRequest.
 workerRequestsNotify :: Redis -> NotifyChannel
