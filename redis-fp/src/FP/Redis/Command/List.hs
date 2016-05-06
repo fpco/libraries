@@ -13,11 +13,15 @@ module FP.Redis.Command.List
     , lrange
     , lrem
     , llen
-    , blpop
-    , brpop
-    , brpoplpush
-    , rpoplpush )
-    where
+    , rpoplpush
+
+    -- Blocking calls are currently disabled because they cannot be interrupted:
+    -- if we get interrupted on a blocking call while in a 'withConnection', disconnecting
+    -- will block forever, since it cannot send the QUIT command.
+    -- , blpop
+    -- , brpop
+    -- , brpoplpush
+    ) where
 
 import ClassyPrelude.Conduit hiding (keys)
 import Data.List.NonEmpty (NonEmpty)
@@ -45,6 +49,7 @@ lpop key = makeCommand "LPOP" [encodeArg key]
 rpop :: LKey -> CommandRequest (Maybe ByteString)
 rpop key = makeCommand "RPOP" [encodeArg key]
 
+{-
 -- | BRPOP is a blocking list pop primitive.
 -- See <http://redis.io/commands/brpop>.
 brpop :: NonEmpty LKey -> Seconds -> CommandRequest (Maybe (Key,ByteString))
@@ -65,6 +70,7 @@ brpoplpush source destination timeout =
                 [encodeArg source
                 ,encodeArg destination
                 ,encodeArg timeout]
+-}
 
 -- | Atmoically returns and removes the last element (tail) of the list stored at source, and pushes the element at the first element (head) of the list stored at destination.
 --  See <http://redis.io/commands/rpoplpush>.
