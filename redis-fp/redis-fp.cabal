@@ -70,6 +70,7 @@ library
                       ,unordered-containers
                       ,hashable
                       ,text
+                      ,resource-pool
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall
@@ -89,27 +90,31 @@ library
 --                      , classy-prelude
 --                      , stm
 --                      , monad-control
+--                      , lifted-async
+--                      , resourcet
 --   ghc-options:         -Wall -threaded
 --   default-language:    Haskell2010
--- 
--- test-suite fuzz-test
---   type:                exitcode-stdio-1.0
---   hs-source-dirs:      test
---   main-is:             Fuzz.hs
---   build-depends:       base
---                      , redis-fp
---                      , async
---                      , bytestring
---                      , containers
---                      , hspec
---                      , lifted-base
---                      , monad-control
---                      , monad-logger
---                      , mtl
---                      , transformers
---                      , transformers-base
---                      , random
---                      , semigroups
---                      , vector
---   ghc-options:         -Wall -threaded
---   default-language:    Haskell2010
+
+test-suite fuzz-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Fuzz.hs
+  build-depends:       base
+                     , redis-fp
+                     , async
+                     , bytestring
+                     , containers
+                     , hspec
+                     , lifted-base
+                     , monad-control
+                     , monad-logger
+                     , mtl
+                     , transformers
+                     , transformers-base
+                     , random
+                     , semigroups
+                     , vector
+                     , classy-prelude
+                     , lifted-async
+  ghc-options:         -Wall -threaded
+  default-language:    Haskell2010
