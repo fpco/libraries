@@ -8,7 +8,8 @@
 module FP.Redis.Command.Connection
     ( auth
     , select
-    , quit )
+    , quit
+    , flushall )
     where
 
 import ClassyPrelude.Conduit
@@ -34,3 +35,6 @@ select database = makeCommand "SELECT" [encodeArg database]
 -- See <http://redis.io/commands/quit>.
 quit :: CommandRequest ()
 quit = makeCommand "QUIT" []
+
+flushall :: CommandRequest ()
+flushall = makeCommand "FLUSHALL" []
