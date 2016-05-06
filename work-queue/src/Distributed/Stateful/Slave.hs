@@ -15,30 +15,25 @@ module Distributed.Stateful.Slave
 
 import           ClassyPrelude
 import           Control.DeepSeq (force, NFData)
-import           Control.Exception (evaluate, AsyncException)
-import           Control.Monad.Logger (runLoggingT, logDebugNS)
+import           Control.Exception.Lifted (evaluate, AsyncException)
+import           Control.Monad.Logger (logDebugNS, MonadLogger)
 import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import qualified Data.Streaming.NetworkMessage as NM
-import           Data.Void (absurd)
 import           Distributed.Stateful.Internal
-import           Distributed.Types (LogFunc, WorkerConnectInfo(..))
-import           Distributed.WorkQueue (handleSlaveException)
+import           Distributed.ConnectRequest (WorkerConnectInfo(..))
+import           Control.Monad.Trans.Control (MonadBaseControl, control)
 
 -- | Arguments for 'runSlave'.
-data SlaveArgs state context input output = SlaveArgs
-  { saUpdate :: !(context -> input -> state -> IO (state, output))
+data SlaveArgs m state context input output = SlaveArgs
+  { saUpdate :: !(context -> input -> state -> m (state, output))
     -- ^ Function run on the slave when 'update' is invoked on the
     -- master.
-  , saInit :: !(IO ())
-    -- ^ Action to run upon initial connection.
   , saConnectInfo :: !WorkerConnectInfo
     -- ^ Settings for the slave's TCP connection.
   , saNMSettings :: !NM.NMSettings
     -- ^ Settings for the connection to the master.
-  , saLogFunc :: !LogFunc
-    -- ^ Function used for logging.
   }
 
 data SlaveException
@@ -51,35 +46,31 @@ instance Exception SlaveException
 
 -- | Runs a stateful slave. Returns when it gets disconnected from the
 -- master.
-runSlave :: forall state context input output.
-     ( NM.Sendable (SlaveReq state context input), NM.Sendable (SlaveResp state output)
+runSlave :: forall state context input output void m.
+     ( MonadIO m, MonadBaseControl IO m, MonadLogger m
+     , NM.Sendable (SlaveReq state context input), NM.Sendable (SlaveResp state output)
      , NFData state, NFData output
      )
-  => SlaveArgs state context input output
-  -> IO ()
+  => SlaveArgs m state context input output
+  -> m void
 runSlave SlaveArgs{..} = do
     let WorkerConnectInfo host port = saConnectInfo
     -- REVIEW TODO: Shouldn't this be 'tryAny' or similar too?
-    eres <- try $
-        CN.runTCPClient (CN.clientSettings port host) $
-        NM.runNMApp saNMSettings $ \nm -> do
-          saInit
-          go (NM.nmRead nm) (NM.nmWrite nm) HMS.empty
-    case eres of
-        Right x -> absurd x
-        Left err -> runLogger $ handleSlaveException saConnectInfo "Distributed.Stateful.Slave.runSlave" err
+    control $ \run -> CN.runTCPClient (CN.clientSettings port host) $
+      NM.runNMApp saNMSettings $ \nm -> run $ do
+        go (NM.nmRead nm) (NM.nmWrite nm) HMS.empty
   where
-    runLogger f = runLoggingT f saLogFunc
-    throw = throwAndLog saLogFunc
-    debug msg = runLogger (logDebugNS "Distributed.Stateful.Slave" msg)
-    go :: IO (SlaveReq state context input)
-      -> (SlaveResp state output -> IO ())
+    throw = throwAndLog
+    debug msg = logDebugNS "Distributed.Stateful.Slave" msg
+    go :: 
+         m (SlaveReq state context input)
+      -> (SlaveResp state output -> m ())
       -> (HMS.HashMap StateId state)
-      -> IO void
+      -> m void
     go recv send states = do
       req <- recv
       debug (displayReq req)
-      eres <- try $ do
+      eres <- try ((do
         res <- case req of
           SReqResetState states' -> return (SRespResetState, states')
           SReqGetStates -> return (SRespGetStates states, states)
@@ -108,7 +99,7 @@ runSlave SlaveArgs{..} = do
             let states' = foldMap (fmap fst) resultsMap
             let outputs = fmap (fmap snd) resultsMap
             return (SRespUpdate outputs, states' `HMS.union` (states `HMS.difference` inputs))
-        evaluate (force res)
+        evaluate (force res)) :: m (SlaveResp state output, HMS.HashMap StateId state))
       case eres of
         Right (output, states') -> do
           send output
@@ -117,4 +108,4 @@ runSlave SlaveArgs{..} = do
         Left (fromException -> Just (err :: AsyncException)) -> throwIO err
         Left (err :: SomeException) -> do
           send (SRespError (pack (show err)))
-          throwAndLog saLogFunc err
+          throwAndLog err

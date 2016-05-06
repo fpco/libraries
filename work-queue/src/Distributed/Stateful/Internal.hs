@@ -15,7 +15,6 @@ import           Data.Proxy (Proxy(..))
 import qualified Data.Serialize as B
 import           Data.Serialize.Orphans ()
 import           Data.TypeFingerprint
-import           Distributed.Types (LogFunc)
 import           Text.Printf (PrintfArg(..))
 
 newtype SlaveId = SlaveId {unSlaveId :: Int}
@@ -88,7 +87,7 @@ displayResp (SRespUpdate mp) = "SRespUpdate (" <> pack (show (fmap HMS.keys mp))
 displayResp (SRespGetStates mp) = "SRespGetStates (" <> pack (show (HMS.keys mp)) <> ")"
 displayResp (SRespError err) = "SRespError " <> pack (show err)
 
-throwAndLog :: (Exception e, MonadIO m) => LogFunc -> e -> m a
-throwAndLog logFunc err = do
-  runLoggingT (logErrorN (pack (show err))) logFunc
+throwAndLog :: (Exception e, MonadIO m, MonadLogger m) => e -> m a
+throwAndLog err = do
+  logErrorN (pack (show err))
   liftIO $ throwIO err

@@ -32,6 +32,10 @@ library
                        Distributed.ConnectRequest
   other-modules:       Distributed.JobQueue.Internal
                        Data.Streaming.NetworkMessage
+                       Distributed.Stateful.Master
+                       Distributed.Stateful.Slave
+                       Distributed.Stateful.Internal
+
 --   exposed-modules:     Data.WorkQueue
 --                        Data.Streaming.NetworkMessage
 --                        Data.TypeFingerprint
@@ -46,7 +50,6 @@ library
 --                        Distributed.JobQueue.Stateful
 --                        Distributed.Redis
 -- 
---                        Distributed.Stateful.Internal
 -- 
 --   other-modules:       Data.SimpleSupply
 --                        Distributed.Stateful.Master

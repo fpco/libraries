@@ -21,8 +21,9 @@ module Distributed.Stateful.Master
     ) where
 
 import           ClassyPrelude
-import           Control.Concurrent.Async (mapConcurrently)
-import           Control.Monad.Logger (runLoggingT, logDebugNS)
+import           Control.Concurrent.Async.Lifted.Safe (mapConcurrently)
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import           Control.Monad.Logger (logDebugNS, MonadLogger)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import           Data.Foldable (foldlM)
 import qualified Data.HashMap.Strict as HMS
@@ -32,7 +33,6 @@ import qualified Data.Serialize as B
 import           Data.SimpleSupply
 import qualified Data.Streaming.NetworkMessage as NM
 import           Distributed.Stateful.Internal
-import           Distributed.Types (LogFunc)
 import           Text.Printf (printf)
 
 -- | Arguments for 'mkMasterHandle'
@@ -52,7 +52,6 @@ data MasterHandle state context input output = MasterHandle
   , mhSlaveIdSupply :: !(Supply SlaveId)
   , mhStateIdSupply :: !(Supply StateId)
   , mhArgs :: !MasterArgs
-  , mhLogFunc :: !LogFunc
   }
 
 -- TODO: consider unifying these maps? Seemed like more refactoring work
@@ -79,12 +78,11 @@ instance Exception MasterException
 -- 'MasterHandle' should be used for all interactions with this
 -- particular stateful computation (via 'update' and 'resample').
 mkMasterHandle
-  :: (MonadBaseControl IO m, MonadIO m)
+  :: (MonadBaseControl IO m, MonadIO m, MonadLogger m)
   => MasterArgs
-  -> LogFunc
   -> m (MasterHandle state context input output)
-mkMasterHandle ma@MasterArgs{..} logFunc = do
-  let throw = throwAndLog logFunc . MasterException . pack
+mkMasterHandle ma@MasterArgs{..} = do
+  let throw = throwAndLog . MasterException . pack
   case (maMinBatchSize, maMaxBatchSize) of
     (_, Just maxBatchSize) | maxBatchSize < 1 ->
       throw (printf "Distribute.master: maMaxBatchSize must be > 0 (got %d)" maxBatchSize)
@@ -107,7 +105,6 @@ mkMasterHandle ma@MasterArgs{..} logFunc = do
     , mhSlaveIdSupply = slaveIdSupply
     , mhStateIdSupply = stateIdSupply
     , mhArgs = ma
-    , mhLogFunc = logFunc
     }
 
 -- | Send an update request to all the slaves. This will cause each of
@@ -124,12 +121,12 @@ mkMasterHandle ma@MasterArgs{..} logFunc = do
 -- NOTE: if this throws an exception, then `MasterHandle` may be in an
 -- inconsistent state, and the whole computation should be aborted.
 update :: forall state context input output m.
-     (MonadIO m)
+     (MonadIO m, MonadLogger m, MonadBaseControl IO m, Async.Forall (Async.Pure m))
   => MasterHandle state context input output
   -> context
   -> HMS.HashMap StateId [input]
   -> m (HMS.HashMap StateId (HMS.HashMap StateId output))
-update MasterHandle{..} context inputs0 = liftIO $ do
+update MasterHandle{..} context inputs0 = do
   -- Give state ids to each of the inputs, which will be used to label the
   -- state resulting from invoking saUpdate with that input.
   let sortedInputs = sortBy (comparing fst) (HMS.toList inputs0)
@@ -146,14 +143,14 @@ update MasterHandle{..} context inputs0 = liftIO $ do
         -- more efficiently / concisely.
         r <- forM (HS.toList states) $ \k ->
           case HMS.lookup k inputs of
-            Nothing -> throwAndLog mhLogFunc (InputMissingException k)
+            Nothing -> throwAndLog (InputMissingException k)
             Just input -> return (k, input)
         let inputs' = inputs `HMS.difference` (HMS.fromList (map (,()) (HS.toList states)))
         return ((slaveId, r):rs, inputs')
   (slaveIdsAndInputs :: [(SlaveId, [(StateId, [(StateId, input)])])], unusedInputs)
     <- foldlM go ([], inputMap) (HMS.toList (siStates si0))
   when (not (HMS.null unusedInputs)) $
-    throwAndLog mhLogFunc (UnusedInputsException (HMS.keys unusedInputs))
+    throwAndLog (UnusedInputsException (HMS.keys unusedInputs))
   outputs <- case maMaxBatchSize mhArgs of
     Nothing -> do
       forM_ slaveIdsAndInputs $ \(slaveId, inps) -> do
@@ -164,7 +161,7 @@ update MasterHandle{..} context inputs0 = liftIO $ do
           _ -> Nothing
     Just maxBatchSize -> do
       slaveStatesVar <- newMVar (HMS.fromList (map (second (map fst)) slaveIdsAndInputs))
-      let slaveThread slaveId = updateSlaveThread mhArgs mhLogFunc context maxBatchSize slaveId slaves slaveStatesVar inputMap
+      let slaveThread slaveId = updateSlaveThread mhArgs context maxBatchSize slaveId slaves slaveStatesVar inputMap
       mapConcurrently (\slaveId -> (slaveId, ) <$> slaveThread slaveId) (HMS.keys slaves)
   atomicModifyIORef' mhSlaveInfoRef $ \si -> (, ()) $ si
     { siStates =
@@ -184,22 +181,22 @@ data SlaveThreadStatus
   deriving (Eq, Show)
 
 updateSlaveThread
-  :: forall state context input output.
-     MasterArgs
-  -> LogFunc
+  :: forall state context input output m.
+     (MonadIO m, MonadBaseControl IO m, MonadLogger m)
+  => MasterArgs
   -> context
   -> Int -- ^ Max batch size
   -> SlaveId -- ^ The slave we're operating on
   -> HMS.HashMap SlaveId (SlaveNMAppData state context input output) -- ^ Slave connections
   -> MVar (HMS.HashMap SlaveId [StateId]) -- ^ 'MVar's holding the remaining states for each slave
   -> HMS.HashMap StateId [(StateId, input)] -- Inputs to the computation
-  -> IO (HMS.HashMap StateId (HMS.HashMap StateId output))
-updateSlaveThread MasterArgs{..} logFunc context maxBatchSize thisSlaveId slaves slaveStatesVar inputMap = go
+  -> m (HMS.HashMap StateId (HMS.HashMap StateId output))
+updateSlaveThread MasterArgs{..} context maxBatchSize thisSlaveId slaves slaveStatesVar inputMap = go
   where
-    debug msg = runLoggingT (logDebugNS "Distributed.Stateful.Master.updateSlaveThread" (pack msg)) logFunc
+    debug msg = logDebugNS "Distributed.Stateful.Master.updateSlaveThread" (pack msg)
     thisSlave = slaves HMS.! thisSlaveId
 
-    go :: IO (HMS.HashMap StateId (HMS.HashMap StateId output))
+    go :: m (HMS.HashMap StateId (HMS.HashMap StateId output))
     go = do
       status <- modifyMVar slaveStatesVar $ \slaveStates0 -> do
         let thisRemainingStates = slaveStates0 HMS.! thisSlaveId
@@ -237,12 +234,12 @@ updateSlaveThread MasterArgs{..} logFunc context maxBatchSize thisSlaveId slaves
     stealStatesForSlave ::
          Int
       -> HMS.HashMap SlaveId [StateId]
-      -> IO (Maybe (SlaveId, [StateId], HMS.HashMap SlaveId [StateId]))
+      -> m (Maybe (SlaveId, [StateId], HMS.HashMap SlaveId [StateId]))
       -- ^ If we could find some slave to transfer from, return its id, and the states we
       -- requested.
     stealStatesForSlave batchSize remainingStates = do
       let thisSlaveStates = remainingStates HMS.! thisSlaveId
-      when (not (null thisSlaveStates)) $ throwAndLog logFunc $
+      when (not (null thisSlaveStates)) $ throwAndLog $
         MasterException "broadcast.stealStatesForSlave: Expecting no states in thisSlaveId"
       let goodCandidate (slaveId, slaveRemainingStates) = do
             guard (slaveId /= thisSlaveId)
@@ -268,7 +265,7 @@ updateSlaveThread MasterArgs{..} logFunc context maxBatchSize thisSlaveId slaves
     requestStatesForSlave ::
          SlaveId
       -> [StateId]
-      -> IO ()
+      -> m ()
     requestStatesForSlave otherSlaveId statesToRequest = do
       let otherSlave = slaves HMS.! otherSlaveId
       -- Request the states
@@ -306,7 +303,7 @@ addSlaveConnection MasterHandle{..} conn = do
 --
 -- If no slaves are connected, this throws an exception.
 resetStates :: forall state context input output m.
-     ( MonadBaseControl IO m, MonadIO m
+     ( MonadBaseControl IO m, MonadIO m, MonadLogger m
      , B.Serialize state, B.Serialize context, B.Serialize input, B.Serialize output
      )
   => MasterHandle state context input output
@@ -331,7 +328,7 @@ resetStates MasterHandle{..} states0 = do
        then (si, Nothing)
        else (si { siStates = slaveStateIds }, Just (slaves, slavesStates))
   case mres of
-    Nothing -> throwAndLog mhLogFunc NoSlavesConnectedException
+    Nothing -> throwAndLog NoSlavesConnectedException
     Just (slaves, slavesStates) -> do
       -- Send states
       forM_ (HMS.toList slavesStates) $ \(slaveId, states) -> do
