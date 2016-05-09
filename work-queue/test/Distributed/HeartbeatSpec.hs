@@ -78,13 +78,13 @@ redisConfig = defaultRedisConfig
 
 redisIt :: String -> (forall m. (MonadConnect m) => Redis -> m ()) -> Spec
 redisIt msg cont =
-    runIO $ runThreadFileLoggingT $ withRedis defaultRedisConfig $ \redis ->
+    runIO $ runThreadFileLoggingT $ withRedis redisConfig $ \redis ->
         finally (cont redis) (clearRedisKeys redis)
 
 -- Utilities
 -----------------------------------------------------------------------
 
-clearRedisKeys :: (MonadIO m, MonadBaseControl IO m) => Redis -> m ()
+clearRedisKeys :: (MonadConnect m) => Redis -> m ()
 clearRedisKeys redis = do
     matches <- run redis (keys "job-queue:heartbeat-test:*")
     mapM_ (run_ redis . del) (NE.nonEmpty matches)

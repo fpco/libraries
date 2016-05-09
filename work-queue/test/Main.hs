@@ -1,13 +1,9 @@
 module Main where
 
-import Distributed.WorkQueueSpec (runWorkQueue)
-import Spec (spec)
-import System.Environment
-import Test.Hspec (hspec)
+import           Test.Hspec
+
+import qualified Distributed.HeartbeatSpec
 
 main :: IO ()
-main = do
-    args <- getArgs
-    case args of
-        ("work-queue":_) -> runWorkQueue
-        _ -> hspec spec
+main = hspec $ do
+    describe "Distributed.Heartbeat" Distributed.HeartbeatSpec.spec

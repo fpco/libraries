@@ -108,6 +108,51 @@ library
   if flag(coverage)
       ghc-options:     -fhpc
 
+test-suite wq-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Main.hs
+  other-modules:       Distributed.HeartbeatSpec
+  build-depends:       base
+                     , lifted-async
+                     , QuickCheck
+                     , async
+                     , fpco-cereal
+                     , bytestring
+                     , classy-prelude
+                     , conduit-extra
+                     , containers
+                     , deepseq
+                     , directory
+                     , enclosed-exceptions
+                     , executable-path
+                     , hspec
+                     , hspec-core
+                     , hspec-expectations
+                     , hspec-expectations-lifted
+                     , lifted-base
+                     , monad-control
+                     , monad-logger
+                     , network
+                     , process
+                     , random
+                     , redis-fp
+                     , resourcet
+                     , semigroups
+                     , silently
+                     , split
+                     , stm
+                     , streaming-commons
+                     , thread-file-logger
+                     , time
+                     , transformers-base
+                     , unix
+                     , unordered-containers
+                     , vector
+                     , work-queue
+                     , uuid
+                     , cryptohash
+
 -- executable hpc-example-factorial
 --   main-is:             factorial.hs
 --   hs-source-dirs:      examples/factorial
