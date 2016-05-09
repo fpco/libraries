@@ -10,7 +10,8 @@ module FP.Redis.Command.SortedSet
     , zrem
     , zrange
     , zrangebyscore
-    , zscore )
+    , zscore
+    , zincrby )
     where
 
 import ClassyPrelude.Conduit hiding (member)
@@ -52,3 +53,14 @@ zrangebyscore key start stop withScores =
 -- See <http://redis.io/commands/zscore>
 zscore :: ZKey -> ByteString -> CommandRequest (Maybe Double)
 zscore key member = makeCommand "ZSCORE" [encodeArg key, encodeArg member]
+
+zincrby ::
+       ZKey
+    -> Double
+    -- ^ Increment
+    -> ByteString
+    -- ^ Member
+    -> CommandRequest Double
+    -- ^ New score
+zincrby key incr member =
+    makeCommand "ZINCRBY" [encodeArg key, encodeArg incr, encodeArg member]

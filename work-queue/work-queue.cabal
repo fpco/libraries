@@ -27,6 +27,7 @@ library
                        Distributed.Types
                        Distributed.JobQueue.Client
                        Distributed.JobQueue.Worker
+                       Distributed.JobQueue.MasterOrSlave
                        Distributed.Redis
                        Distributed.Heartbeat
                        Distributed.ConnectRequest

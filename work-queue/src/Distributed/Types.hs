@@ -95,6 +95,7 @@ data DistributedException
     -- ^ Exceptions thrown by "Data.Streaming.NetworkMessage"
     | InternalJobQueueException !Text
     -- ^ Used for unexpected conditions.
+    | InternalConnectRequestException !Text
     | DecodeError
         { decodeErrorLocation :: !Text
         , decodeErrorError :: !Text
@@ -165,6 +166,8 @@ instance Show DistributedException where
         "NetworkMessageException (" ++ show nme ++ ")"
     show (InternalJobQueueException txt) =
         "InternalJobQueueException " ++ show txt
+    show (InternalConnectRequestException txt) =
+        "InternalConnectRequestException " ++ show txt
     show (OtherException ty txt) =
         "OtherException " ++ show ty ++ " " ++ show txt
     show (DecodeError loc err) =

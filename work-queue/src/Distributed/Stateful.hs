@@ -84,10 +84,9 @@ statefulMaster
      , Sendable state, Sendable context, Sendable input, Sendable output
      )
     => StatefulMasterArgs
-    -> RequestId
-    -> (RequestId -> MasterHandle state context input output -> m (Either CancelOrReenqueue response))
+    -> (MasterHandle state context input output -> m (Either CancelOrReenqueue response))
     -> m (Either CancelOrReenqueue response)
-statefulMaster StatefulMasterArgs{..} rid master = do
+statefulMaster StatefulMasterArgs{..} master = do
     (ss, getPort) <- liftIO (getPortAfterBind (CN.serverSettings 0 "*"))
     mh <- mkMasterHandle smaMasterArgs
     doneVar <- newEmptyMVar
@@ -103,7 +102,7 @@ statefulMaster StatefulMasterArgs{..} rid master = do
             (Nothing, 0) -> do
               logWarnN "Timed out waiting for slaves to connect"
               return (Left Cancel)
-            _ -> master rid mh
+            _ -> master mh
     let requestSlaves = do
             port <- liftIO getPort
             let wci = WorkerConnectInfo smaHostName port

@@ -1,33 +1,37 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 
 module Distributed.ConnectRequest
     ( WorkerConnectInfo(..)
-    , requestWorker
+    , requestWorkers
     , withConnectRequests
     ) where
 
-import Control.Monad (forever)
-import Data.List.NonEmpty
-import Data.Monoid ((<>))
+import ClassyPrelude
+import Data.List.NonEmpty (NonEmpty(..))
 import Data.Serialize (encode)
 import Distributed.Redis
+import Distributed.Types (WorkerId, DistributedException(..))
 import FP.Redis
 import Data.Serialize (Serialize)
-import Data.ByteString (ByteString)
-import Data.Typeable (Typeable)
-import GHC.Generics (Generic)
+import qualified Data.List.NonEmpty as NE
 
 -- * Information for connecting to a worker
 
 data WorkerConnectInfo = WorkerConnectInfo
     { wciHost :: !ByteString
     , wciPort :: !Int
-    }
-    deriving (Eq, Show, Ord, Generic, Typeable)
-
+    } deriving (Eq, Show, Ord, Generic, Typeable)
 instance Serialize WorkerConnectInfo
+
+data WorkerConnectInfoWithWorkerId = WorkerConnectInfoWithWorkerId
+    { wciwwiWorkerId :: !WorkerId
+    , wciwwiWci :: !WorkerConnectInfo
+    } deriving (Eq, Show, Ord, Generic, Typeable)
+instance Serialize WorkerConnectInfoWithWorkerId
 
 -- | This command is used by a worker to request that another worker
 -- connects to it.
@@ -56,34 +60,61 @@ instance Serialize WorkerConnectInfo
 --
 -- These caveats are not necessitated by any aspect of the overall
 -- design, and may be resolved in the future.
-requestWorker
-    :: MonadConnect m
+requestWorkers
+    :: (MonadConnect m)
     => Redis
+    -> WorkerId
     -> WorkerConnectInfo
-    -> m ()
-requestWorker r wci = do
+    -> (m () -> m a)
+    -- ^ The action must be called when a slave successfully connects.
+    -> m a
+requestWorkers r wid wci0 cont = do
+    let wci = WorkerConnectInfoWithWorkerId wid wci0
     let encoded = encode wci
-    run_ r (lpush (workerRequestsKey r) (encoded :| []))
-    sendNotify r (workerRequestsNotify r)
+    let add = run_ r (zincrby (workerRequestsKey r) 1 encoded)
+    -- REVIEW TODO There is a slight chance that this fails, in which case
+    -- a stray WorkerConnectInfo remains in the workerRequestsKey forever.
+    -- Is this a big problem? Can we mitigate against this?
+    let remove = do
+            removed <- run r (zrem (workerRequestsKey r) (encoded :| []))
+            if  | removed == 0 ->
+                    throwIO (InternalConnectRequestException ("Got no removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests."))
+                | removed == 1 ->
+                    return ()
+                | True ->
+                    throwIO (InternalConnectRequestException ("Got multiple removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests."))
+    bracket
+        (run_ r (zadd (workerRequestsKey r) ((0, encoded) :| [])))
+        (\() -> remove)
+        (\() -> sendNotify r (workerRequestsNotify r) >> cont add)
 
-withConnectRequests :: MonadConnect m => Redis -> (WorkerConnectInfo -> m ()) -> m void
+withConnectRequests ::
+       MonadConnect m
+    => Redis
+    -> (NonEmpty WorkerConnectInfo -> m ())
+    -- A list of workers to connect to, sorted by preference. Note that
+    -- it might be the case that workers are already down. The intended
+    -- use of this list is that you keep traversing it in order until you
+    -- find a worker to connect to.
+    -> m void
 withConnectRequests redis f = do
     withSubscribedNotifyChannel (managedConnectInfo (redisConnection redis)) (Milliseconds 100) (workerRequestsNotify redis) $
         \waitNotification -> forever $ do
             waitNotification
-            mapM f =<< popWorkerRequest redis
+            reqs <- getWorkerRequests redis
+            case NE.nonEmpty reqs of
+                Nothing -> return ()
+                Just reqs' -> f reqs'
 
--- REVIEW TODO: Do not "pop" this, instead just peek it, so that we can easily requests
--- slaves "forever".
-popWorkerRequest :: MonadConnect m => Redis -> m (Maybe WorkerConnectInfo)
-popWorkerRequest r =
-    run r (rpop (workerRequestsKey r)) >>=
-    mapM (decodeOrThrow "popWorkerRequest")
+getWorkerRequests :: (MonadConnect m) => Redis -> m [WorkerConnectInfo]
+getWorkerRequests r = do
+    resps <- run r (zrangebyscore (workerRequestsKey r) (-1/0) (1/0) False)
+    map wciwwiWci <$> mapM (decodeOrThrow "getWorkerRequests") resps
 
 -- | Channel used for notifying that there's a new ConnectRequest.
 workerRequestsNotify :: Redis -> NotifyChannel
 workerRequestsNotify r = NotifyChannel $ Channel $ redisKeyPrefix r <> "connect-requests-notify"
 
 -- | Key used for storing requests for workers.
-workerRequestsKey :: Redis -> LKey
-workerRequestsKey r = LKey $ Key $ redisKeyPrefix r <> "connect-requests"
+workerRequestsKey :: Redis -> ZKey
+workerRequestsKey r = ZKey $ Key $ redisKeyPrefix r <> "connect-requests"

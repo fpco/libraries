@@ -15,15 +15,16 @@ import           Distributed.Types
 import           Distributed.Stateful
 
 statefulJQWorker
-    :: forall state context input output request response.
-     ( NFData state, NFData output
+    :: forall state context input output request response m.
+     ( MonadConnect m
+     , NFData state, NFData output
      , Sendable state, Sendable context, Sendable input, Sendable output, Sendable request, Sendable response
      )
     => JobQueueConfig
     -> StatefulMasterArgs
-    -> (context -> input -> state -> IO (state, output))
-    -> (Redis -> RequestId -> request -> MasterHandle state context input output -> IO response)
-    -> IO ()
+    -> (context -> input -> state -> m (state, output))
+    -> (Redis -> RequestId -> request -> MasterHandle state context input output -> m response)
+    -> m ()
 statefulJQWorker jqc masterConfig slaveFunc masterFunc = do
     let StatefulMasterArgs {..} = masterConfig
     runJQWorker smaLogFunc jqc

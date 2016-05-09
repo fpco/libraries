@@ -151,6 +151,12 @@ instance Result (Maybe ByteString) where
     decodeResponse _ = Nothing
     encodeResponse = BulkString
 
+instance Result Double where
+    decodeResponse (SimpleString bs) = readMay (BS8.unpack bs)
+    decodeResponse (BulkString (Just bs)) = readMay (BS8.unpack bs)
+    decodeResponse _ = Nothing
+    encodeResponse = BulkString . Just . BS8.pack . show
+
 instance Result (Maybe Double) where
     decodeResponse (SimpleString bs) = Just <$> readMay (BS8.unpack bs)
     decodeResponse (BulkString (Just bs)) = Just <$> readMay (BS8.unpack bs)
