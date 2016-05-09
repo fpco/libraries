@@ -388,8 +388,8 @@ data NMSettings = NMSettings
 -- Heartbeat set at 200ms. This value is quite low, and intended for
 -- low-latency LAN connections. You may need to set this higher, depending on
 -- your needs.
-defaultNMSettings :: IO NMSettings
-defaultNMSettings = do
+defaultNMSettings :: (MonadIO m) => m NMSettings
+defaultNMSettings = liftIO $ do
     exeHash <- $(executableHash)
     return NMSettings
         { _nmHeartbeat = 200000

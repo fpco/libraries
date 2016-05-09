@@ -3,14 +3,23 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE MultiWayIf #-}
 
-module Distributed.ConnectRequest
-    ( WorkerConnectInfo(..)
-    , requestWorkers
-    , withConnectRequests
+module Distributed.RequestSlaves
+    ( -- * Basic machinery
+      WorkerConnectInfo(..)
+    , requestSlaves
+    , withSlaveRequests
+      -- * Utilities to run a master that waits for slaves, and for slaves to connect to it
+    , connectToMaster
+    , acceptSlaveConnections
     ) where
 
 import ClassyPrelude
+import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty(..))
 import Data.Serialize (encode)
 import Distributed.Redis
@@ -18,6 +27,11 @@ import Distributed.Types (WorkerId, DistributedException(..))
 import FP.Redis
 import Data.Serialize (Serialize)
 import qualified Data.List.NonEmpty as NE
+import Data.Streaming.NetworkMessage
+import qualified Data.Conduit.Network as CN
+import Control.Monad.Trans.Control (control)
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import Data.Void (absurd)
 
 -- * Information for connecting to a worker
 
@@ -60,7 +74,7 @@ instance Serialize WorkerConnectInfoWithWorkerId
 --
 -- These caveats are not necessitated by any aspect of the overall
 -- design, and may be resolved in the future.
-requestWorkers
+requestSlaves
     :: (MonadConnect m)
     => Redis
     -> WorkerId
@@ -68,7 +82,7 @@ requestWorkers
     -> (m () -> m a)
     -- ^ The action must be called when a slave successfully connects.
     -> m a
-requestWorkers r wid wci0 cont = do
+requestSlaves r wid wci0 cont = do
     let wci = WorkerConnectInfoWithWorkerId wid wci0
     let encoded = encode wci
     let add = run_ r (zincrby (workerRequestsKey r) 1 encoded)
@@ -88,16 +102,16 @@ requestWorkers r wid wci0 cont = do
         (\() -> remove)
         (\() -> sendNotify r (workerRequestsNotify r) >> cont add)
 
-withConnectRequests ::
+withSlaveRequests ::
        MonadConnect m
     => Redis
     -> (NonEmpty WorkerConnectInfo -> m ())
-    -- A list of workers to connect to, sorted by preference. Note that
-    -- it might be the case that workers are already down. The intended
+    -- A list of masters to connect to, sorted by preference. Note that
+    -- it might be the case that masters are already down. The intended
     -- use of this list is that you keep traversing it in order until you
-    -- find a worker to connect to.
+    -- find a master to connect to.
     -> m void
-withConnectRequests redis f = do
+withSlaveRequests redis f = do
     withSubscribedNotifyChannel (managedConnectInfo (redisConnection redis)) (Milliseconds 100) (workerRequestsNotify redis) $
         \waitNotification -> forever $ do
             waitNotification
@@ -118,3 +132,53 @@ workerRequestsNotify r = NotifyChannel $ Channel $ redisKeyPrefix r <> "connect-
 -- | Key used for storing requests for workers.
 workerRequestsKey :: Redis -> ZKey
 workerRequestsKey r = ZKey $ Key $ redisKeyPrefix r <> "connect-requests"
+
+connectToMaster :: forall m slaveSends masterSends a.
+       (MonadConnect m, Sendable slaveSends, Sendable masterSends)
+    => NMSettings -> NonEmpty WorkerConnectInfo -> NMApp slaveSends masterSends m a
+    -> m (Maybe a)
+connectToMaster nmSettings wcis0 cont = go (toList wcis0) []
+  where
+    go :: [WorkerConnectInfo] -> [SomeException] -> m (Maybe a)
+    go wcis_ excs = case wcis_ of
+        [] -> do
+            $logWarn ("Could not connect to any of the masters (" ++ tshow wcis0 ++ "), because of exceptions " ++ tshow excs ++ ". This is probably OK, will give up as slave.")
+            return Nothing
+        wci@(WorkerConnectInfo host port) : wcis -> do
+            mbExc :: Either SomeException (Either SomeException a) <-
+                try $ control $ \invert -> CN.runTCPClient (CN.clientSettings port host) $
+                    runNMApp nmSettings $ \nm -> invert (try (cont nm) :: m (Either SomeException a))
+            case mbExc of
+                Right (Left err) -> throwIO err
+                Right (Right x) -> return (Just x)
+                Left err -> if acceptableException err
+                    then do
+                        $logInfo ("Could not connect to master " ++ tshow wci ++ ", because of acceptable exception " ++ tshow err ++ ", continuing")
+                        go wcis (err : excs)
+                    else throwIO err
+
+    acceptableException :: SomeException -> Bool
+    acceptableException err
+        | Just (_ :: IOError) <- fromException err = True
+        | Just (_ :: NetworkMessageException) <- fromException err = True
+        | True = False
+
+acceptSlaveConnections ::
+       (MonadConnect m, Sendable masterSends, Sendable slaveSends)
+    => NMSettings
+    -> ByteString -- ^ Hostname that will be used in the 'WorkerConnectInfo'
+    -> NMApp masterSends slaveSends m () -- ^ What to do when a slave gets added
+    -> (WorkerConnectInfo -> m a)
+    -- ^ Continuation with the connect info the master is listening on
+    -> m a
+acceptSlaveConnections nmSettings host contSlaveConnect cont = do
+    (ss, getPort) <- liftIO (getPortAfterBind (CN.serverSettings 0 "*"))
+    doneVar <- newEmptyMVar
+    let acceptConns =
+            CN.runGeneralTCPServer ss $ runNMApp nmSettings $ \nm -> do
+                contSlaveConnect nm
+                readMVar doneVar
+    let runMaster = do
+            port <- liftIO getPort
+            cont (WorkerConnectInfo host port)
+    fmap (either absurd id) (Async.race acceptConns (finally runMaster (putMVar doneVar ())))

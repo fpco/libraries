@@ -22,7 +22,7 @@ import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import qualified Data.Streaming.NetworkMessage as NM
 import           Distributed.Stateful.Internal
-import           Distributed.ConnectRequest (WorkerConnectInfo(..))
+import           Distributed.RequestSlaves (WorkerConnectInfo(..))
 import           Control.Monad.Trans.Control (MonadBaseControl, control)
 
 -- | Arguments for 'runSlave'.

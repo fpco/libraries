@@ -24,6 +24,8 @@ main = hspec spec
 
 spec :: Spec
 spec = do
+    return ()
+    {-
     -- Ideally, this could be done in a cleaner fashion.  See #34
     it "can cancel subscriptions" $ do
         let chan = "test-chan-1"
@@ -58,16 +60,6 @@ spec = do
         case eres of
             Right (Left (fromException -> Just RedisTestException)) -> return ()
             _ -> fail $ "Expected RedisTestException. Instead got " ++ show eres
-    -- http://code.google.com/p/redis/issues/detail?id=199
-    skip $ it "should block when there is no data available" $ do
-        res <- timeout (1000 * 1000) $ withRedis $ \redis ->
-                   runCommand redis $ brpop ("foobar_list" :| []) (Seconds 0)
-        res `shouldBe` Nothing
-    it "should return data when it's available" $ do
-        withRedis $ \redis -> runCommand_ redis $ lpush "foobar_list" ("my data" :| [])
-        res <- timeout (1000 * 1000) $ withRedis $ \redis ->
-            runCommand redis $ brpop ("foobar_list" :| []) (Seconds 0)
-        res `shouldBe` (Just (Just ("foobar_list", "my data")))
     it "can interrupt subscriptions" $ do
         let chan = "test-chan-3"
             sub = subscribe (chan :| [])
@@ -128,10 +120,9 @@ spec = do
         case eres of
             Left RedisTestException -> return ()
             _ -> fail $ "Expected RedisTestException"
+    -}
 
-skip :: Monad m => m () -> m ()
-skip _ = return ()
-
+{-
 asyncSubscribe :: Channel
                -> (SubscriptionConnection -> Channel -> ByteString -> LoggingT IO ())
                -> IO (TVar Bool, Async (Either SomeException ()))
@@ -145,6 +136,13 @@ asyncSubscribe chan f = do
                     Unsubscribe {} -> return ()
                     Message k x -> f conn k x
     return (ready, thread)
+-}
+
+redisIt :: String -> IO () -> Spec
+redisIt name f = it name (clearRedis >> f)
+
+clearRedis :: IO ()
+clearRedis = withRedis (\conn -> runCommand conn flushall)
 
 withRedis :: (Connection -> LoggingT IO a) -> IO a
 withRedis = runStdoutLoggingT . withConnection localhost
@@ -152,8 +150,10 @@ withRedis = runStdoutLoggingT . withConnection localhost
 localhost :: ConnectInfo
 localhost = connectInfo "localhost"
 
+{-
 shouldThrowLifted :: (MonadBaseControl IO m, Exception e) => m () -> (e -> Bool) -> m ()
 shouldThrowLifted f s = liftBaseWith $ \restore -> restore f `shouldThrow` s
+-}
 
 data RedisTestException = RedisTestException
     deriving (Show, Typeable)

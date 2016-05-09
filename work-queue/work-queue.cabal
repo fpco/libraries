@@ -30,12 +30,13 @@ library
                        Distributed.JobQueue.MasterOrSlave
                        Distributed.Redis
                        Distributed.Heartbeat
-                       Distributed.ConnectRequest
-  other-modules:       Distributed.JobQueue.Internal
+                       Distributed.RequestSlaves
                        Data.Streaming.NetworkMessage
+  other-modules:       Distributed.JobQueue.Internal
                        Distributed.Stateful.Master
                        Distributed.Stateful.Slave
                        Distributed.Stateful.Internal
+                       Data.SimpleSupply
 
 --   exposed-modules:     Data.WorkQueue
 --                        Data.Streaming.NetworkMessage
@@ -112,8 +113,11 @@ test-suite wq-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
   main-is:             Main.hs
-  other-modules:       Distributed.HeartbeatSpec
+  other-modules:       TestUtils
+                     , Distributed.HeartbeatSpec
+                     , Distributed.RequestSlavesSpec
   build-depends:       base
+                     , work-queue
                      , lifted-async
                      , QuickCheck
                      , async

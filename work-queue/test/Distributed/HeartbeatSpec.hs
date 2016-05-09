@@ -10,7 +10,7 @@ import           Test.Hspec (Spec, SpecWith, it, runIO, hspec)
 import           FP.Redis (Seconds(..))
 import           Data.Time.Clock.POSIX
 import qualified Data.HashMap.Strict as HMS
-import           Control.Concurrent.Async.Lifted (concurrently)
+import           Control.Concurrent.Async.Lifted.Safe (concurrently)
 import           FP.Redis (MonadConnect, del, keys)
 import           FP.ThreadFileLogger
 import qualified Data.List.NonEmpty as NE
@@ -20,6 +20,7 @@ import qualified Control.Concurrent.STM as STM
 import           Distributed.Heartbeat
 import           Distributed.Types
 import           Distributed.Redis
+import           TestUtils
 
 -- Bookkeeping
 -----------------------------------------------------------------------
@@ -72,22 +73,8 @@ checkHeartbeats_ = checkHeartbeats heartbeatConfig
 withCheckHeartbeats_ :: (MonadConnect m) => Redis -> ([WorkerId] -> m () -> m ()) -> m a -> m a
 withCheckHeartbeats_ = withCheckHeartbeats heartbeatConfig
 
-redisConfig :: RedisConfig
-redisConfig = defaultRedisConfig
-    { rcKeyPrefix = "job-queue:heartbeat-test:" }
-
-redisIt :: String -> (forall m. (MonadConnect m) => Redis -> m ()) -> Spec
-redisIt msg cont =
-    runIO $ runThreadFileLoggingT $ withRedis redisConfig $ \redis ->
-        finally (cont redis) (clearRedisKeys redis)
-
 -- Utilities
 -----------------------------------------------------------------------
-
-clearRedisKeys :: (MonadConnect m) => Redis -> m ()
-clearRedisKeys redis = do
-    matches <- run redis (keys "job-queue:heartbeat-test:*")
-    mapM_ (run_ redis . del) (NE.nonEmpty matches)
 
 expectWorkers :: (Monad m) => [WorkerId] -> [WorkerId] -> m ()
 expectWorkers expected got = do
