@@ -103,7 +103,7 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
         case mbRespOrErr of
             Nothing -> do
                 $logInfo (gotX "reenqueue")
-                -- REVIEW TODO I don't understand why this would re-enqueue it.
+                reenqueueRequest r wid rid
                 addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
             Just res -> do
                 case res of
@@ -154,6 +154,18 @@ checkRequest _proxy rid req = do
             , schemaMismatchRequestId = rid
             }
     decodeOrErr "jobWorker" jrBody
+
+reenqueueRequest ::
+       (MonadConnect m)
+    => Redis -> WorkerId -> RequestId -> m ()
+reenqueueRequest r (WorkerId wid) (RequestId rid) = do
+    mbRid <- run r (rpoplpush (activeKey r (WorkerId wid)) (requestsKey r))
+    case mbRid of
+        Nothing -> do
+            $logWarn ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got nothing. This means that the worker has been detected as dead by a client.")
+        Just rid' ->
+            unless (rid == rid') $
+                throwM (InternalJobQueueException ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got " ++ tshow rid))
 
 -- | Send a response for a particular request. Once the response is
 -- successfully sent, this also removes the request data, as it's no
