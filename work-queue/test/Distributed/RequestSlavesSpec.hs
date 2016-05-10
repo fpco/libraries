@@ -73,25 +73,25 @@ masterLog (MasterId mid) msg = "(M" ++ tshow mid ++ ") " ++ msg
 slaveLog :: SlaveId -> Text -> Text
 slaveLog (SlaveId mid) msg = "(S" ++ tshow mid ++ ") " ++ msg
 
-readSerialize :: (C.Serialize a, MonadIO m) => CN.AppData -> m a
-readSerialize ad = liftIO (go (C.runGetPartial C.get ""))
+readSerialize :: (C.Serialize a, MonadIO m) => String -> CN.AppData -> m a
+readSerialize s ad = liftIO (go (C.runGetPartial C.get ""))
   where
-    go (C.Fail str _) = fail ("Couldn't decode: " ++ str)
+    go (C.Fail str _) = fail ("(" ++ s ++ ") Couldn't decode: " ++ str)
     go (C.Partial f) = do
         bs <- CN.appRead ad
         if null bs
-            then fail "Couldn't decode: no data"
+            then fail ("(" ++ s ++ ") Couldn't decode: no data")
             else go (f bs)
     go (C.Done res bs) = do
         unless (null bs) $
-            fail "Couldn't decode: leftover"
+            fail ("(" ++ s ++ ") Couldn't decode: leftover")
         return res
 
 readMasterSends :: (MonadIO m) => CN.AppData -> m MasterSends
-readMasterSends = readSerialize
+readMasterSends = readSerialize "readMasterSends"
 
 readSlaveSends :: (MonadIO m) => CN.AppData -> m SlaveSends
-readSlaveSends = readSerialize
+readSlaveSends = readSerialize "readSlaveSends"
 
 writeSerialize :: (C.Serialize a, MonadIO m) => CN.AppData -> a -> m ()
 writeSerialize ad x = liftIO (CN.appWrite ad (C.encode x))
@@ -187,7 +187,17 @@ spec = do
         fmap (either (absurd . NE.head) id) $ Async.race
             (Async.mapConcurrently (\x -> runEchoSlave r (SlaveId x) 0) (NE.fromList [1..numSlaves]))
             (mapConcurrently_ (\mid -> runMasterCollectResults r (MasterId mid) numSlaves) [1..numMasters])
-
+    redisIt "Echo with many masters and many slaves (long)" $ \r -> do
+        let numSlaves :: Int = 10
+        let numMasters :: Int = 5
+        let killRandomly_ = killRandomly KillRandomly
+                { krMaxPause = 100
+                , krRetries = 20
+                , krMaxTimeout = 1000
+                }
+        fmap (either (absurd . NE.head) id) $ Async.race
+            (Async.mapConcurrently (\x -> killRandomly_ (runEchoSlave r (SlaveId x) 500)) (NE.fromList [1..numSlaves]))
+            (mapConcurrently_ (\mid -> killRandomly_ (runMasterCollectResults r (MasterId mid) numSlaves)) [1..numMasters])
 
 
 

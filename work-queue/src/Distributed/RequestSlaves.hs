@@ -122,7 +122,11 @@ withSlaveRequests redis f = do
                     return ()
                 Just reqs' -> do
                     $logDebug ("Got " ++ tshow reqs' ++ " masters to try to connect to")
-                    f reqs'
+                    mbRes :: Either SomeException () <- try (f reqs')
+                    case mbRes of
+                        Left err -> do
+                            $logWarn ("withSlaveRequests: got error " ++ tshow err ++ ", continuing")
+                        Right () -> return ()
 
 getWorkerRequests :: (MonadConnect m) => Redis -> m [WorkerConnectInfo]
 getWorkerRequests r = do
@@ -169,7 +173,7 @@ connectToMaster nmSettings wcis0 cont0 = go (toList wcis0) []
     acceptableException :: SomeException -> Bool
     acceptableException err
         | Just (_ :: IOError) <- fromException err = True
-        | Just (_ :: NetworkMessageException) <- fromException err = True
+        -- | Just (_ :: NetworkMessageException) <- fromException err = True
         | True = False
 
 acceptSlaveConnections ::

@@ -109,6 +109,7 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
                 inactive : inactives0 -> do
                     let inactives = inactive :| inactives0
                     $logInfo ("Got inactive workers: " ++ tshow inactives)
+                    -- TODO consider catching exceptins here
                     handleFailures
                         (map WorkerId inactives)
                         (do $logDebug ("Cleaning up inactive workers " ++ tshow inactives)
