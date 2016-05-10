@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 module TestUtils (redisIt) where
 
 import           ClassyPrelude hiding (keys)
@@ -11,6 +12,8 @@ import           Test.Hspec (Spec, SpecWith, it, runIO, hspec)
 import           FP.Redis
 import           FP.ThreadFileLogger
 import qualified Data.List.NonEmpty as NE
+import           Control.Monad.Logger (runStdoutLoggingT, filterLogger, logInfo)
+import qualified Data.Text as T
 
 import           Distributed.Redis
 
@@ -24,6 +27,9 @@ clearRedisKeys redis = do
     mapM_ (run_ redis . del) (NE.nonEmpty matches)
 
 redisIt :: String -> (forall m. (MonadConnect m) => Redis -> m ()) -> Spec
-redisIt msg cont =
-    runIO $ runThreadFileLoggingT $ withRedis redisConfig $ \redis ->
-        finally (cont redis) (clearRedisKeys redis)
+redisIt msg cont = it msg x
+  where
+    x :: IO ()
+    x = runStdoutLoggingT $ filterLogger (\_ _ -> True) $ do
+        $logInfo (T.pack msg)
+        withRedis redisConfig (\redis -> finally (cont redis) (clearRedisKeys redis))

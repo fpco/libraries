@@ -117,8 +117,12 @@ withSlaveRequests redis f = do
             waitNotification
             reqs <- getWorkerRequests redis
             case NE.nonEmpty reqs of
-                Nothing -> return ()
-                Just reqs' -> f reqs'
+                Nothing -> do
+                    $logDebug ("Tried to got masters to connect to but got none")
+                    return ()
+                Just reqs' -> do
+                    $logDebug ("Got " ++ tshow reqs' ++ " masters to try to connect to")
+                    f reqs'
 
 getWorkerRequests :: (MonadConnect m) => Redis -> m [WorkerConnectInfo]
 getWorkerRequests r = do
@@ -134,11 +138,15 @@ workerRequestsKey :: Redis -> ZKey
 workerRequestsKey r = ZKey $ Key $ redisKeyPrefix r <> "connect-requests"
 
 connectToMaster :: forall m slaveSends masterSends a.
-       (MonadConnect m, Sendable slaveSends, Sendable masterSends)
+       (MonadConnect m)
     => NMSettings -> NonEmpty WorkerConnectInfo -> NMApp slaveSends masterSends m a
     -> m (Maybe a)
-connectToMaster nmSettings wcis0 cont = go (toList wcis0) []
+connectToMaster nmSettings wcis0 cont0 = go (toList wcis0) []
   where
+    cont wci nm = do
+        $logDebug ("Managed to connect to master " ++ tshow wci)
+        cont0 nm
+
     go :: [WorkerConnectInfo] -> [SomeException] -> m (Maybe a)
     go wcis_ excs = case wcis_ of
         [] -> do
@@ -147,7 +155,7 @@ connectToMaster nmSettings wcis0 cont = go (toList wcis0) []
         wci@(WorkerConnectInfo host port) : wcis -> do
             mbExc :: Either SomeException (Either SomeException a) <-
                 try $ control $ \invert -> CN.runTCPClient (CN.clientSettings port host) $
-                    runNMApp nmSettings $ \nm -> invert (try (cont nm) :: m (Either SomeException a))
+                    runNMApp nmSettings $ \nm -> invert (try (cont wci nm) :: m (Either SomeException a))
             case mbExc of
                 Right (Left err) -> throwIO err
                 Right (Right x) -> return (Just x)
@@ -180,5 +188,6 @@ acceptSlaveConnections nmSettings host contSlaveConnect cont = do
                 readMVar doneVar
     let runMaster = do
             port <- liftIO getPort
+            $logDebug ("Master starting on " ++ tshow (host, port))
             cont (WorkerConnectInfo host port)
     fmap (either absurd id) (Async.race acceptConns (finally runMaster (putMVar doneVar ())))

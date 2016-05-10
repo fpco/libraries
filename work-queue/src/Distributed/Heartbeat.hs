@@ -74,7 +74,7 @@ activeOrUnhandledWorkers r =
 checkHeartbeats
     :: (MonadConnect m)
     => HeartbeatConfig -> Redis
-    -> ([WorkerId] -> m () -> m ())
+    -> (NonEmpty WorkerId -> m () -> m ())
     -- ^ The second function is a "cleanup" function. It should be called by the
     -- continuation when the worker failures have been handled. If it's not called,
     -- the 'WorkerId's will show up again.
@@ -103,14 +103,18 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
             -- function.
             $logDebug ("Enough time has passed, checking if there are any inactive workers.")
             let ninf = -1 / 0
-            inactives0 <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac lastTime) False
-            case inactives0 of
+            inactives00 <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac lastTime) False
+            case inactives00 of
                 [] -> return ()
-                inactive : inactives -> do
-                    $logInfo ("Got inactive workers: " ++ tshow (inactive : inactives))
+                inactive : inactives0 -> do
+                    let inactives = inactive :| inactives0
+                    $logInfo ("Got inactive workers: " ++ tshow inactives)
                     handleFailures
-                        (map WorkerId (inactive : inactives))
-                        (void (run r (zrem (heartbeatActiveKey r) (inactive :| inactives))))
+                        (map WorkerId inactives)
+                        (do $logDebug ("Cleaning up inactive workers " ++ tshow inactives)
+                            removed <- run r (zrem (heartbeatActiveKey r) inactives)
+                            unless (removed == fromIntegral (length inactives)) $
+                                $logDebug ("Expecting to have cleaned up " ++ tshow (length inactives) ++ " but got " ++ tshow removed ++ ", some other client probably took care of it already."))
             $logDebug "Setting timestamp for last heartbeat check"
             setTimeAndWait
         Nothing -> setTimeAndWait
@@ -118,7 +122,7 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
 withCheckHeartbeats
     :: (MonadConnect m)
     => HeartbeatConfig -> Redis
-    -> ([WorkerId] -> m () -> m ())
+    -> (NonEmpty WorkerId -> m () -> m ())
     -> m a
     -> m a
 withCheckHeartbeats conf redis handle' cont =
