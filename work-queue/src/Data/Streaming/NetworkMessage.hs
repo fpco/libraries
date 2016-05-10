@@ -42,7 +42,7 @@ module Data.Streaming.NetworkMessage
 
 import           ClassyPrelude
 import           Control.Concurrent (threadDelay, myThreadId, throwTo)
-import qualified Control.Concurrent.Async as A
+import qualified Control.Concurrent.Async.Lifted.Safe as A
 import           Control.Concurrent.STM (retry)
 import           Control.Exception (AsyncException(ThreadKilled), BlockedIndefinitelyOnMVar(..))
 import           Control.Monad.Base (liftBase)
@@ -57,6 +57,7 @@ import           Data.Void (absurd)
 import           GHC.IO.Exception (IOException(ioe_type), IOErrorType(ResourceVanished))
 import           Network.Socket (socketPort)
 import           System.Executable.Hash (executableHash)
+import           FP.Redis (MonadConnect)
 
 -- | A network message application.
 --
@@ -142,9 +143,14 @@ mkHandshake _ hb eh = Handshake
     , hsExeHash = eh
     }
 
+data Duplex youSend = Duplex
+    { duplexOutgoing :: !(TChan ByteString)
+    , duplexIncoming :: !(TChan youSend)
+    }
+
 -- | Convert an 'NMApp' into a "Data.Streaming.Network" application.
 runNMApp :: forall iSend youSend m a.
-       (MonadBaseControl IO m, Sendable iSend, Sendable youSend)
+       (MonadConnect m, Sendable iSend, Sendable youSend)
     => NMSettings
     -> NMApp iSend youSend m a
     -> AppData
@@ -162,91 +168,76 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                     throwIO $ NMMismatchedHandshakes myHS yourHS
                 return (yourHS, leftover)
             Nothing -> throwIO NMConnectionDropped
-    control $ \runInBase -> do
-        -- TODO use a bounded chan perhaps? (Make the queue size
-        -- configuration in NMSettings.) Since any data sent will
-        -- count as a ping, this would not interfere with the
-        -- heartbeat.
-        outgoing <- newTChanIO :: IO (TChan ByteString)
-        incoming <- newTChanIO :: IO (TChan (Either NetworkMessageException youSend))
+    -- TODO use a bounded chan perhaps? (Make the queue size
+    -- configuration in NMSettings.) Since any data sent will
+    -- count as a ping, this would not interfere with the
+    -- heartbeat.
+    outgoing :: TChan ByteString <- liftIO newTChanIO
+    incoming :: TChan (Either NetworkMessageException youSend) <- liftIO newTChanIO
 
-        -- Our heartbeat logic involves two threads: the recvWorker thread
-        -- increments lastPing every time it reads a chunk of data, and the
-        -- checkHeartbeat thread calls threadDelay and then checks that
-        -- lastPing has been incremented over this run. If it hasn't been
-        -- incremented, one of the following has occurred:
-        --
-        -- - The connection has been closed, as indicated by active. If active
-        -- if False, then the heartbeat thread knows it should have failed and
-        -- simply shuts down.
-        --
-        -- - Due to how GHC green threads work, it's possible that the receive
-        -- thread has been asleep this entire time. Therefore, we check the
-        -- blocked IORef. If it's True, it means that the receive thread is
-        -- currently blocking on a call to recv, which means that we have not
-        -- received any data from the client. In this case, throw a
-        -- HeartbeatFailure exception.
-        --
-        -- - If blocked is False, then we know that the receive thread is
-        -- simply asleep, and have no data about whether the heartbeat has
-        -- actually failed. In this case, threadDelay and check again.
-        lastPing <- newIORef (0 :: Int)
-        active <- newIORef True
-        blocked <- newIORef False
+    -- Our heartbeat logic involves two threads: the recvWorker thread
+    -- increments lastPing every time it reads a chunk of data, and the
+    -- checkHeartbeat thread calls threadDelay and then checks that
+    -- lastPing has been incremented over this run. If it hasn't been
+    -- incremented, one of the following has occurred:
+    --
+    -- - The connection has been closed, as indicated by active. If active
+    -- if False, then the heartbeat thread knows it should have failed and
+    -- simply shuts down.
+    --
+    -- - Due to how GHC green threads work, it's possible that the receive
+    -- thread has been asleep this entire time. Therefore, we check the
+    -- blocked IORef. If it's True, it means that the receive thread is
+    -- currently blocking on a call to recv, which means that we have not
+    -- received any data from the client. In this case, throw a
+    -- HeartbeatFailure exception.
+    --
+    -- - If blocked is False, then we know that the receive thread is
+    -- simply asleep, and have no data about whether the heartbeat has
+    -- actually failed. In this case, threadDelay and check again.
+    lastPing <- newIORef (0 :: Int)
+    active <- newIORef True
+    blocked <- newIORef False
 
-        let nad = NMAppData
-                { _nmAppData = ad
-                , _nmWrite = sendSTM . Payload
-                , _nmRead = \select -> do
-                    resOrErr <- mailboxReadTChan incoming $ \resOrErr -> case resOrErr of
-                        Left err -> Just (Left err)
-                        Right res -> Right <$> select res
-                    case resOrErr of
-                        Nothing -> return Nothing
-                        Just (Right res) -> return (Just (Right res))
-                        Just (Left err) -> do
-                            -- Put it back on the channel so that
-                            -- subsequent requests get the same
-                            -- message.
-                            writeTChan incoming (Left err)
-                            return (Just (Left err))
-                }
-            sendSTM :: Message iSend -> STM ()
-            sendSTM x = writeTChan outgoing $! B.encode x
-            send :: Message iSend -> IO ()
-            send = atomically . sendSTM
-        -- Ping / heartbeat are managed by withAsync, so that they're
-        -- interrupted once the other threads have exited.
-        A.withAsync (sendPing send yourHS `A.race` checkHeartbeat lastPing active blocked) $ \pingThread -> do
-            linkNoThreadKilled pingThread $
-                A.runConcurrently $
-                    A.Concurrently (recvWorker incoming lastPing active blocked leftover) *>
-                    A.Concurrently (sendWorker outgoing incoming active) *>
-                    A.Concurrently (runInBase (nmApp nad) `finally`
-                                    send Complete `finally`
-                                    finished incoming active NMConnectionClosed)
+    let nad = NMAppData
+            { _nmAppData = ad
+            , _nmWrite = sendSTM . Payload
+            , _nmRead = \select -> do
+                resOrErr <- mailboxReadTChan incoming $ \resOrErr -> case resOrErr of
+                    Left err -> Just (Left err)
+                    Right res -> Right <$> select res
+                case resOrErr of
+                    Nothing -> return Nothing
+                    Just (Right res) -> return (Just (Right res))
+                    Just (Left err) -> do
+                        -- Put it back on the channel so that
+                        -- subsequent requests get the same
+                        -- message.
+                        writeTChan incoming (Left err)
+                        return (Just (Left err))
+            }
+        sendSTM :: Message iSend -> STM ()
+        sendSTM x = writeTChan outgoing $! B.encode x
+        send :: Message iSend -> m ()
+        send = atomically . sendSTM
+    fmap (either (either absurd absurd) id) $ A.race
+        (A.race (sendPing send yourHS) (checkHeartbeat lastPing active blocked))
+        (A.runConcurrently $
+            A.Concurrently (recvWorker incoming lastPing active blocked leftover) *>
+            A.Concurrently (sendWorker outgoing incoming active) *>
+            A.Concurrently (nmApp nad `finally`
+                            send Complete `finally`
+                            finished incoming active NMConnectionClosed))
   where
-    -- If an exception is thrown in the heartbeat thread, then it
-    -- should be rethrown to the main thread.  If it's a ThreadKilled
-    -- exception, then it isn't rethrown, because we expect it to get
-    -- killed when we exit the 'withAsync'.
-    linkNoThreadKilled pingThread inner = do
-        tid <- myThreadId
-        flip A.withAsync (\_ -> inner) $ do
-            eres <- A.waitCatch pingThread
-            case eres of
-                Right (Left x) -> absurd x
-                Right (Right x) -> absurd x
-                Left (fromException -> Just ThreadKilled) -> return ()
-                Left err -> throwTo tid err
-
+    sendPing :: (Message iSend -> m ()) -> Handshake -> m void
     sendPing send yourHS = forever $ do
         () <- send Ping
-        threadDelay $ hsHeartbeat yourHS
+        liftIO (threadDelay $ hsHeartbeat yourHS)
 
+    checkHeartbeat :: IORef Int -> IORef Bool -> IORef Bool -> m void
     checkHeartbeat lastPing active blocked = forever $ do
         start <- readIORef lastPing
-        threadDelay $ heartbeat * 2
+        liftIO $ threadDelay $ heartbeat * 2
         lastPing' <- readIORef lastPing
         when (start == lastPing')
             $ whenM (readIORef active)
@@ -258,57 +249,76 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
     -- blocked are only read by the 'checkHeartbeat' thread.  That
     -- checking is done periodically at a user specified interval, and
     -- so reordering of concurrent reads / writes is acceptable.
-    recvWorker incoming lastPing active blocked = fix $ \loop leftover -> do
-        mgot <- appGet leftover (do
-            writeIORef blocked True
-            bs <- appRead ad
-            writeIORef blocked False
-            modifyIORef' lastPing (+ 1)
-            return bs) `catch` \ex ->
-                if isResourceVanished ex
-                    then return Nothing
-                    else throwIO ex
-        case mgot of
-            Just (Ping, leftover') ->
-                loop leftover'
-            Just (Payload p, leftover') -> do
-                atomically (writeTChan incoming (Right p))
-                loop leftover'
-            -- We're done when the "Complete" message is received
-            -- or the connection is closed
-            Just (Complete, _) -> finished incoming active NMConnectionClosed
-            Nothing -> finished incoming active NMConnectionDropped
+    recvWorker ::
+           TChan (Either NetworkMessageException youSend)
+        -> IORef Int
+        -> IORef Bool
+        -> IORef Bool
+        -> ByteString
+        -> m ()
+    recvWorker incoming lastPing active blocked = loop
+      where
+        loop leftover = do
+            mgot <- appGet leftover (do
+                writeIORef blocked True
+                bs <- appRead ad
+                writeIORef blocked False
+                modifyIORef' lastPing (+ 1)
+                return bs) `catch` \ex ->
+                    if isResourceVanished ex
+                        then return Nothing
+                        else throwIO ex
+            case mgot of
+                Just (Ping, leftover') ->
+                    loop leftover'
+                Just (Payload p, leftover') -> do
+                    atomically (writeTChan incoming (Right p))
+                    loop leftover'
+                -- We're done when the "Complete" message is received
+                -- or the connection is closed
+                Just (Complete, _) -> finished incoming active NMConnectionClosed
+                Nothing -> finished incoming active NMConnectionDropped
 
     isResourceVanished ex = ioe_type ex == ResourceVanished
 
+    finished ::
+           TChan (Either NetworkMessageException youSend)
+        -> IORef Bool -> NetworkMessageException -> m ()
     finished incoming active ex = do
         atomicWriteIORef active False
         atomically (writeTChan incoming (Left ex))
 
-    sendWorker outgoing incoming active = fix $ \loop -> do
-        bs <- atomically (readTChan outgoing)
-        -- NOTE: even though bs could be quite large, appRead will
-        -- receive small chunks of it.  This means that 'appRead'
-        -- won't block for very long, and the heartbeat code will
-        -- function properly.
-        if bs == B.encode (Complete :: Message iSend)
-            then do
-                appWrite ad bs `catch` \ex ->
-                    -- Ignore resource vanished if the connection is done.
-                    if isResourceVanished ex
-                        then return ()
-                        else throwIO ex
-            else do
-                appWrite ad bs `catch` \ex ->
-                    -- ResourceVanished indicates that the connection
-                    -- got dropped, so throw that nicer exception
-                    -- instead.
-                    if isResourceVanished ex
-                        then do
-                            finished incoming active NMConnectionDropped
-                            throwIO NMConnectionDropped
-                        else throwIO ex
-                loop
+    sendWorker ::
+           TChan ByteString
+        -> TChan (Either NetworkMessageException youSend)
+        -> IORef Bool
+        -> m ()
+    sendWorker outgoing incoming active = loop
+      where
+        loop = do
+            bs <- atomically (readTChan outgoing)
+            -- NOTE: even though bs could be quite large, appRead will
+            -- receive small chunks of it.  This means that 'appRead'
+            -- won't block for very long, and the heartbeat code will
+            -- function properly.
+            if bs == B.encode (Complete :: Message iSend)
+                then do
+                    liftIO (appWrite ad bs) `catch` \ex ->
+                        -- Ignore resource vanished if the connection is done.
+                        if isResourceVanished ex
+                            then return ()
+                            else throwIO ex
+                else do
+                    liftIO (appWrite ad bs) `catch` \ex ->
+                        -- ResourceVanished indicates that the connection
+                        -- got dropped, so throw that nicer exception
+                        -- instead.
+                        if isResourceVanished ex
+                            then do
+                                finished incoming active NMConnectionDropped
+                                throwIO NMConnectionDropped
+                            else throwIO ex
+                    loop
 
 mailboxReadTChan :: forall a b. TChan a -> (a -> Maybe b) -> STM (Maybe b)
 mailboxReadTChan chan select = go []
@@ -328,16 +338,16 @@ mailboxReadTChan chan select = go []
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and
 -- 'Nothing' is returned.
-appGet :: B.Serialize a
+appGet :: (MonadIO m, MonadBaseControl IO m, B.Serialize a)
        => ByteString -- ^ leftover bytes from previous parse.
        -> IO ByteString -- ^ function to get more bytes
-       -> IO (Maybe (a, ByteString)) -- ^ result and leftovers
+       -> m (Maybe (a, ByteString)) -- ^ result and leftovers
 appGet bs0 readChunk =
     loop (B.runGetPartial B.get bs0)
   where
     loop (B.Fail str _) = throwIO (NMDecodeFailure str)
     loop (B.Partial f) = do
-        bs <- readChunk
+        bs <- liftIO readChunk
         if null bs
             then return Nothing
             else loop (f bs)
