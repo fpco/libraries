@@ -16,6 +16,7 @@ import           Test.Hspec
 import           Data.TypeFingerprint
 import           FP.Redis
 import           Data.Serialize (Serialize)
+import qualified Data.Serialize as C
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
@@ -26,6 +27,8 @@ import qualified Control.Concurrent.STM as STM
 import qualified Data.List.NonEmpty as NE
 import           Control.Concurrent (threadDelay)
 import           Control.Monad.Logger
+import qualified Data.Conduit.Network as CN
+import qualified Data.Streaming.Network as CN
 
 import           Distributed.Redis
 import           Data.Streaming.NetworkMessage
@@ -70,9 +73,38 @@ masterLog (MasterId mid) msg = "(M" ++ tshow mid ++ ") " ++ msg
 slaveLog :: SlaveId -> Text -> Text
 slaveLog (SlaveId mid) msg = "(S" ++ tshow mid ++ ") " ++ msg
 
+readSerialize :: (C.Serialize a, MonadIO m) => CN.AppData -> m a
+readSerialize ad = liftIO (go (C.runGetPartial C.get ""))
+  where
+    go (C.Fail str _) = fail ("Couldn't decode: " ++ str)
+    go (C.Partial f) = do
+        bs <- CN.appRead ad
+        if null bs
+            then fail "Couldn't decode: no data"
+            else go (f bs)
+    go (C.Done res bs) = do
+        unless (null bs) $
+            fail "Couldn't decode: leftover"
+        return res
+
+readMasterSends :: (MonadIO m) => CN.AppData -> m MasterSends
+readMasterSends = readSerialize
+
+readSlaveSends :: (MonadIO m) => CN.AppData -> m SlaveSends
+readSlaveSends = readSerialize
+
+writeSerialize :: (C.Serialize a, MonadIO m) => CN.AppData -> a -> m ()
+writeSerialize ad x = liftIO (CN.appWrite ad (C.encode x))
+
+writeMasterSends :: (MonadIO m) => CN.AppData -> MasterSends -> m ()
+writeMasterSends = writeSerialize
+
+writeSlaveSends :: (MonadIO m) => CN.AppData -> SlaveSends -> m ()
+writeSlaveSends = writeSerialize
+
 runMaster :: forall m a.
        (MonadConnect m)
-    => Redis -> MasterId -> (NMApp MasterSends SlaveSends m ()) -> m a -> m a
+    => Redis -> MasterId -> (CN.AppData -> m ()) -> m a -> m a
 runMaster r mid contSlave cont = do
     nmSettings <- defaultNMSettings
     whenSlaveConnects :: MVar (m ()) <- newEmptyMVar
@@ -90,7 +122,7 @@ runMaster r mid contSlave cont = do
 
 runSlave :: forall m void.
        (MonadConnect m)
-    => Redis -> NMApp SlaveSends MasterSends m () -> m void
+    => Redis -> (CN.AppData -> m ()) -> m void
 runSlave r cont = do
     nmSettings <- defaultNMSettings
     withSlaveRequests r (\wcis -> void (connectToMaster nmSettings wcis cont))
@@ -99,8 +131,8 @@ runMasterCollectResults :: (MonadConnect m) => Redis -> MasterId -> Int -> m ()
 runMasterCollectResults r mid numSlaves = do
     resultsVar :: TVar (Map.Map SlaveId MasterId) <- liftIO (newTVarIO mempty)
     let whenSlaveConnects nm = do
-            nmWrite nm (MasterSends mid)
-            SlaveSends slaveN n <- nmRead nm
+            writeMasterSends nm (MasterSends mid)
+            SlaveSends slaveN n <- readSlaveSends nm
             $logInfo (masterLog mid ("Got echo from " ++ tshow slaveN))
             atomically (modifyTVar resultsVar (Map.insert slaveN n))
     let master = do
@@ -118,10 +150,10 @@ runMasterCollectResults r mid numSlaves = do
 runEchoSlave :: (MonadConnect m) => Redis -> SlaveId -> Int -> m void
 runEchoSlave r slaveId delay = do
     let slave nm = do
-            MasterSends n <- nmRead nm
+            MasterSends n <- readMasterSends nm
             liftIO (threadDelay (delay * 1000))
             $logInfo (slaveLog slaveId ("Echoing to " ++ tshow n))
-            nmWrite nm (SlaveSends slaveId n)
+            writeSlaveSends nm (SlaveSends slaveId n)
             $logInfo (slaveLog slaveId ("Slave done, quitting"))
     runSlave r slave
 
@@ -137,8 +169,8 @@ spec = do
         slaveDataOnMaster :: MVar SlaveSends <- newEmptyMVar
         let mid = MasterId 42
         let whenSlaveConnects nm = do
-                nmWrite nm (MasterSends mid)
-                putMVar slaveDataOnMaster =<< nmRead nm
+                writeMasterSends nm (MasterSends mid)
+                putMVar slaveDataOnMaster =<< readSlaveSends nm
         let master = takeMVar slaveDataOnMaster
         result <- fmap (either id absurd) $ Async.race
             (runMaster r mid whenSlaveConnects master) (runEchoSlave r (SlaveId 0) 0)

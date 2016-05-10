@@ -137,9 +137,10 @@ workerRequestsNotify r = NotifyChannel $ Channel $ redisKeyPrefix r <> "connect-
 workerRequestsKey :: Redis -> ZKey
 workerRequestsKey r = ZKey $ Key $ redisKeyPrefix r <> "connect-requests"
 
-connectToMaster :: forall m slaveSends masterSends a.
+connectToMaster :: forall m a.
        (MonadConnect m)
-    => NMSettings -> NonEmpty WorkerConnectInfo -> NMApp slaveSends masterSends m a
+    => NMSettings -> NonEmpty WorkerConnectInfo
+    -> (CN.AppData -> m a)
     -> m (Maybe a)
 connectToMaster nmSettings wcis0 cont0 = go (toList wcis0) []
   where
@@ -154,8 +155,8 @@ connectToMaster nmSettings wcis0 cont0 = go (toList wcis0) []
             return Nothing
         wci@(WorkerConnectInfo host port) : wcis -> do
             mbExc :: Either SomeException (Either SomeException a) <-
-                try $ control $ \invert -> CN.runTCPClient (CN.clientSettings port host) $
-                    runNMApp nmSettings $ \nm -> invert (try (cont wci nm) :: m (Either SomeException a))
+                try $ control $ \invert -> CN.runTCPClient (CN.clientSettings port host) $ \nm ->
+                    invert (try (cont wci nm) :: m (Either SomeException a))
             case mbExc of
                 Right (Left err) -> throwIO err
                 Right (Right x) -> return (Just x)
@@ -172,10 +173,10 @@ connectToMaster nmSettings wcis0 cont0 = go (toList wcis0) []
         | True = False
 
 acceptSlaveConnections ::
-       (MonadConnect m, Sendable masterSends, Sendable slaveSends)
+       (MonadConnect m)
     => NMSettings
     -> ByteString -- ^ Hostname that will be used in the 'WorkerConnectInfo'
-    -> NMApp masterSends slaveSends m () -- ^ What to do when a slave gets added
+    -> (CN.AppData -> m ()) -- ^ What to do when a slave gets added
     -> (WorkerConnectInfo -> m a)
     -- ^ Continuation with the connect info the master is listening on
     -> m a
@@ -183,7 +184,7 @@ acceptSlaveConnections nmSettings host contSlaveConnect cont = do
     (ss, getPort) <- liftIO (getPortAfterBind (CN.serverSettings 0 "*"))
     doneVar <- newEmptyMVar
     let acceptConns =
-            CN.runGeneralTCPServer ss $ runNMApp nmSettings $ \nm -> do
+            CN.runGeneralTCPServer ss $ \nm -> do
                 contSlaveConnect nm
                 readMVar doneVar
     let runMaster = do

@@ -30,6 +30,6 @@ redisIt :: String -> (forall m. (MonadConnect m) => Redis -> m ()) -> Spec
 redisIt msg cont = it msg x
   where
     x :: IO ()
-    x = runStdoutLoggingT $ filterLogger (\_ _ -> True) $ do
+    x = runStdoutLoggingT $ filterLogger (\_ _ -> False) $ do
         $logInfo (T.pack msg)
         withRedis redisConfig (\redis -> finally (cont redis) (clearRedisKeys redis))
