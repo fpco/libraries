@@ -126,8 +126,12 @@ spec = do
                 calls <- atomically $ do
                     modifyTVar handleCalls (+1)
                     readTVar handleCalls
-                when (calls == 3) markHandled)
+                when (calls == 3) $ do
+                    markHandled
+                    -- We need this too to ensure that the entire action exits
+                    -- after 'markHandled' finished
+                    atomically (modifyTVar handleCalls (+1)))
             (atomically $ do
                 calls <- readTVar handleCalls
-                unless (calls == 3) STM.retry)
+                unless (calls == 4) STM.retry)
         checkNoWorkers redis

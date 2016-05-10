@@ -9,6 +9,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 module Distributed.RequestSlavesSpec (spec) where
 
 import           ClassyPrelude
@@ -29,6 +30,7 @@ import           Control.Concurrent (threadDelay)
 import           Control.Monad.Logger
 import qualified Data.Conduit.Network as CN
 import qualified Data.Streaming.Network as CN
+import qualified Data.Text as T
 
 import           Distributed.Redis
 import           Data.Streaming.NetworkMessage
@@ -73,18 +75,22 @@ masterLog (MasterId mid) msg = "(M" ++ tshow mid ++ ") " ++ msg
 slaveLog :: SlaveId -> Text -> Text
 slaveLog (SlaveId mid) msg = "(S" ++ tshow mid ++ ") " ++ msg
 
+newtype ReadWriteException = ReadWriteException Text
+    deriving (Eq, Show, Typeable)
+instance Exception ReadWriteException
+
 readSerialize :: (C.Serialize a, MonadIO m) => String -> CN.AppData -> m a
 readSerialize s ad = liftIO (go (C.runGetPartial C.get ""))
   where
-    go (C.Fail str _) = fail ("(" ++ s ++ ") Couldn't decode: " ++ str)
+    go (C.Fail str _) = throwIO (ReadWriteException ("(" ++ T.pack s ++ ") Couldn't decode: " ++ T.pack str))
     go (C.Partial f) = do
         bs <- CN.appRead ad
         if null bs
-            then fail ("(" ++ s ++ ") Couldn't decode: no data")
+            then throwIO (ReadWriteException ("(" ++ T.pack s ++ ") Couldn't decode: no data"))
             else go (f bs)
     go (C.Done res bs) = do
         unless (null bs) $
-            fail ("(" ++ s ++ ") Couldn't decode: leftover")
+            throwIO (ReadWriteException ("(" ++ T.pack s ++ ") Couldn't decode: leftover"))
         return res
 
 readMasterSends :: (MonadIO m) => CN.AppData -> m MasterSends
@@ -112,7 +118,12 @@ runMaster r mid contSlave cont = do
             $logInfo (masterLog mid "Taking slave connects action")
             join (readMVar whenSlaveConnects)
             $logInfo (masterLog mid "Got slave, continuing")
-            contSlave nm
+            -- We expect these when slaves die
+            mbErr :: Either ReadWriteException () <- try (contSlave nm)
+            case mbErr of
+                Left (ReadWriteException err) ->
+                    $logWarn (masterLog mid ("Got ReadWriteException on master " ++ err))
+                Right () -> return ()
     acceptSlaveConnections nmSettings "127.0.0.1" contSlave' $ \wci -> do
         wid <- getWorkerId
         requestSlaves r wid wci $ \wsc -> do
