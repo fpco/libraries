@@ -8,6 +8,8 @@ import           Control.Concurrent
 import           Control.Concurrent.Async
 import           Control.Exception
 import           Control.Monad
+import           Control.Monad.IO.Class (liftIO)
+import           Control.Monad.Logger (runNoLoggingT)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import           Data.IORef
@@ -143,8 +145,8 @@ runClientAndServer'' settings client server = do
     serverReady <- newEmptyMVar
     let serverSettings' = setAfterBind (\_ -> putMVar serverReady ()) serverSettings
     result <-
-        (takeMVar serverReady >> runTCPClient clientSettings (runNMApp settings client)) `race`
-        runTCPServer serverSettings' (runNMApp settings server)
+        (takeMVar serverReady >> runTCPClient clientSettings (runNoLoggingT . runNMApp settings (liftIO . client))) `race`
+        runTCPServer serverSettings' (runNoLoggingT . runNMApp settings (liftIO . server))
     case result of
         Left x -> return x
         Right () -> fail "Expected client to return a value."
