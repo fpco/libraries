@@ -99,6 +99,10 @@ spec = do
         res `shouldSatisfy` (`elem` [Left NMHeartbeatFailure, Left NMConnectionDropped])
         exitedLate <- readIORef exitedLateRef
         exitedLate `shouldBe` False
+    it "one side can terminate" $ do
+        runClientAndServer
+          (const $ return () :: NMAppData () () -> IO ())
+          (const $ forever $ threadDelay maxBound)
 
 largeSendTest :: NMSettings -> IO ()
 largeSendTest settings = do
