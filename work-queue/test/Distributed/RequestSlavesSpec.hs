@@ -194,7 +194,7 @@ spec = do
         fmap (either (absurd . NE.head) id) $ Async.race
             (Async.mapConcurrently (\x -> runEchoSlave r (SlaveId x) 0) (NE.fromList [1..numSlaves]))
             (runMasterCollectResults r (MasterId 0) numSlaves)
-    redisIt "Echo with many masters and many slaves" $ \r -> do
+    redisIt "Echo with many masters and many slaves (short)" $ \r -> do
         let numSlaves :: Int = 10
         let numMasters :: Int = 5
         fmap (either (absurd . NE.head) id) $ Async.race
