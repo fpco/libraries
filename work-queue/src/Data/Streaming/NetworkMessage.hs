@@ -172,7 +172,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
     -- configuration in NMSettings.) Since any data sent will
     -- count as a ping, this would not interfere with the
     -- heartbeat.
-    outgoing :: TChan ByteString <- liftIO newTChanIO
+    outgoing :: TChan (ByteString, IO ()) <- liftIO newTChanIO
     incoming :: TChan (Either NetworkMessageException youSend) <- liftIO newTChanIO
 
     -- Our heartbeat logic involves two threads: the recvWorker thread
@@ -201,7 +201,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
 
     let nad = NMAppData
             { _nmAppData = ad
-            , _nmWrite = sendSTM . Payload
+            , _nmWrite = \x -> sendSTM (Payload x) (return ())
             , _nmRead = \select -> do
                 resOrErr <- mailboxReadTChan incoming $ \resOrErr -> case resOrErr of
                     Left err -> Just (Left err)
@@ -216,22 +216,49 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                         writeTChan incoming (Left err)
                         return (Just (Left err))
             }
-        sendSTM :: Message iSend -> STM ()
-        sendSTM x = writeTChan outgoing $! B.encode x
-        send :: Message iSend -> m ()
-        send = atomically . sendSTM
-    fmap (either (either absurd absurd) id) $ A.race
-        (A.race (sendPing send yourHS) (checkHeartbeat lastPing active blocked))
-        (A.runConcurrently $
-            A.Concurrently (recvWorker incoming lastPing active blocked leftover) *>
-            A.Concurrently (sendWorker outgoing incoming active) *>
-            A.Concurrently (nmApp nad `finally`
-                            send Complete `finally`
-                            finished incoming active NMConnectionClosed))
+        sendSTM :: Message iSend -> IO () -> STM ()
+        sendSTM x onSent =
+            bs `seq` writeTChan outgoing (bs, onSent)
+          where
+            bs = B.encode x
+        send :: Message iSend -> IO () -> m ()
+        send x onSent = atomically (sendSTM x onSent)
+
+    -- define all of our threads
+    let pingT = A.Concurrently (sendPing send yourHS)
+        heartbeatT = A.Concurrently (checkHeartbeat lastPing active blocked)
+        recvT = A.Concurrently (recvWorker incoming lastPing active blocked leftover)
+        sendT = A.Concurrently (sendWorker outgoing incoming active)
+        appT = A.Concurrently $ do
+                    completeSent <- newEmptyMVar
+
+                    nmApp nad `finally`
+                      send Complete (putMVar completeSent ()) `finally`
+                      finished incoming active NMConnectionClosed `finally`
+
+                      -- make sure that the Complete value was sent before exiting
+                      takeMVar completeSent
+
+    -- Now define our logic:
+    --
+    -- * If the pingT or heartbeatT threads exit, all threads should be killed
+    -- * Whenever nmApp exits, all threads should be killed
+    -- * If recvT or sendT die with an exception, all threads should be killed
+
+    -- Define a sendRecvT which will only exit if one of sendT or
+    -- recvT throws an exception
+    let sendRecvT = recvT
+                 *> sendT
+                 *> A.Concurrently (forever (liftIO (threadDelay maxBound)))
+
+    -- We now have four different threads which must each result in
+    -- the other threads being killed when they exit. So use the Alternative
+    -- instance
+    A.runConcurrently (pingT <|> heartbeatT <|> sendRecvT <|> appT)
   where
-    sendPing :: (Message iSend -> m ()) -> Handshake -> m void
+    sendPing :: (Message iSend -> IO () -> m ()) -> Handshake -> m void
     sendPing send yourHS = forever $ do
-        () <- send Ping
+        send Ping (return ())
         liftIO (threadDelay $ hsHeartbeat yourHS)
 
     checkHeartbeat :: IORef Int -> IORef Bool -> IORef Bool -> m void
@@ -289,27 +316,28 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
         atomically (writeTChan incoming (Left ex))
 
     sendWorker ::
-           TChan ByteString
+           TChan (ByteString, IO ())
         -> TChan (Either NetworkMessageException youSend)
         -> IORef Bool
         -> m ()
     sendWorker outgoing incoming active = loop
       where
         loop = do
-            bs <- atomically (readTChan outgoing)
+            (bs, onSent) <- atomically (readTChan outgoing)
+            let sendIt = appWrite ad bs `finally` onSent
             -- NOTE: even though bs could be quite large, appRead will
             -- receive small chunks of it.  This means that 'appRead'
             -- won't block for very long, and the heartbeat code will
             -- function properly.
             if bs == B.encode (Complete :: Message iSend)
                 then do
-                    liftIO (appWrite ad bs) `catch` \ex ->
+                    liftIO sendIt `catch` \ex ->
                         -- Ignore resource vanished if the connection is done.
                         if isResourceVanished ex
                             then return ()
                             else throwIO ex
                 else do
-                    liftIO (appWrite ad bs) `catch` \ex ->
+                    liftIO sendIt `catch` \ex ->
                         -- ResourceVanished indicates that the connection
                         -- got dropped, so throw that nicer exception
                         -- instead.
