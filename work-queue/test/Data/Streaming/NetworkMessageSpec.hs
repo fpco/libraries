@@ -74,8 +74,10 @@ spec = do
     it "throws NMConnectionClosed for every nmRead, when server completes while client is waiting" $ do
         let client :: NMApp Int Int IO Bool
             client app = do
-                nmRead app `shouldThrow` (== NMConnectionClosed)
-                nmRead app `shouldThrow` (== NMConnectionClosed)
+                let isConnClosed (NMConnectionClosed _) = True
+                    isConnClosed _ = False
+                nmRead app `shouldThrow` isConnClosed
+                nmRead app `shouldThrow` isConnClosed
                 return True
         res <- timeout (1000 * 1000) $ runClientAndServer client (\_ -> return ())
         res `shouldBe` Just True
@@ -96,7 +98,11 @@ spec = do
         -- One of the ends of the connection will throw heartbeat
         -- failure, and the other will see that the connection
         -- dropped.
-        res `shouldSatisfy` (`elem` [Left NMHeartbeatFailure, Left NMConnectionDropped])
+        res `shouldSatisfy` \e ->
+            case e of
+                Left NMHeartbeatFailure -> True
+                Left (NMConnectionDropped _) -> True
+                _ -> False
         exitedLate <- readIORef exitedLateRef
         exitedLate `shouldBe` False
     it "one side can terminate" $ do

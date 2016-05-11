@@ -167,7 +167,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                       hsExeHash myHS /= hsExeHash yourHS) $ do
                     throwIO $ NMMismatchedHandshakes myHS yourHS
                 return (yourHS, leftover)
-            Nothing -> throwIO NMConnectionDropped
+            Nothing -> throwIO (NMConnectionDropped "Initial handshake")
     -- TODO use a bounded chan perhaps? (Make the queue size
     -- configuration in NMSettings.) Since any data sent will
     -- count as a ping, this would not interfere with the
@@ -234,7 +234,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
 
                     nmApp nad `finally`
                       send Complete (putMVar completeSent ()) `finally`
-                      finished incoming active NMConnectionClosed `finally`
+                      finished incoming active (NMConnectionClosed "nmApp finished") `finally`
 
                       -- make sure that the Complete value was sent before exiting
                       takeMVar completeSent
@@ -303,8 +303,8 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                     loop leftover'
                 -- We're done when the "Complete" message is received
                 -- or the connection is closed
-                Just (Complete, _) -> finished incoming active NMConnectionClosed
-                Nothing -> finished incoming active NMConnectionDropped
+                Just (Complete, _) -> finished incoming active (NMConnectionClosed "Other side sent Complete")
+                Nothing -> finished incoming active (NMConnectionDropped "recvWorker got Nothing")
 
     isResourceVanished ex = ioe_type ex == ResourceVanished
 
@@ -343,8 +343,8 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                         -- instead.
                         if isResourceVanished ex
                             then do
-                                finished incoming active NMConnectionDropped
-                                throwIO NMConnectionDropped
+                                finished incoming active (NMConnectionDropped "sendWorker to finished")
+                                throwIO (NMConnectionDropped "sendWorker throwIO")
                             else throwIO ex
                     loop
 
@@ -399,10 +399,10 @@ data NetworkMessageException
     -- @heartbeat * 2@ time.
     | NMHeartbeatFailure
     -- | This is thrown by 'nmRead' when the connection is closed.
-    | NMConnectionClosed
+    | NMConnectionClosed ByteString
     -- | This is thrown by 'nmRead' and 'runNMApp' when the connection
     -- gets unexpectedly terminated.
-    | NMConnectionDropped
+    | NMConnectionDropped ByteString
     -- | This is thrown by 'runNMApp' when there's an error decoding
     -- data sent by the other side of the connection.  This either
     -- indicates a bug in this library, or a misuse of 'nmAppData'.
