@@ -79,6 +79,7 @@ newtype ReadWriteException = ReadWriteException Text
     deriving (Eq, Show, Typeable)
 instance Exception ReadWriteException
 
+{-
 readSerialize :: (C.Serialize a, MonadIO m) => String -> CN.AppData -> m a
 readSerialize s ad = liftIO (go (C.runGetPartial C.get ""))
   where
@@ -107,10 +108,11 @@ writeMasterSends = writeSerialize
 
 writeSlaveSends :: (MonadIO m) => CN.AppData -> SlaveSends -> m ()
 writeSlaveSends = writeSerialize
+-}
 
 runMaster :: forall m a.
        (MonadConnect m)
-    => Redis -> MasterId -> (CN.AppData -> m ()) -> m a -> m a
+    => Redis -> MasterId -> NMApp MasterSends SlaveSends m () -> m a -> m a
 runMaster r mid contSlave cont = do
     nmSettings <- defaultNMSettings
     whenSlaveConnects :: MVar (m ()) <- newEmptyMVar
@@ -133,7 +135,7 @@ runMaster r mid contSlave cont = do
 
 runSlave :: forall m void.
        (MonadConnect m)
-    => Redis -> (CN.AppData -> m ()) -> m void
+    => Redis -> NMApp SlaveSends MasterSends m () -> m void
 runSlave r cont = do
     nmSettings <- defaultNMSettings
     withSlaveRequests r (\wcis -> void (connectToMaster nmSettings wcis cont))
@@ -142,8 +144,8 @@ runMasterCollectResults :: (MonadConnect m) => Redis -> MasterId -> Int -> m ()
 runMasterCollectResults r mid numSlaves = do
     resultsVar :: TVar (Map.Map SlaveId MasterId) <- liftIO (newTVarIO mempty)
     let whenSlaveConnects nm = do
-            writeMasterSends nm (MasterSends mid)
-            SlaveSends slaveN n <- readSlaveSends nm
+            nmWrite nm (MasterSends mid)
+            SlaveSends slaveN n <- nmRead nm
             $logInfo (masterLog mid ("Got echo from " ++ tshow slaveN))
             atomically (modifyTVar resultsVar (Map.insert slaveN n))
     let master = do
@@ -161,10 +163,10 @@ runMasterCollectResults r mid numSlaves = do
 runEchoSlave :: (MonadConnect m) => Redis -> SlaveId -> Int -> m void
 runEchoSlave r slaveId delay = do
     let slave nm = do
-            MasterSends n <- readMasterSends nm
+            MasterSends n <- nmRead nm
             liftIO (threadDelay (delay * 1000))
             $logInfo (slaveLog slaveId ("Echoing to " ++ tshow n))
-            writeSlaveSends nm (SlaveSends slaveId n)
+            nmWrite nm (SlaveSends slaveId n)
             $logInfo (slaveLog slaveId ("Slave done, quitting"))
     runSlave r slave
 
@@ -180,8 +182,8 @@ spec = do
         slaveDataOnMaster :: MVar SlaveSends <- newEmptyMVar
         let mid = MasterId 42
         let whenSlaveConnects nm = do
-                writeMasterSends nm (MasterSends mid)
-                putMVar slaveDataOnMaster =<< readSlaveSends nm
+                nmWrite nm (MasterSends mid)
+                putMVar slaveDataOnMaster =<< nmRead nm
         let master = takeMVar slaveDataOnMaster
         result <- fmap (either id absurd) $ Async.race
             (runMaster r mid whenSlaveConnects master) (runEchoSlave r (SlaveId 0) 0)
