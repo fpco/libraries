@@ -7,17 +7,20 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
 module Distributed.JobQueue.Client
-    ( JobClient
+    ( JobQueueConfig(..)
+    , defaultJobQueueConfig
+    , JobClient
     , withJobClient
     , submitRequest
     , waitForResponse
+    , waitForResponse_
     , checkForResponse
     , cancelRequest
     ) where
 
 import           ClassyPrelude
 import           Control.Concurrent (threadDelay)
-import           Control.Concurrent.STM (retry)
+import           Control.Concurrent.STM (retry, orElse)
 import           Control.Monad.Logger
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import           Data.Serialize (encode)
@@ -141,24 +144,39 @@ requestExists r k = do
     if dataExists then return True else do
         run r $ exists (unVKey (responseDataKey r k))
 
--- | Blocks until the response is present. 'Nothing' if the request doesn't exist.
-waitForResponse :: forall m response.
+-- | A simpler 'waitForResponse', that automatically blocks on the response
+-- arriving, and throws the 'DistributedException'.
+waitForResponse_ :: forall m response.
        (MonadConnect m, Sendable response)
     => JobClient response
     -> RequestId
-    -> m (Maybe (Either DistributedException response))
-waitForResponse jc@JobClient{..} rid = do
+    -> m (Maybe response)
+waitForResponse_ jc rid =
+    waitForResponse jc rid (\m -> either throwIO return =<< atomically m)
+
+-- | Returns an action that blocks until the response is present.
+-- 'Nothing' if the request doesn't exist.
+waitForResponse :: forall m response a.
+       (MonadConnect m, Sendable response)
+    => JobClient response
+    -> RequestId
+    -> (STM (Either DistributedException response) -> m a)
+    -> m (Maybe a)
+waitForResponse jc@JobClient{..} rid cont = do
     -- First, ensure that the request actually exists.
     reqExists <- requestExists jcRedis rid
     if not reqExists
         then return Nothing
-        else fmap (either id id) (Async.race delayLoop watcher)
+        else fmap Just $
+            Async.withAsync delayLoop $ \delayLoopAsync ->
+            Async.withAsync watcher $ \watcherAsync ->
+            cont (orElse (Async.waitSTM delayLoopAsync) (Async.waitSTM watcherAsync))
   where
-    delayLoop :: m (Maybe (Either DistributedException response))
+    delayLoop :: m (Either DistributedException response)
     delayLoop = do
         mbResp <- checkForResponse jc rid
         case mbResp of
-            Just resp -> return (Just resp)
+            Just resp -> return resp
             Nothing -> do
                 -- Check 10 times a second anyway, we can't rely on notifications
                 liftIO (threadDelay (100 * 1000))
@@ -168,10 +186,11 @@ waitForResponse jc@JobClient{..} rid = do
                 if reqExists
                     then delayLoop
                     else do
-                        $logWarn ("Was waiting on request " <> tshow rid <> ", but it disappeared. This is possible but very unlikely.")
-                        return Nothing
+                        let err = "Was waiting on request " <> tshow rid <> ", but it disappeared. This is possible if the caching duration for responses is very low, please increase it to at least 500 milliseconds."
+                        $logWarn err
+                        return (Left (InternalJobQueueException err))
 
-    watcher :: m (Maybe (Either DistributedException response))
+    watcher :: m (Either DistributedException response)
     watcher = do
         mbResp <- bracket startWatching stopWatching $ \var -> do
             atomically $ do
@@ -182,7 +201,7 @@ waitForResponse jc@JobClient{..} rid = do
             Nothing -> do
                 $logWarn ("Got notification for request " <> tshow rid <> ", but then found no response. This is possible but unlikely, re-subscribing.")
                 watcher
-            Just resp -> return (Just resp)
+            Just resp -> return resp
       where
         startWatching :: m (TVar ResponseWatcher)
         startWatching = modifyMVar jcResponseWatchers $ \hm -> do

@@ -6,10 +6,13 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 -- This module provides a job-queue with heartbeat checking.
 module Distributed.JobQueue.Worker
-    ( jobWorker
+    ( JobQueueConfig(..)
+    , defaultJobQueueConfig
+    , jobWorker
     , CancelOrReenqueue(..)
     -- , runJQWorker
     ) where
@@ -33,7 +36,7 @@ import Distributed.Types
 import FP.Redis
 import FP.ThreadFileLogger
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import Data.Serialize (encode)
+import Data.Serialize (encode, Serialize)
 
 -- | Implements a compute node which responds to requests and never
 -- returns.
@@ -66,7 +69,8 @@ jobWorker config@JobQueueConfig {..} f = do
 data CancelOrReenqueue
     = Cancel
     | Reenqueue
-    deriving (Eq, Show)
+    deriving (Eq, Show, Generic, Typeable)
+instance Serialize CancelOrReenqueue
 
 jobWorkerThread :: forall request response m void.
        (MonadConnect m, Sendable request, Sendable response)
@@ -89,6 +93,7 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
             Just reqBs -> case checkRequest (Proxy :: Proxy response) rid reqBs of
                 Left err -> return (Just (Left err))
                 Right req -> do
+                    $logDebug ("Starting to work on request " ++ tshow ridBs)
                     cancelledOrResp :: Either () (Either SomeException (Either CancelOrReenqueue response)) <-
                         Async.race (watchForCancel r rid jqcCancelCheckIvl) (try (f rid req))
                     case cancelledOrResp of

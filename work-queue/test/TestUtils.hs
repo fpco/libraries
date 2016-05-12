@@ -7,7 +7,9 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE RecordWildCards #-}
 module TestUtils
-    ( redisIt
+    ( testRedisConfig
+    , redisIt
+    , redisIt_
     , loggingIt
     , KillRandomly(..)
     , killRandomly
@@ -25,8 +27,8 @@ import           Control.Concurrent (threadDelay)
 
 import           Distributed.Redis
 
-redisConfig :: RedisConfig
-redisConfig = defaultRedisConfig
+testRedisConfig :: RedisConfig
+testRedisConfig = defaultRedisConfig
     { rcKeyPrefix = "test:" }
 
 clearRedisKeys :: (MonadConnect m) => Redis -> m ()
@@ -42,9 +44,12 @@ loggingIt msg cont = it msg x
         $logInfo (T.pack msg)
         cont
 
+redisIt_ :: String -> (forall m. (MonadConnect m) => m ()) -> Spec
+redisIt_ msg cont = redisIt msg (\_r -> cont)
+
 redisIt :: String -> (forall m. (MonadConnect m) => Redis -> m ()) -> Spec
 redisIt msg cont = loggingIt msg $ do
-    withRedis redisConfig (\redis -> finally (cont redis) (clearRedisKeys redis))
+    withRedis testRedisConfig (\redis -> finally (cont redis) (clearRedisKeys redis))
 
 data KillRandomly = KillRandomly
     { krMaxPause :: !Int -- ^ Max pause between executions, in milliseconds
