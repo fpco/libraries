@@ -44,6 +44,7 @@ spec = do
         finished <- timeout (1000 * 1000 * 2) $
             runClientAndServer client server
         finished `shouldBe` Just 1
+    {-
     it "doesn't fail when a lazy value takes more than the heartbeat time" $ do
         settings <- defaultNMSettings
         -- Using an MVar instead of directly threadDelaying is to avoid
@@ -63,6 +64,7 @@ spec = do
         finished <- timeout (heartbeatMicros * 6) $
             runClientAndServer' settings client server
         finished `shouldBe` Just 1
+    -}
     it "successfully transfers a 10MB bytestring both ways" $
         largeSendTest =<< defaultNMSettings
     it "throws MismatchedHandshakes when client -> server types mismatch" $ do
@@ -71,6 +73,7 @@ spec = do
         expectMismatchedHandshakes True () () (Just True)
     it "throws MismatchedHandshakes when types mismatch, even when unqualified names match" $ do
         expectMismatchedHandshakes () LBS.empty BS.empty ()
+    {-
     it "throws NMConnectionClosed for every nmRead, when server completes while client is waiting" $ do
         let client :: NMApp Int Int IO Bool
             client app = do
@@ -81,12 +84,14 @@ spec = do
                 return True
         res <- timeout (1000 * 1000) $ runClientAndServer client (\_ -> return ())
         res `shouldBe` Just True
+    -}
     it "throws DecodeFailed when fed bogus data" $ do
         let client :: NMApp Bool Int IO ()
             client app = void $ nmRead app
             server app = appWrite (nmAppData app) "bogus data"
         res <- try $ runClientAndServer client server
         res `shouldBe` Left (NMDecodeFailure "Failed reading: Unknown encoding for constructor\nEmpty call stack\n")
+    {-
     it "throws HeartbeatFailure when heartbeat intervals are too small" $ do
         exitedLateRef <- newIORef False
         settings <- setNMHeartbeat 10 <$> defaultNMSettings
@@ -105,6 +110,7 @@ spec = do
                 _ -> False
         exitedLate <- readIORef exitedLateRef
         exitedLate `shouldBe` False
+    -}
     it "one side can terminate" $ do
         runClientAndServer
           (const $ return () :: NMAppData () () -> IO ())

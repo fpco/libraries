@@ -10,6 +10,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE TypeFamilies #-}
 module Distributed.RequestSlavesSpec (spec) where
 
 import           ClassyPrelude
@@ -31,6 +32,7 @@ import           Control.Monad.Logger
 import qualified Data.Conduit.Network as CN
 import qualified Data.Streaming.Network as CN
 import qualified Data.Text as T
+import           Control.Exception.Lifted (catches, Handler(..))
 
 import           Distributed.Redis
 import           Data.Streaming.NetworkMessage
@@ -75,40 +77,16 @@ masterLog (MasterId mid) msg = "(M" ++ tshow mid ++ ") " ++ msg
 slaveLog :: SlaveId -> Text -> Text
 slaveLog (SlaveId mid) msg = "(S" ++ tshow mid ++ ") " ++ msg
 
-newtype ReadWriteException = ReadWriteException Text
-    deriving (Eq, Show, Typeable)
-instance Exception ReadWriteException
-
-{-
-readSerialize :: (C.Serialize a, MonadIO m) => String -> CN.AppData -> m a
-readSerialize s ad = liftIO (go (C.runGetPartial C.get ""))
-  where
-    go (C.Fail str _) = throwIO (ReadWriteException ("(" ++ T.pack s ++ ") Couldn't decode: " ++ T.pack str))
-    go (C.Partial f) = do
-        bs <- CN.appRead ad
-        if null bs
-            then throwIO (ReadWriteException ("(" ++ T.pack s ++ ") Couldn't decode: no data"))
-            else go (f bs)
-    go (C.Done res bs) = do
-        unless (null bs) $
-            throwIO (ReadWriteException ("(" ++ T.pack s ++ ") Couldn't decode: leftover"))
-        return res
-
-readMasterSends :: (MonadIO m) => CN.AppData -> m MasterSends
-readMasterSends = readSerialize "readMasterSends"
-
-readSlaveSends :: (MonadIO m) => CN.AppData -> m SlaveSends
-readSlaveSends = readSerialize "readSlaveSends"
-
-writeSerialize :: (C.Serialize a, MonadIO m) => CN.AppData -> a -> m ()
-writeSerialize ad x = liftIO (CN.appWrite ad (C.encode x))
-
-writeMasterSends :: (MonadIO m) => CN.AppData -> MasterSends -> m ()
-writeMasterSends = writeSerialize
-
-writeSlaveSends :: (MonadIO m) => CN.AppData -> SlaveSends -> m ()
-writeSlaveSends = writeSerialize
--}
+-- Since we run tests where things randomly die, we ignore the exceptions
+-- simply to make the test output prettier
+ignoreNetworkExceptions :: (MonadConnect m) => m () -> m ()
+ignoreNetworkExceptions m = do
+    catches m
+        [ Handler $ \(err :: NetworkMessageException) -> do
+            $logInfo ("ignoreNetworkExceptions: Got NetworkMessageException " ++ tshow err)
+        , Handler $ \(err :: IOError) -> do
+            $logInfo ("ignoreNetworkExceptions: Got IOError " ++ tshow err)
+        ]
 
 runMaster :: forall m a.
        (MonadConnect m)
@@ -120,12 +98,7 @@ runMaster r mid contSlave cont = do
             $logInfo (masterLog mid "Taking slave connects action")
             join (readMVar whenSlaveConnects)
             $logInfo (masterLog mid "Got slave, continuing")
-            -- We expect these when slaves die
-            mbErr :: Either ReadWriteException () <- try (contSlave nm)
-            case mbErr of
-                Left (ReadWriteException err) ->
-                    $logWarn (masterLog mid ("Got ReadWriteException on master " ++ err))
-                Right () -> return ()
+            contSlave nm
     acceptSlaveConnections nmSettings "127.0.0.1" contSlave' $ \wci -> do
         wid <- getWorkerId
         requestSlaves r wid wci $ \wsc -> do
@@ -143,7 +116,7 @@ runSlave r cont = do
 runMasterCollectResults :: (MonadConnect m) => Redis -> MasterId -> Int -> m ()
 runMasterCollectResults r mid numSlaves = do
     resultsVar :: TVar (Map.Map SlaveId MasterId) <- liftIO (newTVarIO mempty)
-    let whenSlaveConnects nm = do
+    let whenSlaveConnects nm = ignoreNetworkExceptions $ do
             nmWrite nm (MasterSends mid)
             SlaveSends slaveN n <- nmRead nm
             $logInfo (masterLog mid ("Got echo from " ++ tshow slaveN))
@@ -156,13 +129,13 @@ runMasterCollectResults r mid numSlaves = do
             return results
         $logInfo (masterLog mid "Slaves done")
         return res
-    results <- runMaster r mid whenSlaveConnects master    
+    results <- runMaster r mid whenSlaveConnects master
     unless (results == Map.fromList [(SlaveId x, mid) | x <- [1..numSlaves]]) $
         fail "Unexpected results"
 
 runEchoSlave :: (MonadConnect m) => Redis -> SlaveId -> Int -> m void
 runEchoSlave r slaveId delay = do
-    let slave nm = do
+    let slave nm = ignoreNetworkExceptions $ do
             MasterSends n <- nmRead nm
             liftIO (threadDelay (delay * 1000))
             $logInfo (slaveLog slaveId ("Echoing to " ++ tshow n))

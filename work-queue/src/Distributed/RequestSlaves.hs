@@ -171,11 +171,11 @@ connectToMaster nmSettings wcis0 cont0 = go (toList wcis0) []
                         go wcis (err : excs)
                     else throwIO err
 
-    acceptableException :: SomeException -> Bool
-    acceptableException err
-        | Just (_ :: IOError) <- fromException err = True
-        | Just (_ :: NetworkMessageException) <- fromException err = True
-        | True = False
+acceptableException :: SomeException -> Bool
+acceptableException err
+    | Just (_ :: IOError) <- fromException err = True
+    | Just (_ :: NetworkMessageException) <- fromException err = True
+    | True = False
 
 acceptSlaveConnections ::
        (MonadConnect m, Sendable masterSends, Sendable slaveSends)
@@ -187,13 +187,19 @@ acceptSlaveConnections ::
     -> m a
 acceptSlaveConnections nmSettings host contSlaveConnect cont = do
     (ss, getPort) <- liftIO (getPortAfterBind (CN.serverSettings 0 "*"))
-    doneVar <- newEmptyMVar
     let acceptConns =
-            CN.runGeneralTCPServer ss $ runNMApp nmSettings $ \nm -> do
-                contSlaveConnect nm
-                readMVar doneVar
+            CN.runGeneralTCPServer ss $ \ad -> do
+                -- This is just to get the exceptions in the logs rather than on the
+                -- terminal: this is run in a separate thread anyway, and so they'd be
+                -- lost forever otherwise.
+                mbExc :: Either SomeException () <- try (runNMApp nmSettings contSlaveConnect ad)
+                case mbExc of
+                    Left err -> if acceptableException err
+                        then $logWarn ("acceptSlaveConnections: got IOError or NetworkMessageException, this can happen if the slave dies " ++ tshow err)
+                        else $logError ("acceptSlaveConnections: got unexpected exception" ++ tshow err)
+                    Right () -> return ()
     let runMaster = do
             port <- liftIO getPort
             $logDebug ("Master starting on " ++ tshow (host, port))
             cont (WorkerConnectInfo host port)
-    fmap (either absurd id) (Async.race acceptConns (finally runMaster (putMVar doneVar ())))
+    fmap (either absurd id) (Async.race acceptConns runMaster)
