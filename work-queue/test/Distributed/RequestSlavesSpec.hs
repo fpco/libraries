@@ -19,8 +19,6 @@ import           Data.TypeFingerprint
 import           FP.Redis
 import           Data.Serialize (Serialize)
 import qualified Data.Serialize as C
-import qualified Data.UUID as UUID
-import qualified Data.UUID.V4 as UUID
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Data.Void (absurd)
 import           GHC.Generics (Generic)
@@ -67,56 +65,30 @@ instance Serialize SlaveSends
 
 mkManyHasTypeFingerprint [[t|MasterSends|], [t|SlaveSends|]]
 
-getWorkerId :: (MonadIO m) => m WorkerId
-getWorkerId = do
-    liftIO (WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom)
-
 masterLog :: MasterId -> Text -> Text
 masterLog (MasterId mid) msg = "(M" ++ tshow mid ++ ") " ++ msg
 
 slaveLog :: SlaveId -> Text -> Text
 slaveLog (SlaveId mid) msg = "(S" ++ tshow mid ++ ") " ++ msg
 
--- Since we run tests where things randomly die, we ignore the exceptions
--- simply to make the test output prettier
-ignoreNetworkExceptions :: (MonadConnect m) => m () -> m ()
-ignoreNetworkExceptions m = do
-    catches m
-        [ Handler $ \(err :: NetworkMessageException) -> do
-            $logInfo ("ignoreNetworkExceptions: Got NetworkMessageException " ++ tshow err)
-        , Handler $ \(err :: IOError) -> do
-            $logInfo ("ignoreNetworkExceptions: Got IOError " ++ tshow err)
-        ]
-
 runMaster :: forall m a.
        (MonadConnect m)
     => Redis -> MasterId -> NMApp MasterSends SlaveSends m () -> m a -> m a
 runMaster r mid contSlave cont = do
     nmSettings <- defaultNMSettings
-    whenSlaveConnects :: MVar (m ()) <- newEmptyMVar
-    let contSlave' nm = do
-            $logInfo (masterLog mid "Taking slave connects action")
-            join (readMVar whenSlaveConnects)
-            $logInfo (masterLog mid "Got slave, continuing")
-            contSlave nm
-    acceptSlaveConnections nmSettings "127.0.0.1" contSlave' $ \wci -> do
-        wid <- getWorkerId
-        requestSlaves r wid wci $ \wsc -> do
-            putMVar whenSlaveConnects wsc
-            $logInfo (masterLog mid "Running master function")
-            cont
+    acceptSlaveConnections r nmSettings "127.0.0.1" contSlave (\_ -> cont)
 
 runSlave :: forall m void.
        (MonadConnect m)
     => Redis -> NMApp SlaveSends MasterSends m () -> m void
 runSlave r cont = do
     nmSettings <- defaultNMSettings
-    withSlaveRequests r (\wcis -> void (connectToMaster nmSettings wcis cont))
+    connectToMaster r nmSettings cont
 
 runMasterCollectResults :: (MonadConnect m) => Redis -> MasterId -> Int -> m ()
 runMasterCollectResults r mid numSlaves = do
     resultsVar :: TVar (Map.Map SlaveId MasterId) <- liftIO (newTVarIO mempty)
-    let whenSlaveConnects nm = ignoreNetworkExceptions $ do
+    let whenSlaveConnects nm = do
             nmWrite nm (MasterSends mid)
             SlaveSends slaveN n <- nmRead nm
             $logInfo (masterLog mid ("Got echo from " ++ tshow slaveN))
@@ -135,7 +107,7 @@ runMasterCollectResults r mid numSlaves = do
 
 runEchoSlave :: (MonadConnect m) => Redis -> SlaveId -> Int -> m void
 runEchoSlave r slaveId delay = do
-    let slave nm = ignoreNetworkExceptions $ do
+    let slave nm = do
             MasterSends n <- nmRead nm
             liftIO (threadDelay (delay * 1000))
             $logInfo (slaveLog slaveId ("Echoing to " ++ tshow n))

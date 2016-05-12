@@ -23,7 +23,7 @@ import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty(..))
 import Data.Serialize (encode)
 import Distributed.Redis
-import Distributed.Types (WorkerId, DistributedException(..))
+import Distributed.Types (WorkerId(..), DistributedException(..))
 import FP.Redis
 import Data.Serialize (Serialize)
 import qualified Data.List.NonEmpty as NE
@@ -32,6 +32,8 @@ import qualified Data.Conduit.Network as CN
 import Control.Monad.Trans.Control (control)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Data.Void (absurd)
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID
 
 -- * Information for connecting to a worker
 
@@ -141,30 +143,35 @@ workerRequestsNotify r = NotifyChannel $ Channel $ redisKeyPrefix r <> "connect-
 workerRequestsKey :: Redis -> ZKey
 workerRequestsKey r = ZKey $ Key $ redisKeyPrefix r <> "connect-requests"
 
-connectToMaster :: forall m a slaveSends masterSends.
+-- * Utilities to run master/slaves
+-----------------------------------------------------------------------
+
+-- | Runs a slave that runs an action when it connects to master
+connectToMaster :: forall m slaveSends masterSends void.
        (MonadConnect m, Sendable slaveSends, Sendable masterSends)
-    => NMSettings -> NonEmpty WorkerConnectInfo
-    -> NMApp slaveSends masterSends m a
-    -> m (Maybe a)
-connectToMaster nmSettings wcis0 cont0 = go (toList wcis0) []
+    => Redis
+    -> NMSettings
+    -> NMApp slaveSends masterSends m () -- ^ What to do when we connect
+    -> m void
+connectToMaster r nmSettings cont0 = withSlaveRequests r (\wcis -> go (toList wcis) [])
   where
     cont wci nm = do
         $logDebug ("Managed to connect to master " ++ tshow wci)
         cont0 nm
 
-    go :: [WorkerConnectInfo] -> [SomeException] -> m (Maybe a)
+    go :: [WorkerConnectInfo] -> [SomeException] -> m ()
     go wcis_ excs = case wcis_ of
         [] -> do
-            $logWarn ("Could not connect to any of the masters (" ++ tshow wcis0 ++ "), because of exceptions " ++ tshow excs ++ ". This is probably OK, will give up as slave.")
-            return Nothing
+            $logWarn ("Could not connect to any of the masters, because of exceptions " ++ tshow excs ++ ". This is probably OK, will give up as slave.")
+            return ()
         wci@(WorkerConnectInfo host port) : wcis -> do
-            mbExc :: Either SomeException (Either SomeException a) <-
+            mbExc :: Either SomeException (Either SomeException ()) <-
                 try $ control $ \invert -> CN.runTCPClient (CN.clientSettings port host) $ \ad ->
                     invert $
-                        runNMApp nmSettings (\nm -> (try (cont wci nm) :: m (Either SomeException a))) ad
+                        runNMApp nmSettings (\nm -> (try (cont wci nm) :: m (Either SomeException ()))) ad
             case mbExc of
                 Right (Left err) -> throwIO err
-                Right (Right x) -> return (Just x)
+                Right (Right ()) -> return ()
                 Left err -> if acceptableException err
                     then do
                         $logInfo ("Could not connect to master " ++ tshow wci ++ ", because of acceptable exception " ++ tshow err ++ ", continuing")
@@ -177,22 +184,32 @@ acceptableException err
     | Just (_ :: NetworkMessageException) <- fromException err = True
     | True = False
 
-acceptSlaveConnections ::
+getWorkerId :: (MonadIO m) => m WorkerId
+getWorkerId = do
+    liftIO (WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom)
+
+acceptSlaveConnections :: forall m masterSends slaveSends a.
        (MonadConnect m, Sendable masterSends, Sendable slaveSends)
-    => NMSettings
+    => Redis
+    -> NMSettings
     -> ByteString -- ^ Hostname that will be used in the 'WorkerConnectInfo'
     -> NMApp masterSends slaveSends m () -- ^ What to do when a slave gets added
     -> (WorkerConnectInfo -> m a)
     -- ^ Continuation with the connect info the master is listening on
     -> m a
-acceptSlaveConnections nmSettings host contSlaveConnect cont = do
+acceptSlaveConnections r nmSettings host contSlaveConnect cont = do
+    wid <- getWorkerId
     (ss, getPort) <- liftIO (getPortAfterBind (CN.serverSettings 0 "*"))
+    whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
     let acceptConns =
             CN.runGeneralTCPServer ss $ \ad -> do
                 -- This is just to get the exceptions in the logs rather than on the
                 -- terminal: this is run in a separate thread anyway, and so they'd be
                 -- lost forever otherwise.
-                mbExc :: Either SomeException () <- try (runNMApp nmSettings contSlaveConnect ad)
+                let whenSlaveConnects nm = do
+                        join (readMVar whenSlaveConnectsVar)
+                        contSlaveConnect nm
+                mbExc :: Either SomeException () <- try (runNMApp nmSettings whenSlaveConnects ad)
                 case mbExc of
                     Left err -> if acceptableException err
                         then $logWarn ("acceptSlaveConnections: got IOError or NetworkMessageException, this can happen if the slave dies " ++ tshow err)
@@ -201,5 +218,8 @@ acceptSlaveConnections nmSettings host contSlaveConnect cont = do
     let runMaster = do
             port <- liftIO getPort
             $logDebug ("Master starting on " ++ tshow (host, port))
-            cont (WorkerConnectInfo host port)
+            let wci = WorkerConnectInfo host port
+            requestSlaves r wid wci $ \wsc -> do
+                putMVar whenSlaveConnectsVar wsc
+                cont wci
     fmap (either absurd id) (Async.race acceptConns runMaster)
