@@ -118,9 +118,57 @@ test-suite wq-test
                      , Distributed.HeartbeatSpec
                      , Distributed.RequestSlavesSpec
                      , Data.Streaming.NetworkMessageSpec
+                     , Data.TypeFingerprintSpec
   ghc-options:         -Wall
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N4
   build-depends:       base
+                     , work-queue
+                     , lifted-async
+                     , QuickCheck
+                     , async
+                     , fpco-cereal
+                     , bytestring
+                     , classy-prelude
+                     , conduit-extra
+                     , containers
+                     , deepseq
+                     , directory
+                     , enclosed-exceptions
+                     , executable-path
+                     , hspec
+                     , hspec-core
+                     , hspec-expectations
+                     , hspec-expectations-lifted
+                     , lifted-base
+                     , monad-control
+                     , monad-logger
+                     , network
+                     , process
+                     , random
+                     , redis-fp
+                     , resourcet
+                     , semigroups
+                     , silently
+                     , split
+                     , stm
+                     , streaming-commons
+                     , thread-file-logger
+                     , time
+                     , transformers
+                     , transformers-base
+                     , unix
+                     , unordered-containers
+                     , vector
+                     , work-queue
+                     , uuid
+                     , cryptohash
+                     , text
+
+executable nm-example
+  main-is: nm-example.hs
+  hs-source-dirs: examples
+  default-language: Haskell2010
+  build-depends:      base
                      , work-queue
                      , lifted-async
                      , QuickCheck

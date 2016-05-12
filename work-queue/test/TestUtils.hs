@@ -8,14 +8,14 @@
 {-# LANGUAGE RecordWildCards #-}
 module TestUtils
     ( redisIt
+    , loggingIt
     , KillRandomly(..)
     , killRandomly
     ) where
 
 import           ClassyPrelude hiding (keys)
-import           Test.Hspec (Spec, SpecWith, it, runIO, hspec)
+import           Test.Hspec (Spec, it)
 import           FP.Redis
-import           FP.ThreadFileLogger
 import qualified Data.List.NonEmpty as NE
 import           Control.Monad.Logger (runStdoutLoggingT, filterLogger, logInfo)
 import qualified Data.Text as T
@@ -34,13 +34,17 @@ clearRedisKeys redis = do
     matches <- run redis (keys "test:*")
     mapM_ (run_ redis . del) (NE.nonEmpty matches)
 
-redisIt :: String -> (forall m. (MonadConnect m) => Redis -> m ()) -> Spec
-redisIt msg cont = it msg x
+loggingIt :: String -> (forall m. (MonadConnect m) => m ()) -> Spec
+loggingIt msg cont = it msg x
   where
     x :: IO ()
     x = runStdoutLoggingT $ filterLogger (\_ _ -> False) $ do
         $logInfo (T.pack msg)
-        withRedis redisConfig (\redis -> finally (cont redis) (clearRedisKeys redis))
+        cont
+
+redisIt :: String -> (forall m. (MonadConnect m) => Redis -> m ()) -> Spec
+redisIt msg cont = loggingIt msg $ do
+    withRedis redisConfig (\redis -> finally (cont redis) (clearRedisKeys redis))
 
 data KillRandomly = KillRandomly
     { krMaxPause :: !Int -- ^ Max pause between executions, in milliseconds

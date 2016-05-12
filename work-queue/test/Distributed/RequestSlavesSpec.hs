@@ -18,31 +18,24 @@ import           Test.Hspec
 import           Data.TypeFingerprint
 import           FP.Redis
 import           Data.Serialize (Serialize)
-import qualified Data.Serialize as C
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Data.Void (absurd)
-import           GHC.Generics (Generic)
 import qualified Data.Map.Strict as Map
 import qualified Control.Concurrent.STM as STM
 import qualified Data.List.NonEmpty as NE
 import           Control.Concurrent (threadDelay)
 import           Control.Monad.Logger
-import qualified Data.Conduit.Network as CN
-import qualified Data.Streaming.Network as CN
-import qualified Data.Text as T
-import           Control.Exception.Lifted (catches, Handler(..))
 
 import           Distributed.Redis
 import           Data.Streaming.NetworkMessage
 import           Distributed.RequestSlaves
-import           Distributed.Types
 
 import           TestUtils
 
 -- * Utils
 -----------------------------------------------------------------------
 
-newtype MasterId = MasterId {unMasterId :: Int}
+newtype MasterId = MasterId {_unMasterId :: Int}
     deriving (Eq, Ord, Typeable, Serialize)
 
 instance Show MasterId where
@@ -51,15 +44,15 @@ instance Show MasterId where
 newtype MasterSends = MasterSends MasterId
     deriving (Eq, Show, Typeable, Serialize)
 
-newtype SlaveId = SlaveId {unSlaveId :: Int}
+newtype SlaveId = SlaveId {_unSlaveId :: Int}
     deriving (Eq, Ord, Typeable, Serialize)
 
 instance Show SlaveId where
     show (SlaveId sid) = "S" ++ show sid
 
 data SlaveSends = SlaveSends
-    { slaveId :: !SlaveId
-    , slaveMasterId :: !MasterId
+    { _slaveId :: !SlaveId
+    , _slaveMasterId :: !MasterId
     } deriving (Eq, Show, Typeable, Generic)
 instance Serialize SlaveSends
 
@@ -73,8 +66,8 @@ slaveLog (SlaveId mid) msg = "(S" ++ tshow mid ++ ") " ++ msg
 
 runMaster :: forall m a.
        (MonadConnect m)
-    => Redis -> MasterId -> NMApp MasterSends SlaveSends m () -> m a -> m a
-runMaster r mid contSlave cont = do
+    => Redis -> NMApp MasterSends SlaveSends m () -> m a -> m a
+runMaster r contSlave cont = do
     nmSettings <- defaultNMSettings
     acceptSlaveConnections r nmSettings "127.0.0.1" contSlave (\_ -> cont)
 
@@ -101,7 +94,7 @@ runMasterCollectResults r mid numSlaves = do
             return results
         $logInfo (masterLog mid "Slaves done")
         return res
-    results <- runMaster r mid whenSlaveConnects master
+    results <- runMaster r whenSlaveConnects master
     unless (results == Map.fromList [(SlaveId x, mid) | x <- [1..numSlaves]]) $
         fail "Unexpected results"
 
@@ -131,7 +124,7 @@ spec = do
                 putMVar slaveDataOnMaster =<< nmRead nm
         let master = takeMVar slaveDataOnMaster
         result <- fmap (either id absurd) $ Async.race
-            (runMaster r mid whenSlaveConnects master) (runEchoSlave r (SlaveId 0) 0)
+            (runMaster r whenSlaveConnects master) (runEchoSlave r (SlaveId 0) 0)
         unless (result == SlaveSends (SlaveId 0) mid) $
             fail ("Expecting 42 in SlaveSends, got " ++ show result)
     redisIt "Echo with many slaves" $ \r -> do

@@ -6,59 +6,18 @@
 module Distributed.HeartbeatSpec (spec) where
 
 import           ClassyPrelude hiding (keys)
-import           Test.Hspec (Spec, SpecWith, it, runIO, hspec)
 import           FP.Redis (Seconds(..))
-import           Data.Time.Clock.POSIX
-import qualified Data.HashMap.Strict as HMS
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import           FP.Redis (MonadConnect, del, keys)
-import           FP.ThreadFileLogger
-import qualified Data.List.NonEmpty as NE
-import           Control.Monad.Trans.Control (MonadBaseControl)
+import           FP.Redis (MonadConnect)
 import qualified Control.Concurrent.STM as STM
 import           Control.Concurrent (threadDelay)
 import           Data.List.NonEmpty (NonEmpty)
+import           Test.Hspec (Spec)
 
 import           Distributed.Heartbeat
 import           Distributed.Types
 import           Distributed.Redis
 import           TestUtils
-
--- Bookkeeping
------------------------------------------------------------------------
-
-{-
-
-data WorkerStatus = WorkerStatus
-    { wsFinished :: !(MVar POSIXTime)
-    , wsCollectedFailures :: !(IORef Int)
-    }
-
-type Workers =
-    IORef (HMS.HashMap WorkerId WorkerStatus)
-
-newWorkers :: (MonadIO m, MonadBaseControl IO m) => [WorkerId] -> m Workers
-newWorkers ids = do
-    hms <- fmap HMS.fromList $ forM ids $ \id_ -> do
-        ws <- WorkerStatus <$> newEmptyMVar <*> newIORef 0
-        return (id_, ws)
-    newIORef hms
-
-markFinished :: (MonadIO m, MonadBaseControl IO m) => Workers -> WorkerId -> m ()
-markFinished workersRef wid = do
-    workers <- readIORef workersRef
-    Just ws <- return (HMS.lookup wid workers)
-    finishTime <- liftIO getPOSIXTime
-    put <- tryPutMVar (wsFinished ws) finishTime
-    unless put $
-        fail ("Could not put finished time for worker " ++ show wid)
-
-bumpCollectedFailures :: (MonadIO m, MonadBaseControl IO m) => Workers -> WorkerId -> m ()
-bumpCollectedFailures workersRef wid = do
-    workers <- readIORef workersRef
-    Just ws <- return (HMS.lookup wid workers)
-    atomicModifyIORef' (wsCollectedFailures ws) (\c -> (c + 1, ()))
--}
 
 -- Configs/init
 -----------------------------------------------------------------------
@@ -71,9 +30,6 @@ heartbeatConfig = HeartbeatConfig
 
 withHeartbeats_ :: (MonadConnect m) => Redis -> WorkerId -> m a -> m a
 withHeartbeats_ = withHeartbeats heartbeatConfig
-
-checkHeartbeats_ :: (MonadConnect m) => Redis -> (NonEmpty WorkerId -> m () -> m ()) -> m void
-checkHeartbeats_ = checkHeartbeats heartbeatConfig
 
 withCheckHeartbeats_ :: (MonadConnect m) => Redis -> (NonEmpty WorkerId -> m () -> m ()) -> m a -> m a
 withCheckHeartbeats_ = withCheckHeartbeats heartbeatConfig

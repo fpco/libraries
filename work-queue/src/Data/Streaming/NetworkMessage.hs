@@ -39,23 +39,17 @@ module Data.Streaming.NetworkMessage
     ) where
 
 import           ClassyPrelude
-import           Control.Concurrent (threadDelay, myThreadId, throwTo)
-import qualified Control.Concurrent.Async.Lifted.Safe as A
-import           Control.Concurrent.STM (retry)
-import           Control.Exception (AsyncException(ThreadKilled), BlockedIndefinitelyOnMVar(..))
-import           Control.Monad.Base (liftBase)
-import           Control.Monad.Trans.Control (MonadBaseControl, control)
-import           Data.Function (fix)
 import qualified Data.Serialize as B
+import           Control.Exception (BlockedIndefinitelyOnMVar(..))
 import           Data.Streaming.Network (AppData, appRead, appWrite)
 import           Data.Streaming.Network (ServerSettings, setAfterBind)
 import           Data.TypeFingerprint
 import           Data.Typeable (Proxy(..))
-import           Data.Void (absurd)
-import           GHC.IO.Exception (IOException(ioe_type), IOErrorType(ResourceVanished))
 import           Network.Socket (socketPort)
 import           System.Executable.Hash (executableHash)
 import           FP.Redis (MonadConnect)
+import           Control.Monad.Logger (logDebug)
+import qualified Data.Text as T
 
 data NetworkMessageException
     -- | This is thrown by 'runNMApp', during the initial handshake,
@@ -109,23 +103,24 @@ data NMAppData iSend youSend = NMAppData
 nmWrite :: (MonadIO m, B.Serialize iSend) => NMAppData iSend youSend -> iSend -> m ()
 nmWrite nm iSend = liftIO (appWrite (nmAppData nm) (B.encode iSend))
 
-nmRead  :: (MonadIO m, B.Serialize youSend) => NMAppData iSend youSend -> m youSend
-nmRead NMAppData{..} = liftIO $ do
+nmRead  :: (MonadConnect m, B.Serialize youSend) => NMAppData iSend youSend -> m youSend
+nmRead NMAppData{..} = do
     (res, leftover) <- appGet "nmRead" nmAppData =<< readIORef nmLeftover
     writeIORef nmLeftover leftover
     return res
 
 -- | Receive a message from the other side of the connection. Blocks until data
 -- is available.
-appGet :: (MonadIO m, B.Serialize youSend) => String -> AppData -> ByteString -> m (youSend, ByteString)
-appGet loc ad leftover0 = liftIO (go (B.runGetPartial B.get leftover0))
+appGet :: (MonadConnect m, B.Serialize youSend) => String -> AppData -> ByteString -> m (youSend, ByteString)
+appGet loc ad leftover0 = go (B.runGetPartial B.get leftover0)
   where
     go (B.Fail str _) =
-        throwIO (NMDecodeFailure (loc ++ " Couldn't decode: " ++ str))
+        liftIO (throwIO (NMDecodeFailure (loc ++ " Couldn't decode: " ++ str)))
     go (B.Partial f) = do
-        bs <- appRead ad
+        $logDebug (T.pack loc ++ " appGet reading")
+        bs <- liftIO (appRead ad)
         if null bs
-            then throwIO (NMDecodeFailure (loc ++ " Couldn't decode: no data"))
+            then liftIO (throwIO (NMDecodeFailure (loc ++ " Couldn't decode: no data")))
             else go (f bs)
     go (B.Done res bs) = do
         return (res, bs)

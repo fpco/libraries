@@ -13,7 +13,7 @@ packages:
   - ./th-type-hash
   - location:
       git: https://github.com/fpco/fpco-cereal.git
-      commit: dbd25d979040915ce8050c4d577acc86a8f19c4c
+      commit: 9193b056f2c401ade30908200beb410e5ffec187
 
 image:
   container:
