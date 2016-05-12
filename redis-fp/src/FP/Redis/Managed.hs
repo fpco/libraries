@@ -40,7 +40,7 @@ newManagedConnection cinfo maxConns = do
         (unliftBase unlift (connect cinfo))
         (\conn -> unliftBase unlift (disconnect conn))
         1
-        (fromIntegral (100 :: Int)) -- ^ Keep it for 100 secs
+        (fromIntegral (10 :: Int)) -- ^ Keep it for 10 secs
         maxConns
     return ManagedConnection{mcPool = pool, mcConnectInfo = cinfo}
 

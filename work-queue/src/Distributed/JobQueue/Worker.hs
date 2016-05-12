@@ -46,7 +46,7 @@ import Data.Serialize (encode, Serialize)
 -- REVIEW TODO: Here there is some ambiguity on when we "save" a worker: for example
 -- some redis operations are 'try'd, some arent. I propose to never cach exceptions
 -- apart in a top-level handler, and when we run the user provided function.
-jobWorker ::
+jobWorker :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
     -> (Redis -> RequestId -> request -> m (Either CancelOrReenqueue response))
@@ -64,7 +64,9 @@ jobWorker config@JobQueueConfig {..} f = do
                 (rcConnectInfo jqcRedisConfig)
                 (Milliseconds 100) -- Check anyway 10 times a second
                 (requestChannel r)
-                (\waitForReq -> jobWorkerThread config r wid waitForReq (f r))
+                (\waitForReq -> do
+                    -- writeIORef everConnectedRef True
+                    jobWorkerThread config r wid waitForReq (f r))
 
 data CancelOrReenqueue
     = Cancel

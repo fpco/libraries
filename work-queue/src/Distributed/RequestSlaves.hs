@@ -34,6 +34,7 @@ import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Data.Void (absurd)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
+import Control.Exception (BlockedIndefinitelyOnMVar)
 
 -- * Information for connecting to a worker
 
@@ -206,12 +207,19 @@ acceptSlaveConnections r nmSettings host contSlaveConnect cont = do
                 -- This is just to get the exceptions in the logs rather than on the
                 -- terminal: this is run in a separate thread anyway, and so they'd be
                 -- lost forever otherwise.
+                -- In other words, the semantics of the program are not affected.
                 let whenSlaveConnects nm = do
                         join (readMVar whenSlaveConnectsVar)
                         contSlaveConnect nm
                 mbExc :: Either SomeException () <- try (runNMApp nmSettings whenSlaveConnects ad)
+                -- We check for this because of the 'readMVar' above -- if the main thread
+                -- is killed, we might get this.
+                let blockedOnMVar :: SomeException -> Bool
+                    blockedOnMVar exc = case fromException exc of
+                        Just (_ :: BlockedIndefinitelyOnMVar) -> True
+                        Nothing -> False
                 case mbExc of
-                    Left err -> if acceptableException err
+                    Left err -> if acceptableException err || blockedOnMVar err
                         then $logWarn ("acceptSlaveConnections: got IOError or NetworkMessageException, this can happen if the slave dies " ++ tshow err)
                         else $logError ("acceptSlaveConnections: got unexpected exception" ++ tshow err)
                     Right () -> return ()

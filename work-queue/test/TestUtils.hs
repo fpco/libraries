@@ -11,6 +11,7 @@ module TestUtils
     , redisIt
     , redisIt_
     , loggingIt
+    , randomThreadDelay
     , KillRandomly(..)
     , killRandomly
     ) where
@@ -19,7 +20,7 @@ import           ClassyPrelude hiding (keys)
 import           Test.Hspec (Spec, it)
 import           FP.Redis
 import qualified Data.List.NonEmpty as NE
-import           Control.Monad.Logger (runStdoutLoggingT, filterLogger, logInfo)
+import           Control.Monad.Logger
 import qualified Data.Text as T
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           System.Random (randomRIO)
@@ -40,7 +41,7 @@ loggingIt :: String -> (forall m. (MonadConnect m) => m ()) -> Spec
 loggingIt msg cont = it msg x
   where
     x :: IO ()
-    x = runStdoutLoggingT $ filterLogger (\_ _ -> False) $ do
+    x = runStdoutLoggingT $ filterLogger (\_ ll -> ll >= LevelError) $ do
         $logInfo (T.pack msg)
         cont
 
@@ -49,7 +50,7 @@ redisIt_ msg cont = redisIt msg (\_r -> cont)
 
 redisIt :: String -> (forall m. (MonadConnect m) => Redis -> m ()) -> Spec
 redisIt msg cont = loggingIt msg $ do
-    withRedis testRedisConfig (\redis -> finally (cont redis) (clearRedisKeys redis))
+    withRedis testRedisConfig (\redis -> clearRedisKeys redis >> cont redis)
 
 data KillRandomly = KillRandomly
     { krMaxPause :: !Int -- ^ Max pause between executions, in milliseconds
