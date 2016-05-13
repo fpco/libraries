@@ -6,10 +6,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ViewPatterns #-}
 module Data.Mailbox
-    ( Mailbox
+    ( -- * Core operations
+      Mailbox
     , withMailbox
     , mailboxSelect
     , mailboxWrite
+      -- * Backends
+    , networkMessageMailbox
+    , appDataMailbox
     ) where
 
 import ClassyPrelude
@@ -17,7 +21,9 @@ import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import qualified Control.Concurrent.STM as STM
 import Control.Monad.Logger
 import Control.Monad.Trans.Control (MonadBaseControl)
-import Control.Exception (AsyncException)
+import Data.Streaming.NetworkMessage
+import Data.Streaming.Network
+import Data.Serialize (Serialize)
 
 import FP.Redis (MonadConnect)
 
@@ -38,13 +44,11 @@ withMailbox read write cont = do
     exc :: TVar (Maybe SomeException) <- liftIO (newTVarIO Nothing)
     -- When running the receive loop filling the TChan, keep reading until
     -- you encounter an exception. Then fill the TVar with the received exception.
-    -- However, if the exception is an 'AsyncException', just die directly.
+    -- However, if the exception is an 'AsyncException', just die directly ('tryAny')
     let recvLoop = do
-            mbMsg <- try read
+            mbMsg <- tryAny read
             case mbMsg of
-                Left (fromException -> Just (err :: AsyncException)) ->
-                    throwIO err
-                Left (err :: SomeException) -> do
+                Left err -> do
                     $logWarn ("Got exception " ++ tshow err ++ " when receving message for mailbox, exiting receive loop")
                     atomically (writeTVar exc (Just err))
                 Right msg -> do
@@ -92,3 +96,16 @@ mailboxWrite :: forall iSend youSend m.
        (MonadBaseControl IO m)
     => Mailbox m iSend youSend -> iSend -> m ()
 mailboxWrite Mailbox{..} msg = withMVar mboxWrite (\write -> write msg)
+
+-- * Backends
+-----------------------------------------------------------------------
+
+networkMessageMailbox ::
+       (MonadConnect m, Serialize iSend, Serialize youSend)
+    => NMAppData iSend youSend -> (Mailbox m iSend youSend -> m a) -> m a
+networkMessageMailbox ad = withMailbox (nmRead ad) (nmWrite ad)
+
+appDataMailbox ::
+       (MonadConnect m)
+    => AppData -> (Mailbox m ByteString ByteString -> m a) -> m a
+appDataMailbox ad = withMailbox (liftIO (appRead ad)) (liftIO . appWrite ad)

@@ -9,6 +9,7 @@
 {-# LANGUAGE ViewPatterns #-}
 module Distributed.Stateful.Slave
   ( SlaveArgs(..)
+  , StatefulConn(..)
   , runSlave
   ) where
 
@@ -20,14 +21,13 @@ import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
-import           Data.Mailbox
 
 -- | Arguments for 'runSlave'.
 data SlaveArgs m state context input output = SlaveArgs
   { saUpdate :: !(context -> input -> state -> m (state, output))
     -- ^ Function run on the slave when 'update' is invoked on the
     -- master.
-  , saConn :: !(Mailbox m (SlaveResp state output) (SlaveReq state context input))
+  , saConn :: !(StatefulConn m (SlaveResp state output) (SlaveReq state context input))
   }
 
 data SlaveException
@@ -45,8 +45,8 @@ runSlave :: forall state context input output void m.
   => SlaveArgs m state context input output
   -> m void
 runSlave SlaveArgs{..} = do
-    let recv = either throwIO return =<< atomically (mailboxSelect saConn Just)
-    let send = mailboxWrite saConn
+    let recv = scReadSelect saConn Just
+    let send = scWrite saConn
     go recv send mempty
   where
     throw = throwAndLog

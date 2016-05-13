@@ -4,6 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 module Distributed.Stateful.Internal where
 
 import           ClassyPrelude
@@ -16,6 +17,11 @@ import qualified Data.Serialize as B
 import           Data.Serialize.Orphans ()
 import           Data.TypeFingerprint
 import           Text.Printf (PrintfArg(..))
+
+data StatefulConn m req resp = StatefulConn
+  { scWrite :: !(req -> m ())
+  , scReadSelect :: !(forall a. (resp -> Maybe a) -> m a)
+  }
 
 newtype SlaveId = SlaveId {unSlaveId :: Int}
   deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Serialize)

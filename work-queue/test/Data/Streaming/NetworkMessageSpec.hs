@@ -26,8 +26,6 @@ import           Data.Void (absurd)
 
 import           TestUtils
 
-shouldBe :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
-shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
 
 spec :: Spec
 spec = do
