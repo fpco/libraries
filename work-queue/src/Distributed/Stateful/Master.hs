@@ -5,6 +5,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 module Distributed.Stateful.Master
     ( MasterArgs(..)
     , MasterHandle
@@ -17,7 +18,7 @@ module Distributed.Stateful.Master
     , getStates
     , getSlaveCount
     , addSlaveConnection
-    , SlaveNMAppData
+    , SlaveConn
     ) where
 
 import           ClassyPrelude
@@ -29,11 +30,10 @@ import           Data.Foldable (foldlM)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Data.List.Split (chunksOf)
-import qualified Data.Serialize as B
 import           Data.SimpleSupply
-import qualified Data.Streaming.NetworkMessage as NM
 import           Distributed.Stateful.Internal
 import           Text.Printf (printf)
+import           Data.Mailbox
 
 -- | Arguments for 'mkMasterHandle'
 data MasterArgs = MasterArgs
@@ -46,23 +46,23 @@ data MasterArgs = MasterArgs
     -- @'Just' 0@.
   }
 
-data MasterHandle state context input output = MasterHandle
-  { mhSlaveInfoRef :: !(IORef (SlaveInfo state context input output))
+data MasterHandle m state context input output = MasterHandle
+  { mhSlaveInfoRef :: !(IORef (SlaveInfo m state context input output))
   , mhSlaveCountTVar :: !(TVar Int)
   , mhSlaveIdSupply :: !(Supply SlaveId)
   , mhStateIdSupply :: !(Supply StateId)
   , mhArgs :: !MasterArgs
   }
 
+type SlaveConn m state context input output =
+  Mailbox m (SlaveReq state context input) (SlaveResp state output)
+
 -- TODO: consider unifying these maps? Seemed like more refactoring work
 -- than it's worth, but would reduce the usage of HMS.!
-data SlaveInfo state context input output = SlaveInfo
-  { siConnections :: HMS.HashMap SlaveId (SlaveNMAppData state context input output)
-  , siStates :: HMS.HashMap SlaveId (HS.HashSet StateId)
+data SlaveInfo m state context input output = SlaveInfo
+  { siConnections :: !(HMS.HashMap SlaveId (SlaveConn m state context input output))
+  , siStates :: !(HMS.HashMap SlaveId (HS.HashSet StateId))
   }
-
-type SlaveNMAppData state context input output =
-  NM.NMAppData (SlaveReq state context input) (SlaveResp state output)
 
 data MasterException
   = MasterException Text
@@ -80,7 +80,7 @@ instance Exception MasterException
 mkMasterHandle
   :: (MonadBaseControl IO m, MonadIO m, MonadLogger m)
   => MasterArgs
-  -> m (MasterHandle state context input output)
+  -> m (MasterHandle m state context input output)
 mkMasterHandle ma@MasterArgs{..} = do
   let throw = throwAndLog . MasterException . pack
   case (maMinBatchSize, maMaxBatchSize) of
@@ -122,7 +122,7 @@ mkMasterHandle ma@MasterArgs{..} = do
 -- inconsistent state, and the whole computation should be aborted.
 update :: forall state context input output m.
      (MonadIO m, MonadLogger m, MonadBaseControl IO m, Async.Forall (Async.Pure m))
-  => MasterHandle state context input output
+  => MasterHandle m state context input output
   -> context
   -> HMS.HashMap StateId [input]
   -> m (HMS.HashMap StateId (HMS.HashMap StateId output))
@@ -154,7 +154,7 @@ update MasterHandle{..} context inputs0 = do
   outputs <- case maMaxBatchSize mhArgs of
     Nothing -> do
       forM_ slaveIdsAndInputs $ \(slaveId, inps) -> do
-        NM.nmWrite (slaves HMS.! slaveId) (SReqUpdate context (fmap HMS.fromList $ HMS.fromList inps))
+        mailboxWrite (slaves HMS.! slaveId) (SReqUpdate context (fmap HMS.fromList $ HMS.fromList inps))
       forM slaveIdsAndInputs $ \(slaveId, _) ->
         liftM (slaveId,) $ readSelect (slaves HMS.! slaveId) $ \case
           SRespUpdate outputs -> Just outputs
@@ -187,7 +187,7 @@ updateSlaveThread
   -> context
   -> Int -- ^ Max batch size
   -> SlaveId -- ^ The slave we're operating on
-  -> HMS.HashMap SlaveId (SlaveNMAppData state context input output) -- ^ Slave connections
+  -> HMS.HashMap SlaveId (SlaveConn m state context input output) -- ^ Slave connections
   -> MVar (HMS.HashMap SlaveId [StateId]) -- ^ 'MVar's holding the remaining states for each slave
   -> HMS.HashMap StateId [(StateId, input)] -- Inputs to the computation
   -> m (HMS.HashMap StateId (HMS.HashMap StateId output))
@@ -214,7 +214,7 @@ updateSlaveThread MasterArgs{..} context maxBatchSize thisSlaveId slaves slaveSt
             in (slaveStates, STSOk roundStates)
       let broadcastAndContinue roundStates = do
             let inputs = map (\k -> (k, HMS.fromList (inputMap HMS.! k))) roundStates
-            NM.nmWrite thisSlave (SReqUpdate context (HMS.fromList inputs))
+            mailboxWrite thisSlave (SReqUpdate context (HMS.fromList inputs))
             roundOutputs <- readSelect thisSlave $ \case
               SRespUpdate outputs -> Just outputs
               _ -> Nothing
@@ -269,13 +269,13 @@ updateSlaveThread MasterArgs{..} context maxBatchSize thisSlaveId slaves slaveSt
     requestStatesForSlave otherSlaveId statesToRequest = do
       let otherSlave = slaves HMS.! otherSlaveId
       -- Request the states
-      NM.nmWrite otherSlave (SReqRemoveStates thisSlaveId (HS.fromList statesToRequest))
+      mailboxWrite otherSlave (SReqRemoveStates thisSlaveId (HS.fromList statesToRequest))
       -- Receive the states
       states <- readSelect otherSlave $ \case
         SRespRemoveStates slaveRequesting states | slaveRequesting == thisSlaveId -> Just states
         _ -> Nothing
       -- Upload states
-      NM.nmWrite thisSlave (SReqAddStates states)
+      mailboxWrite thisSlave (SReqAddStates states)
       readSelect thisSlave $ \case
         SRespAddStates -> Just ()
         _ -> Nothing
@@ -287,8 +287,8 @@ updateSlaveThread MasterArgs{..} context maxBatchSize thisSlaveId slaves slaveSt
 -- NOTE: this being able to be called concurrently is why we need to be
 -- careful about atomically updating 'mhSlaveInfoRef'.
 addSlaveConnection :: (MonadBaseControl IO m, MonadIO m)
-  => MasterHandle state context input output
-  -> SlaveNMAppData state context input output
+  => MasterHandle m state context input output
+  -> SlaveConn m state context input output
   -> m ()
 addSlaveConnection MasterHandle{..} conn = do
   slaveId <- askSupply mhSlaveIdSupply
@@ -303,10 +303,8 @@ addSlaveConnection MasterHandle{..} conn = do
 --
 -- If no slaves are connected, this throws an exception.
 resetStates :: forall state context input output m.
-     ( MonadBaseControl IO m, MonadIO m, MonadLogger m
-     , B.Serialize state, B.Serialize context, B.Serialize input, B.Serialize output
-     )
-  => MasterHandle state context input output
+     (MonadBaseControl IO m, MonadIO m, MonadLogger m)
+  => MasterHandle m state context input output
   -> [state]
   -> m (HMS.HashMap StateId state)
 resetStates MasterHandle{..} states0 = do
@@ -332,7 +330,7 @@ resetStates MasterHandle{..} states0 = do
     Just (slaves, slavesStates) -> do
       -- Send states
       forM_ (HMS.toList slavesStates) $ \(slaveId, states) -> do
-        NM.nmWrite (slaves HMS.! slaveId) (SReqResetState (HMS.fromList states))
+        mailboxWrite (slaves HMS.! slaveId) (SReqResetState (HMS.fromList states))
       forM_ (HMS.elems slaves) $ \slave_ -> do
         readSelect slave_ $ \case
           SRespResetState -> Just ()
@@ -340,18 +338,19 @@ resetStates MasterHandle{..} states0 = do
       return (HMS.fromList allStates)
 
 getStateIds ::
-     MasterHandle state context input output
+     MasterHandle m state context input output
   -> IO (HS.HashSet StateId)
 getStateIds = fmap (fold . siStates) . readIORef . mhSlaveInfoRef
 
 -- | Fetches current states stored in the slaves.
 getStates ::
-     MasterHandle state context input output
-  -> IO (HMS.HashMap StateId state)
+     (MonadIO m, MonadBaseControl IO m)
+  => MasterHandle m state context input output
+  -> m (HMS.HashMap StateId state)
 getStates MasterHandle{..} = do
   -- Send states
   slaves <- siConnections <$> readIORef mhSlaveInfoRef
-  forM_ slaves (\slave_ -> NM.nmWrite slave_ SReqGetStates)
+  forM_ slaves (\slave_ -> mailboxWrite slave_ SReqGetStates)
   responses <- forM (HMS.elems slaves) $ \slave_ -> do
     readSelect slave_ $ \case
       SRespGetStates states -> Just states
@@ -359,21 +358,22 @@ getStates MasterHandle{..} = do
   return (mconcat responses)
 
 getSlaveCount
-  :: MasterHandle state context input output
+  :: MasterHandle m state context input output
   -> STM Int
 getSlaveCount = readTVar . mhSlaveCountTVar
 
 readSelect
-  :: MonadIO m
-  => SlaveNMAppData state context input output
+  :: (MonadIO m, MonadBaseControl IO m)
+  => SlaveConn m state context input output
   -> (SlaveResp state output -> Maybe a)
   -> m a
 readSelect slave f = do
-  eres <- NM.nmReadSelect slave $ \x -> case f x of
-    Just y -> return (Right y)
+  eres <- atomically $ mailboxSelect slave $ \x -> case f x of
+    Just y -> Just (Right y)
     Nothing -> case x of
-      SRespError err -> return (Left err)
+      SRespError err -> Just (Left err)
       _ -> Nothing
   case eres of
-    Left err -> liftIO $ throwIO (ExceptionFromSlave err)
-    Right res -> return res
+    Left exc -> throwIO exc
+    Right (Left err) -> throwIO (ExceptionFromSlave err)
+    Right (Right res) -> return res

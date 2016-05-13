@@ -33,10 +33,10 @@ library
                        Distributed.RequestSlaves
                        Data.Streaming.NetworkMessage
                        Data.Mailbox
+                       Distributed.Stateful.Master
+                       Distributed.Stateful.Slave
   other-modules:       Distributed.JobQueue.Internal
-                       -- Distributed.Stateful.Master
-                       -- Distributed.Stateful.Slave
-                       -- Distributed.Stateful.Internal
+                       Distributed.Stateful.Internal
                        Data.SimpleSupply
 
 --   exposed-modules:     Data.WorkQueue

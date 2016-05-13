@@ -9,32 +9,25 @@
 {-# LANGUAGE ViewPatterns #-}
 module Distributed.Stateful.Slave
   ( SlaveArgs(..)
-  , StateId
   , runSlave
   ) where
 
 import           ClassyPrelude
 import           Control.DeepSeq (force, NFData)
-import           Control.Exception.Lifted (evaluate, AsyncException)
-import           Control.Monad.Logger (logDebugNS, MonadLogger)
-import qualified Data.Conduit.Network as CN
+import           Control.Exception.Lifted (evaluate)
+import           Control.Monad.Logger (logDebugNS)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
-import qualified Data.Streaming.NetworkMessage as NM
 import           Distributed.Stateful.Internal
-import           Distributed.RequestSlaves (WorkerConnectInfo(..))
-import           Control.Monad.Trans.Control (MonadBaseControl, control)
 import           FP.Redis (MonadConnect)
+import           Data.Mailbox
 
 -- | Arguments for 'runSlave'.
 data SlaveArgs m state context input output = SlaveArgs
   { saUpdate :: !(context -> input -> state -> m (state, output))
     -- ^ Function run on the slave when 'update' is invoked on the
     -- master.
-  , saConnectInfo :: !WorkerConnectInfo
-    -- ^ Settings for the slave's TCP connection.
-  , saNMSettings :: !NM.NMSettings
-    -- ^ Settings for the connection to the master.
+  , saConn :: !(Mailbox m (SlaveResp state output) (SlaveReq state context input))
   }
 
 data SlaveException
@@ -48,17 +41,13 @@ instance Exception SlaveException
 -- | Runs a stateful slave. Returns when it gets disconnected from the
 -- master.
 runSlave :: forall state context input output void m.
-     ( MonadConnect m
-     , NM.Sendable (SlaveReq state context input), NM.Sendable (SlaveResp state output)
-     , NFData state, NFData output
-     )
+     (MonadConnect m, NFData state, NFData output)
   => SlaveArgs m state context input output
   -> m void
 runSlave SlaveArgs{..} = do
-    let WorkerConnectInfo host port = saConnectInfo
-    -- REVIEW TODO: Shouldn't this be 'tryAny' or similar too?
-    control $ \run -> CN.runTCPClient (CN.clientSettings port host) $ \ad -> run $
-      NM.runNMApp saNMSettings (\nm -> go (NM.nmRead nm) (NM.nmWrite nm) HMS.empty) ad
+    let recv = either throwIO return =<< atomically (mailboxSelect saConn Just)
+    let send = mailboxWrite saConn
+    go recv send mempty
   where
     throw = throwAndLog
     debug msg = logDebugNS "Distributed.Stateful.Slave" msg
@@ -70,7 +59,7 @@ runSlave SlaveArgs{..} = do
     go recv send states = do
       req <- recv
       debug (displayReq req)
-      eres <- try ((do
+      eres <- tryAny ((do
         res <- case req of
           SReqResetState states' -> return (SRespResetState, states')
           SReqGetStates -> return (SRespGetStates states, states)
@@ -105,7 +94,6 @@ runSlave SlaveArgs{..} = do
           send output
           debug (displayResp output)
           go recv send states'
-        Left (fromException -> Just (err :: AsyncException)) -> throwIO err
         Left (err :: SomeException) -> do
           send (SRespError (pack (show err)))
           throwAndLog err

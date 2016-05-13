@@ -19,7 +19,6 @@ module Distributed.JobQueue.Worker
 
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
-import Control.Exception (AsyncException)
 import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Proxy
@@ -97,11 +96,9 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
                 Right req -> do
                     $logDebug ("Starting to work on request " ++ tshow ridBs)
                     cancelledOrResp :: Either () (Either SomeException (Either CancelOrReenqueue response)) <-
-                        Async.race (watchForCancel r rid jqcCancelCheckIvl) (try (f rid req))
+                        Async.race (watchForCancel r rid jqcCancelCheckIvl) (tryAny (f rid req))
                     case cancelledOrResp of
                         Left () -> return (Just (Left (RequestCanceled rid)))
-                        Right (Left (fromException -> Just (err :: AsyncException))) ->
-                            liftIO (throwIO err)
                         Right (Left err) -> return (Just (Left (wrapException err)))
                         Right (Right (Left Reenqueue)) -> return Nothing
                         Right (Right (Left Cancel)) -> return (Just (Left (RequestCanceled rid)))
