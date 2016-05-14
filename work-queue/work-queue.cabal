@@ -32,9 +32,9 @@ library
                        Distributed.Heartbeat
                        Distributed.RequestSlaves
                        Data.Streaming.NetworkMessage
-                       Data.Mailbox
                        Distributed.Stateful.Master
                        Distributed.Stateful.Slave
+                       Distributed.Stateful2
   other-modules:       Distributed.JobQueue.Internal
                        Distributed.Stateful.Internal
                        Data.SimpleSupply
@@ -62,6 +62,7 @@ library
 --                        Distributed.Heartbeat
 --                        Distributed.Heartbeat.Internal
   build-depends:       base
+                     , lens
                      , aeson
                      , async
                      , base64-bytestring
