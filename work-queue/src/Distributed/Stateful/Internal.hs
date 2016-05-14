@@ -20,7 +20,7 @@ import           Text.Printf (PrintfArg(..))
 
 data StatefulConn m req resp = StatefulConn
   { scWrite :: !(req -> m ())
-  , scReadSelect :: !(forall a. (resp -> Maybe a) -> m a)
+  , scRead :: !(m resp)
   }
 
 newtype SlaveId = SlaveId {unSlaveId :: Int}
@@ -39,7 +39,9 @@ data SlaveReq state context input
   = SReqResetState
       !(HMS.HashMap StateId state) -- New states
   | SReqAddStates
-      !(HMS.HashMap StateId state) -- States to add
+      !(HMS.HashMap StateId ByteString)
+      -- States to add. 'ByteString' because they're just
+      -- forwarded by master.
   | SReqRemoveStates
       !SlaveId
       !(HS.HashSet StateId) -- States to get
@@ -63,9 +65,12 @@ instance (HasTypeFingerprint state, HasTypeFingerprint context, HasTypeFingerpri
 data SlaveResp state output
   = SRespResetState
   | SRespAddStates
+      !(HS.HashSet StateId)
   | SRespRemoveStates
       !SlaveId
-      !(HMS.HashMap StateId state)
+      !(HMS.HashMap StateId ByteString)
+      -- States to remove. 'ByteString' because they're just
+      -- forwarded by master.
   | SRespUpdate !(HMS.HashMap StateId (HMS.HashMap StateId output)) -- TODO consider making this a simple list -- we don't really need it to be a HMS.
   | SRespGetStates !(HMS.HashMap StateId state)
   | SRespError Text
@@ -81,14 +86,14 @@ instance (HasTypeFingerprint state, HasTypeFingerprint output) => HasTypeFingerp
 displayReq :: SlaveReq state context input -> Text
 displayReq (SReqResetState mp) = "SReqResetState (" <> pack (show (HMS.keys mp)) <> ")"
 displayReq (SReqAddStates mp) = "SReqAddStates (" <> pack (show (HMS.keys mp)) <> ")"
-displayReq (SReqRemoveStates k mp) = "SReqRemoveStates (" <> pack (show k) <> ") " <> "(" <> pack (show (HS.toList mp)) <> ")"
+displayReq (SReqRemoveStates k mp) = "SReqRemoveStates (" <> pack (show k) <> ") (" <>pack (show (HS.toList mp)) <> ")"
 displayReq (SReqUpdate _ mp) = "SReqUpdate (" <> pack (show (fmap HMS.keys mp)) <> ")"
 displayReq SReqGetStates = "SReqGetStates"
 
 displayResp :: SlaveResp state output -> Text
 displayResp SRespResetState = "SRespResetState"
-displayResp SRespAddStates = "SRespAddStates"
-displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> pack (show k) <> ") " <> "(" <> pack (show (HMS.keys mp)) <> ")"
+displayResp (SRespAddStates states) = "SRespAddStates (" <> pack (show states) <> ")"
+displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> pack (show k) <> ") (" <> pack (show (HMS.keys mp)) <> ")"
 displayResp (SRespUpdate mp) = "SRespUpdate (" <> pack (show (fmap HMS.keys mp)) <> ")"
 displayResp (SRespGetStates mp) = "SRespGetStates (" <> pack (show (HMS.keys mp)) <> ")"
 displayResp (SRespError err) = "SRespError " <> pack (show err)

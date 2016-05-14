@@ -6,6 +6,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE GADTs #-}
 module Distributed.Stateful.Master
     ( MasterArgs(..)
     , MasterHandle
@@ -23,6 +24,7 @@ module Distributed.Stateful.Master
 
 import           ClassyPrelude
 import           Control.Concurrent.Async.Lifted.Safe (mapConcurrently)
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Control.Monad.Logger (logDebugNS, MonadLogger)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
@@ -32,6 +34,7 @@ import           Data.SimpleSupply
 import           Distributed.Stateful.Internal
 import           Text.Printf (printf)
 import           FP.Redis (MonadConnect)
+import           Data.Void (absurd)
 
 -- | Arguments for 'mkMasterHandle'
 data MasterArgs = MasterArgs
@@ -67,6 +70,7 @@ data MasterException
   | InputMissingException StateId
   | UnusedInputsException [StateId]
   | NoSlavesConnectedException
+  | UnexpectedResponse Text
   | ExceptionFromSlave Text
   deriving (Eq, Show, Typeable)
 
@@ -113,6 +117,7 @@ mkMasterHandle ma@MasterArgs{..} = do
 --
 -- NOTE: if this throws an exception, then `MasterHandle` may be in an
 -- inconsistent state, and the whole computation should be aborted.
+{-# INLINE update #-}
 update :: forall state context input output m.
      (MonadConnect m)
   => MasterHandle m state context input output
@@ -121,6 +126,8 @@ update :: forall state context input output m.
   -> m (HMS.HashMap StateId (HMS.HashMap StateId output))
 update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
   let slaves = mhSlaves mh
+  when (HMS.null slaves) $
+    throwIO (MasterException "No slaves, cannot update")
   -- Give state ids to each of the inputs, which will be used to label the
   -- state resulting from invoking saUpdate with that input.
   let sortedInputs = sortBy (comparing fst) (HMS.toList inputs0)
@@ -140,15 +147,18 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
             (slaveConnection (slaves HMS.! slaveId))
             (SReqUpdate context (HMS.fromList <$> HMS.fromList inps))
         forM slaveIdsAndInputs $ \(slaveId, _) ->
-          liftM (slaveId,) $ readSelect (slaveConnection (slaves HMS.! slaveId)) $ \case
+          liftM (slaveId,) $ readExpect (slaveConnection (slaves HMS.! slaveId)) $ \case
             SRespUpdate outputs -> Just outputs
             _ -> Nothing
       Just maxBatchSize -> do
+        error "TODO"
+        {-
         slaveStatesVar :: MVar (HMS.HashMap SlaveId [StateId]) <-
           newMVar (HMS.fromList (map (second (map fst)) slaveIdsAndInputs))
         let slaveThread slaveId = updateSlaveThread
               maxBatchSize (maMinBatchSize (mhArgs mh)) slaveId (slaveConnection <$> slaves) slaveStatesVar context inputMap
         mapConcurrently (\slaveId -> (slaveId, ) <$> slaveThread slaveId) (HMS.keys slaves)
+        -}
   let mh' = mh
         { mhSlaves =
             integrateNewStates slaves (second (fmap (const ()) . mconcat . HMS.elems) <$> outputs)
@@ -187,85 +197,204 @@ assignInputsToSlaves slaveStates inputMap = do
     Left (UnusedInputsException (HMS.keys unusedInputs))
   return slavesIdsAndInputs
 
-data SlaveThreadStatus
-  = STSOk
-      ![StateId] -- States to execute
-  | STSRequestStates
-      !SlaveId -- Slave to request the states below from
-      ![StateId]
-  | STSStop
-  deriving (Eq, Show)
-
 {-
-data SlaveStatus = SlaveStatus
-  { ssRemainingInputs :: ![StateId]
-  }
-
-data StateTransfer
-  = STNone
-  | STRemovingStates !StateId -- ^ This is the recipient of the states
-  | STRemovingStates
-
-data SlaveWaiting = SlaveWaiting
-  { swUpdate :: !Bool
-  , swAddStates :: !Bool
-  , swRemoveStates :: !Bool
-  }
-
-HMS.HashMap StateId (HMS.HashMap StateId output) -- Final
--}
-
-data SlaveStatus = SlaveStatus
-  { ssRemaining :: ![StateId] -- ^ Free states that remain
-  , ssUpdating :: ![StateId] -- ^ States we're currently updating
-  , ssRemoving :: ![StateId] -- ^ States we're currently removing
-  , ssAdding :: ![StateId] -- ^ States we're currently adding
-  }
-
 updateStatusAndOutputs ::
      SlaveId
   -> SlaveResp state output 
-  -> HMS.HashMap StateId SlaveStatus
+  -> HMS.HashMap SlaveId SlaveStatus
   -> HMS.HashMap StateId (HMS.HashMap StateId output)
-  -> (HMS.HashMap StateId SlaveStatus, HMS.HashMap StateId (HMS.HashMap StateId output))
-updateStatusAndOutputs = error "TODO"
+  -> Either MasterException
+      ( HMS.HashMap SlaveId SlaveStatus
+      , HMS.HashMap StateId (HMS.HashMap StateId output)
+      , Maybe (UpdateSlaveReq state)
+      )
+updateStatusAndOutputs slaveId resp statuses outputs = do
+  let ss = statuses HMS.! slaveId
+  (statuses', slaveOutputs, reqs) <- case resp of
+    SRespResetState -> Left (UnexpectedResponse (displayResp resp))
+    SRespGetStates _ -> Left (UnexpectedResponse (displayResp resp))
+    SRespError err -> Left (ExceptionFromSlave err)
+    SRespAddStates addedStates -> do
+      remainingAdding <- ssAdding ss `strictDifference` addedStates
+      return
+        ( HMS.insert slaveId ss{ssAdding = remainingAdding} statuses
+        , mempty
+        , Nothing
+        )
+    SRespRemoveStates requestingSlaveId removedStates -> do
+      let removedStatesIds = HS.fromList (HMS.keys removedStates)
+      remainingRemoving <- ssRemoving ss `strictDifference` removedStatesIds
+      let requestingSS = statuses HMS.! requestingSlaveId
+      unless (HS.null (ssRemaining requestingSS)) $
+        Left $ MasterException $ pack $
+          printf "Expected no states in slave %d when receiving states for it."
+      return
+        ( HMS.insert slaveId ss{ssRemoving = remainingRemoving} $
+          HMS.insert requestingSlaveId requestingSS{ssRemaining = removedStatesIds} $
+          statuses
+        , mempty
+        , Nothing
+        )
+    SRespUpdate outputs -> do
+      let updatedStates = HS.fromList (HMS.keys outputs)
+      remainingUpdating <- ssUpdating ss `strictDifference` updatedStates
+      return
+        ( HMS.insert slaveId ss{ssUpdating = remainingUpdating} statuses
+        , outputs
+        , mempty
+        )
+  return (statuses', outputs <> slaveOutputs, reqs)
+-}
 
+strictSetDifference :: (Show a, Eq a, Hashable a) => HS.HashSet a -> HS.HashSet a -> Either MasterException (HS.HashSet a)
+strictSetDifference a b = do
+  let c = a `HS.difference` b
+  unless (HS.size c == HS.size a - HS.size b) $
+    Left $ MasterException $ pack $
+      printf "Bad set difference (strictDifference), %s - %s" (show a) (show b)
+  return c
+
+strictMapDifference :: (Show a, Eq a, Hashable a) => HMS.HashMap a b -> HMS.HashMap a c -> Either MasterException (HMS.HashMap a b)
+strictMapDifference a b = do
+  let c = a `HMS.difference` b
+  unless (HMS.size c == HMS.size a - HMS.size b) $
+    Left $ MasterException $ pack $
+      printf "Bad set difference (strictDifference), %s - %s" (show (HMS.keys a)) (show (HMS.keys b))
+  return c
+
+{-
 slavesDone :: HMS.HashMap StateId SlaveStatus -> Bool
-slavesDone = error "TODO"
-
-data UpdateSlaveReq
-  = USRUpdate ![StateId]
-  | USRAddStates ![(StateId, state)]
-  | URSRemoveStates ![StateId]
-  deriving (Eq, Show)
+slavesDone = all slaveDone
+  where
+    slaveDone SlaveStatus{..} =
+      null ssRemaining && null ssUpdating &&
+      null ssRemoving && null ssAdding
 
 reqsToSend ::
      Int -- ^ Max batch size
   -> Maybe Int -- ^ Maybe min batch size
-  -> MS.HashMap StateId SlaveStatus
+  -> HMS.HashMap StateId SlaveStatus
   -> (HMS.HashMap StateId SlaveStatus, [(StateId, UpdateSlaveReq state)])
 reqsToSend = error "TODO"
-
-updateAllSlaves ::
-     (MonadConnect m)
-  => Int -- ^ 
-{-
-reqsToSend slaveId slaveStatuses = let
-  SlaveStatus{..} = slaveStatuses HMS.! slaveId
-  in if
-    | null ssUpdating && not (null ssRemaining) -> error "TODO" -- update
-    | null ssUpdating && null ssRemaining && null ssAdding -> error "TODO" -- steal slaves
-    | 
-    then Just (slaveStatuses, [])
-    else if not (null 
 -}
 
-reqsToSend statuses = mconcat [map checkSlave (HMS.toList statuses)]
-  where
-    checkSlave ::
-         (SlaveId, SlaveStatus)
-      -> Maybe (SlaveStatus, [SlaveReq state context input output])
+data SlaveStatus = SlaveStatus
+  { ssRemaining :: !(HS.HashSet StateId) -- ^ Free states that remain
+  , ssUpdating :: !(HS.HashSet StateId) -- ^ States we're currently updating
+  , ssRemoving :: !(HS.HashSet StateId) -- ^ States we're currently removing
+  , ssAdding :: !(HS.HashSet StateId) -- ^ States we're currently adding
+  } deriving (Eq, Show)
 
+data UpdateSlaveResp output
+  = USRespAddStates !(HS.HashSet StateId)
+  | USRespRemoveStates !SlaveId (HMS.HashMap StateId ByteString)
+  | USRespUpdate !(HMS.HashMap StateId (HMS.HashMap StateId output))
+  | USRespInit
+  deriving (Eq, Show)
+
+data UpdateSlaveReq
+  = USReqUpdate ![StateId]
+  | USReqAddStates !(HMS.HashMap StateId ByteString)
+  | USReqRemoveStates !SlaveId !(HS.HashSet StateId)
+  deriving (Eq, Show)
+
+data UpdateSlavesStatus output = UpdateSlavesStatus
+  { ussSlaves :: !(HMS.HashMap SlaveId SlaveStatus)
+  , ussOutputs :: !(HMS.HashMap SlaveId (HMS.HashMap StateId (HMS.HashMap StateId output)))
+  }
+
+data UpdateSlaveStep
+  = USSDone
+  | USSNotDone ![(SlaveId, UpdateSlaveReq)]
+  deriving (Eq, Show)
+
+{-# INLINE updateSlavesStep #-}
+updateSlavesStep ::
+     Int -- ^ Max batch size
+  -> Maybe Int -- ^ Maybe min batch size
+  -> SlaveId
+  -> UpdateSlaveResp output
+  -> UpdateSlavesStatus output
+  -> Either MasterException (UpdateSlavesStatus output, UpdateSlaveStep)
+updateSlavesStep = error "TODO"
+
+{-# INLINE updateSlaves #-}
+updateSlaves :: forall state context input output m.
+     (MonadConnect m)
+  => Int -- ^ Max batch size
+  -> Maybe Int -- ^ Maybe min batch size
+  -> HMS.HashMap SlaveId (Slave m state context input output)
+  -- ^ Slaves connections
+  -> context
+  -- ^ Context to the computation
+  -> HMS.HashMap StateId [(StateId, input)]
+  -- ^ Inputs to the computation
+  -> m [(SlaveId, HMS.HashMap StateId (HMS.HashMap StateId output))]
+updateSlaves maxBatchSize mbMinBatchSize slaves context inputMap = do
+  incomingChan :: TChan (SlaveId, UpdateSlaveResp output) <- liftIO newTChanIO
+  -- Write one init message per slave
+  forM_ (HMS.keys slaves) $ \slaveId ->
+    atomically (writeTChan incomingChan (slaveId, USRespInit))
+  outgoingChan :: TChan (SlaveId, UpdateSlaveReq) <- liftIO newTChanIO
+  let slaveStatus0 = error "TODO"
+      status = UpdateSlavesStatus
+        { ussSlaves = const slaveStatus0 <$> slaves
+        , ussOutputs = mempty
+        }
+  status' <- fmap (either (either absurd absurd) id) $ Async.race
+    (Async.race
+      (receiveLoops incomingChan (HMS.toList slaves))
+      (sendLoop outgoingChan inputMap))
+    (go incomingChan outgoingChan status)
+  return (HMS.toList (ussOutputs status'))
+  where
+    go incomingChan outgoingChan status = do
+      (slaveId, resp) <- atomically (readTChan incomingChan)
+      (status', res) <- either throwIO return $
+        updateSlavesStep maxBatchSize mbMinBatchSize slaveId resp status
+      case res of
+        USSDone -> return status'
+        USSNotDone reqs -> do
+          mapM_ (atomically . writeTChan outgoingChan) reqs
+          go incomingChan outgoingChan status'
+
+    receiveLoops slaveRespsChan = \case
+      [] -> throwIO (MasterException "No slaves in updateSlaves, this should never happen")
+      [(slId, sl)] -> receiveLoop slaveRespsChan slId sl
+      (slId, sl) : sls ->
+        fmap (either absurd absurd) $
+        Async.race (receiveLoop slaveRespsChan slId sl) (receiveLoops slaveRespsChan sls)
+
+    receiveLoop incomingChan slaveId slave = forever $ do
+      resp0 <- scRead (slaveConnection slave)
+      resp <- case resp0 of
+        SRespResetState -> throwIO (UnexpectedResponse (displayResp resp0))
+        SRespGetStates _ -> throwIO (UnexpectedResponse (displayResp resp0))
+        SRespError err -> throwIO (ExceptionFromSlave err)
+        SRespAddStates addedStates -> return (USRespAddStates addedStates)
+        SRespRemoveStates requestingSlaveId removedStates ->
+          return (USRespRemoveStates requestingSlaveId removedStates)
+        SRespUpdate outputs -> return (USRespUpdate outputs)
+      atomically (writeTChan incomingChan (slaveId, resp))
+
+    sendLoop ::
+         TChan (SlaveId, UpdateSlaveReq)
+      -> HMS.HashMap StateId [(StateId, input)]
+      -> m void
+    sendLoop outgoingChan inputs = do
+      (slaveId, req0) <- atomically (readTChan outgoingChan)
+      (req, inputs') <- either throwIO return $ case req0 of
+        USReqUpdate stateIds -> do
+          let updateStates = HMS.fromList (zip stateIds (repeat ()))
+          let updateInputs = inputs `HMS.intersection` updateStates
+          remainingInputs <- inputs `strictMapDifference` updateStates
+          return (SReqUpdate context (HMS.fromList <$> updateInputs), remainingInputs)
+        USReqRemoveStates x y -> return (SReqRemoveStates x y, inputs)
+        USReqAddStates y -> return (SReqAddStates y, inputs)
+      scWrite (slaveConnection (slaves HMS.! slaveId)) req
+      sendLoop outgoingChan inputs'
+
+{-
 updateSlaveThread :: forall state context input output m.
      (MonadConnect m)
   => Int -- ^ Max batch size
@@ -369,6 +498,7 @@ updateSlaveThread maxBatchSize mbMinBatchSize thisSlaveId slaves slaveStatesVar 
         SRespAddStates -> Just ()
         _ -> Nothing
       return ()
+-}
 
 -- | Adds a connection to a slave. Unlike 'update', 'resetStates', etc,
 -- this can be called concurrently with the other operations.
@@ -389,6 +519,7 @@ addSlaveConnection (MasterHandle mhv) conn = modifyMVar_ mhv $ \mh -> do
 -- states among the currently connected slaves.
 --
 -- If no slaves are connected, this throws an exception.
+{-# INLINE resetStates #-}
 resetStates :: forall state context input output m.
      (MonadBaseControl IO m, MonadIO m, MonadLogger m)
   => MasterHandle m state context input output
@@ -415,7 +546,7 @@ resetStates (MasterHandle mhv) states0 = modifyMVar mhv $ \mh -> do
   forM_ (HMS.toList slavesStates) $ \(slaveId, states) -> do
     scWrite (slaveConnection (slaves HMS.! slaveId)) (SReqResetState (HMS.fromList states))
   forM_ (HMS.elems slaves') $ \slave_ -> do
-    readSelect (slaveConnection slave_) $ \case
+    readExpect (slaveConnection slave_) $ \case
       SRespResetState -> Just ()
       _ -> Nothing
   return (mh{mhSlaves = slaves'}, HMS.fromList allStates)
@@ -427,6 +558,7 @@ getStateIds ::
 getStateIds = fmap (fold . fmap slaveStates . mhSlaves) . readMVar . unMasterHandle
 
 -- | Fetches current states stored in the slaves.
+{-# INLINE getStates #-}
 getStates ::
      (MonadConnect m)
   => MasterHandle m state context input output
@@ -436,22 +568,21 @@ getStates (MasterHandle mhv) = withMVar mhv $ \mh -> do
   let slaves = mhSlaves mh
   forM_ slaves (\slave_ -> scWrite (slaveConnection slave_) SReqGetStates)
   responses <- forM (HMS.elems slaves) $ \slave_ -> do
-    readSelect (slaveConnection slave_) $ \case
+    readExpect (slaveConnection slave_) $ \case
       SRespGetStates states -> Just states
       _ -> Nothing
   return (mconcat responses)
 
-readSelect
-  :: (MonadIO m, MonadBaseControl IO m)
+{-# INLINE readExpect #-}
+readExpect ::
+     (MonadIO m, MonadBaseControl IO m)
   => SlaveConn m state context input output
   -> (SlaveResp state output -> Maybe a)
   -> m a
-readSelect slave f = do
-  eres <- scReadSelect slave $ \x -> case f x of
-    Just y -> Just (Right y)
-    Nothing -> case x of
-      SRespError err -> Just (Left err)
-      _ -> Nothing
-  case eres of
-    Left err -> throwIO (ExceptionFromSlave err)
-    Right res -> return res
+readExpect slave f = do
+  resp <- scRead slave
+  case resp of
+    SRespError err -> throwIO (ExceptionFromSlave err)
+    _ -> case f resp of
+      Nothing -> throwIO (UnexpectedResponse (displayResp resp))
+      Just x -> return x

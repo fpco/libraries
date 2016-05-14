@@ -21,6 +21,7 @@ import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
+import qualified Data.Serialize as C
 
 -- | Arguments for 'runSlave'.
 data SlaveArgs m state context input output = SlaveArgs
@@ -34,18 +35,20 @@ data SlaveException
   = AddingExistingStates [StateId]
   | MissingStatesToRemove [StateId]
   | InputStateNotFound StateId
+  | DecodeStateError String
   deriving (Eq, Show, Typeable)
 
 instance Exception SlaveException
 
 -- | Runs a stateful slave. Returns when it gets disconnected from the
 -- master.
+{-# INLINE runSlave #-}
 runSlave :: forall state context input output void m.
-     (MonadConnect m, NFData state, NFData output)
+     (MonadConnect m, NFData state, NFData output, C.Serialize state)
   => SlaveArgs m state context input output
   -> m void
 runSlave SlaveArgs{..} = do
-    let recv = scReadSelect saConn Just
+    let recv = scRead saConn
     let send = scWrite saConn
     go recv send mempty
   where
@@ -63,11 +66,15 @@ runSlave SlaveArgs{..} = do
         res <- case req of
           SReqResetState states' -> return (SRespResetState, states')
           SReqGetStates -> return (SRespGetStates states, states)
-          SReqAddStates newStates -> do
+          SReqAddStates newStates0 -> do
+            let decodeOrThrow bs = case C.decodeEof bs of
+                  Left err -> throw (DecodeStateError err)
+                  Right x -> return x
+            newStates <- mapM decodeOrThrow newStates0
             let aliased = HMS.keys (HMS.intersection newStates states)
             unless (null aliased) $ throw (AddingExistingStates aliased)
-            return (SRespAddStates, HMS.union newStates states)
-          SReqRemoveStates slaveRequesting stateIdsToDelete -> do
+            return (SRespAddStates (HS.fromList (HMS.keys newStates)), HMS.union newStates states)
+          SReqRemoveStates requesting stateIdsToDelete -> do
             let eitherLookup sid =
                   case HMS.lookup sid states of
                     Nothing -> Left sid
@@ -75,7 +82,7 @@ runSlave SlaveArgs{..} = do
             let (missing, toSend) = partitionEithers $ map eitherLookup $ HS.toList stateIdsToDelete
             unless (null missing) $ throw (MissingStatesToRemove missing)
             let states' = foldl' (flip HMS.delete) states stateIdsToDelete
-            return (SRespRemoveStates slaveRequesting (HMS.fromList toSend), states')
+            return (SRespRemoveStates requesting (C.encode <$> HMS.fromList toSend), states')
           SReqUpdate context inputs -> do
             results <- forM (HMS.toList inputs) $ \(oldStateId, innerInputs) ->
               if null innerInputs then return Nothing else Just <$> do
