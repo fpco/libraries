@@ -35,8 +35,8 @@ library
                        Distributed.Stateful.Master
                        Distributed.Stateful.Slave
                        Distributed.Stateful2
-  other-modules:       Distributed.JobQueue.Internal
                        Distributed.Stateful.Internal
+  other-modules:       Distributed.JobQueue.Internal
                        Data.SimpleSupply
 
 --   exposed-modules:     Data.WorkQueue
@@ -118,11 +118,14 @@ test-suite wq-test
   other-modules:       TestUtils
                      , Distributed.HeartbeatSpec
                      , Distributed.RequestSlavesSpec
+                     , Distributed.StatefulSpec2
                      , Data.Streaming.NetworkMessageSpec
                      , Data.TypeFingerprintSpec
   ghc-options:         -Wall
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N4
   build-depends:       base
+                     , lens
+                     , mtl
                      , work-queue
                      , lifted-async
                      , QuickCheck

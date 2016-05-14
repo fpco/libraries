@@ -8,6 +8,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE DeriveGeneric #-}
 module Distributed.Stateful.Master
     ( MasterArgs(..)
     , MasterHandle
@@ -37,6 +38,8 @@ import           FP.Redis (MonadConnect)
 import           Data.Void (absurd)
 import           Control.Lens (makeLenses, set, at, _Just, over)
 import           Control.Exception (throw)
+import           Control.Exception.Lifted (evaluate)
+import           Control.DeepSeq (force, NFData)
 
 -- | Arguments for 'mkMasterHandle'
 data MasterArgs = MasterArgs
@@ -158,23 +161,23 @@ assignInputsToSlaves slaveStates inputMap = do
 {-# INLINE strictSetDifference #-}
 strictSetDifference ::
      (Show a, Eq a, Hashable a, MonadThrow m)
-  => HS.HashSet a -> HS.HashSet a -> m (HS.HashSet a)
-strictSetDifference a b = do
+  => String -> HS.HashSet a -> HS.HashSet a -> m (HS.HashSet a)
+strictSetDifference loc a b = do
   let c = a `HS.difference` b
   unless (HS.size c == HS.size a - HS.size b) $
     throwM $ MasterException $ pack $
-      printf "Bad set difference (strictDifference), %s - %s" (show a) (show b)
+      printf "%s: Bad set difference (strictSetDifference), %s - %s" loc (show a) (show b)
   return c
 
 {-# INLINE strictMapDifference #-}
 strictMapDifference ::
      (Show a, Eq a, Hashable a, MonadThrow m)
-  => HMS.HashMap a b -> HMS.HashMap a c -> m (HMS.HashMap a b)
-strictMapDifference a b = do
+  => String -> HMS.HashMap a b -> HMS.HashMap a c -> m (HMS.HashMap a b)
+strictMapDifference loc a b = do
   let c = a `HMS.difference` b
   unless (HMS.size c == HMS.size a - HMS.size b) $
     throwM $ MasterException $ pack $
-      printf "Bad set difference (strictDifference), %s - %s" (show (HMS.keys a)) (show (HMS.keys b))
+      printf "%s: Bad map difference (strictMapDifference), %s - %s" loc (show (HMS.keys a)) (show (HMS.keys b))
   return c
 
 data SlaveStatus = SlaveStatus
@@ -182,37 +185,42 @@ data SlaveStatus = SlaveStatus
   , _ssUpdating :: !(HS.HashSet StateId) -- ^ States we're currently updating
   , _ssRemoving :: !(HS.HashSet StateId) -- ^ States we're currently removing
   , _ssAdding :: !(HS.HashSet StateId) -- ^ States we're currently adding
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Generic)
 makeLenses ''SlaveStatus
+instance NFData SlaveStatus
 
 data UpdateSlaveResp output
   = USRespAddStates !(HS.HashSet StateId)
   | USRespRemoveStates !SlaveId (HMS.HashMap StateId ByteString)
   | USRespUpdate !(HMS.HashMap StateId (HMS.HashMap StateId output))
   | USRespInit
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+instance (NFData output) => NFData (UpdateSlaveResp output)
 
 data UpdateSlaveReq input
   = USReqUpdate !(HMS.HashMap StateId (HMS.HashMap StateId input))
   | USReqAddStates !(HMS.HashMap StateId ByteString)
   | USReqRemoveStates !SlaveId !(HS.HashSet StateId)
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+instance (NFData input) => NFData (UpdateSlaveReq input)
 
 data UpdateSlavesStatus input output = UpdateSlavesStatus
   { _ussSlaves :: !(HMS.HashMap SlaveId SlaveStatus)
   , _ussInputs :: !(HMS.HashMap StateId [(StateId, input)])
   , _ussOutputs :: !(HMS.HashMap SlaveId (HMS.HashMap StateId (HMS.HashMap StateId output)))
-  }
+  } deriving (Generic)
 makeLenses ''UpdateSlavesStatus
+instance (NFData input, NFData output) => NFData (UpdateSlavesStatus input output)
 
 data UpdateSlaveStep input
   = USSDone
   | USSNotDone ![(SlaveId, UpdateSlaveReq input)]
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+instance NFData input => NFData (UpdateSlaveStep input)
 
 {-# INLINE updateSlavesStep #-}
 updateSlavesStep :: forall m input output.
-     (MonadThrow m)
+     (MonadThrow m, MonadIO m, Show output, Show input)
   => Int -- ^ Max batch size
   -> Maybe Int -- ^ Maybe min batch size
   -> SlaveId
@@ -220,14 +228,21 @@ updateSlavesStep :: forall m input output.
   -> UpdateSlavesStatus input output
   -> m (UpdateSlavesStatus input output, UpdateSlaveStep input)
 updateSlavesStep maxBatchSize mbMinBatchSize respSlaveId resp statuses = do
-  case resp of
+  {-
+  putStrLn $ pack $ printf
+    "### Remaining inputs" 
+  forM_ (map (second (map (first unStateId) . sortBy (comparing fst))) (map (first unStateId) (sortBy (comparing fst) (HMS.toList (_ussInputs statuses))))) print
+  putStrLn $ pack $ printf
+    "### Got resp: slave %d %s" respSlaveId (show resp)
+  -}
+  (statuses', req) <- case resp of
     USRespInit -> do
       findSomethingToUpdate respSlaveId statuses
     USRespUpdate outputs -> do
       -- Remove from ssUpdating in thisSlaveId, update the outputs, and then find something
       -- else to do.
       let removeUpdating updating =
-            either throw id (strictSetDifference updating (HS.fromList (HMS.keys outputs)))
+            either throw id (strictSetDifference "USRespUpdate" updating (HS.fromList (HMS.keys outputs)))
       -- HMS.union is not efficient with small thing into big things
       let insertAll xs m = case xs of
             [] -> m
@@ -244,7 +259,7 @@ updateSlavesStep maxBatchSize mbMinBatchSize respSlaveId resp statuses = do
       -- Move from ssAdding to ssRemaining in thisSlaveId, and then
       -- find something else to do.
       let removeAdding adding =
-            either throw id (strictSetDifference adding statesIds)
+            either throw id (strictSetDifference "USRespAddStates" adding statesIds)
       let moveToRemaining = over ssAdding removeAdding . over ssRemaining (++ HS.toList statesIds)
       let statuses' =
             over (ussSlaves . at respSlaveId . _Just) moveToRemaining statuses'
@@ -253,13 +268,21 @@ updateSlavesStep maxBatchSize mbMinBatchSize respSlaveId resp statuses = do
       -- Move from ssRemoving in thisSlaveId to ssAdding in requestingSlaveId,
       -- and issue a request adding the slaves to requestingSlaveId
       let removeRemoving removing =
-            either throw id (strictSetDifference removing (HS.fromList (HMS.keys states)))
+            either throw id (strictSetDifference "USRespRemoveStates" removing (HS.fromList (HMS.keys states)))
       let addAdding = HS.union (HS.fromList (HMS.keys states))
       let statuses' =
             over (ussSlaves . at respSlaveId . _Just . ssRemoving) removeRemoving $
             over (ussSlaves . at requestingSlaveId . _Just . ssAdding) addAdding $
             statuses
       return (statuses', USSNotDone [(requestingSlaveId, USReqAddStates states)])
+  {-
+  case req of
+    USSNotDone [(SlaveId sl, USReqUpdate updates)] -> do
+      putStrLn $ pack $ printf "### Sending to slave %d" sl
+      forM_ (map (second (map (first unStateId) . sortBy (comparing fst) . HMS.toList)) (sortBy (comparing fst) (map (first unStateId) (HMS.toList updates)))) print
+    _ -> return ()
+  -}
+  return (statuses', req)
   where
     {-# INLINE findSomethingToUpdate #-}
     findSomethingToUpdate ::
@@ -286,9 +309,14 @@ updateSlavesStep maxBatchSize mbMinBatchSize respSlaveId resp statuses = do
           let (toUpdate0, remaining) = splitAt maxBatchSize (_ssRemaining ss)
           let toUpdateInputs = HMS.fromList
                 [(k, HMS.fromList (_ussInputs uss HMS.! k)) | k <- toUpdate0]
-          remainingInputs <- strictMapDifference
-            (_ussInputs uss) (HMS.fromList (zip remaining (repeat ())))
-          let uss' = set (ussSlaves . at slaveId . _Just . ssRemaining) remaining $
+          remainingInputs <- strictMapDifference "findSomethingToUpdate"
+            (_ussInputs uss) (HMS.fromList (zip toUpdate0 (repeat ())))
+          let moveToUpdating = \case
+                Nothing -> throw (MasterException (pack (printf "findSomethingToUpdate: Couldn't find slave %d" slaveId)))
+                Just ss_ -> if HS.null (_ssUpdating ss_)
+                  then Just ss_{_ssRemaining = remaining, _ssUpdating = HS.fromList toUpdate0}
+                  else throw (MasterException (pack (printf "findSomethingToUpdate: ssUpdating wasn't null (%s)" slaveId (show (_ssUpdating ss)))))
+          let uss' = over (ussSlaves . at slaveId) moveToUpdating $
                      set ussInputs remainingInputs uss
           return (uss', USSNotDone [(slaveId, USReqUpdate toUpdateInputs)])
 
@@ -319,7 +347,7 @@ updateSlavesStep maxBatchSize mbMinBatchSize respSlaveId resp statuses = do
 
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
-     (MonadConnect m)
+     (MonadConnect m, Show input, Show output, NFData input, NFData output)
   => Int -- ^ Max batch size
   -> Maybe Int -- ^ Maybe min batch size
   -> HMS.HashMap SlaveId (Slave m state context input output)
@@ -357,6 +385,7 @@ updateSlaves maxBatchSize mbMinBatchSize slaves context inputMap = do
       (slaveId, resp) <- atomically (readTChan incomingChan)
       (status', res) <-
         updateSlavesStep maxBatchSize mbMinBatchSize slaveId resp status
+      evaluate (force (status', res))
       case res of
         USSDone -> return status'
         USSNotDone reqs -> do
@@ -408,12 +437,13 @@ updateSlaves maxBatchSize mbMinBatchSize slaves context inputMap = do
 -- inconsistent state, and the whole computation should be aborted.
 {-# INLINE update #-}
 update :: forall state context input output m.
-     (MonadConnect m)
+     (MonadConnect m, Show input, Show output, NFData input, NFData output)
   => MasterHandle m state context input output
   -> context
   -> HMS.HashMap StateId [input]
   -> m (HMS.HashMap StateId (HMS.HashMap StateId output))
 update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
+  -- TODO add checks for well-formedness of inputs'
   let slaves = mhSlaves mh
   when (HMS.null slaves) $
     throwIO (MasterException "No slaves, cannot update")
@@ -501,8 +531,8 @@ resetStates (MasterHandle mhv) states0 = modifyMVar mhv $ \mh -> do
 getStateIds ::
      (MonadConnect m)
   => MasterHandle m state context input output
-  -> m (HMS.HashMap StateId ())
-getStateIds = fmap (fold . fmap slaveStates . mhSlaves) . readMVar . unMasterHandle
+  -> m (HS.HashSet StateId)
+getStateIds = fmap (HS.fromList . HMS.keys . fold . fmap slaveStates . mhSlaves) . readMVar . unMasterHandle
 
 -- | Fetches current states stored in the slaves.
 {-# INLINE getStates #-}

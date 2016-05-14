@@ -11,6 +11,7 @@ module TestUtils
     , redisIt
     , redisIt_
     , loggingIt
+    , loggingProperty
     , randomThreadDelay
     , KillRandomly(..)
     , killRandomly
@@ -25,6 +26,7 @@ import qualified Data.Text as T
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           System.Random (randomRIO)
 import           Control.Concurrent (threadDelay)
+import qualified Test.QuickCheck as QC
 
 import           Distributed.Redis
 
@@ -37,13 +39,21 @@ clearRedisKeys redis = do
     matches <- run redis (keys "test:*")
     mapM_ (run_ redis . del) (NE.nonEmpty matches)
 
+minimumLogLevel = LevelError
+
 loggingIt :: String -> (forall m. (MonadConnect m) => m ()) -> Spec
 loggingIt msg cont = it msg x
   where
     x :: IO ()
-    x = runStdoutLoggingT $ filterLogger (\_ ll -> ll >= LevelError) $ do
+    x = runStdoutLoggingT $ filterLogger (\_ ll -> ll >= minimumLogLevel) $ do
         $logInfo (T.pack msg)
         cont
+
+loggingProperty :: forall prop.
+       (QC.Testable prop)
+    => (LoggingT IO prop) -> QC.Property
+loggingProperty m = QC.ioProperty
+    (runStdoutLoggingT (filterLogger (\_ ll -> ll >= minimumLogLevel) m) :: IO prop)
 
 redisIt_ :: String -> (forall m. (MonadConnect m) => m ()) -> Spec
 redisIt_ msg cont = redisIt msg (\_r -> cont)

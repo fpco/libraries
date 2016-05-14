@@ -84,14 +84,13 @@ runSlave SlaveArgs{..} = do
             let states' = foldl' (flip HMS.delete) states stateIdsToDelete
             return (SRespRemoveStates requesting (C.encode <$> HMS.fromList toSend), states')
           SReqUpdate context inputs -> do
-            results <- forM (HMS.toList inputs) $ \(oldStateId, innerInputs) ->
-              if null innerInputs then return Nothing else Just <$> do
-                state <- case HMS.lookup oldStateId states of
-                  Nothing -> throw (InputStateNotFound oldStateId)
-                  Just state0 -> return state0
-                fmap ((oldStateId, ) . HMS.fromList) $ forM (HMS.toList innerInputs) $ \(newStateId, input) ->
-                  fmap (newStateId, ) $ saUpdate context input state
-            let resultsMap = HMS.fromList (catMaybes results)
+            results <- forM (HMS.toList inputs) $ \(oldStateId, innerInputs) -> do
+              state <- case HMS.lookup oldStateId states of
+                Nothing -> throw (InputStateNotFound oldStateId)
+                Just state0 -> return state0
+              fmap ((oldStateId, ) . HMS.fromList) $ forM (HMS.toList innerInputs) $ \(newStateId, input) ->
+                fmap (newStateId, ) $ saUpdate context input state
+            let resultsMap = HMS.fromList results
             let states' = foldMap (fmap fst) resultsMap
             let outputs = fmap (fmap snd) resultsMap
             return (SRespUpdate outputs, states' `HMS.union` (states `HMS.difference` inputs))
