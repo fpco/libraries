@@ -39,13 +39,13 @@ clearRedisKeys redis = do
     matches <- run redis (keys "test:*")
     mapM_ (run_ redis . del) (NE.nonEmpty matches)
 
-minimumLogLevel = LevelError
+minimumLogLevel ll = ll >= LevelError
 
 loggingIt :: String -> (forall m. (MonadConnect m) => m ()) -> Spec
 loggingIt msg cont = it msg x
   where
     x :: IO ()
-    x = runStdoutLoggingT $ filterLogger (\_ ll -> ll >= minimumLogLevel) $ do
+    x = runStdoutLoggingT $ filterLogger (\_ -> minimumLogLevel) $ do
         $logInfo (T.pack msg)
         cont
 
@@ -53,7 +53,7 @@ loggingProperty :: forall prop.
        (QC.Testable prop)
     => (LoggingT IO prop) -> QC.Property
 loggingProperty m = QC.ioProperty
-    (runStdoutLoggingT (filterLogger (\_ ll -> ll >= minimumLogLevel) m) :: IO prop)
+    (runStdoutLoggingT (filterLogger (\_ -> minimumLogLevel) m) :: IO prop)
 
 redisIt_ :: String -> (forall m. (MonadConnect m) => m ()) -> Spec
 redisIt_ msg cont = redisIt msg (\_r -> cont)
