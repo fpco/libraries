@@ -14,6 +14,11 @@ packages:
   - location:
       git: https://github.com/fpco/fpco-cereal.git
       commit: 9193b056f2c401ade30908200beb410e5ffec187
+  - location:
+      git: https://github.com/kazu-yamamoto/logger.git
+      commit: d2afcf87eae9c599761a04423fb43a891e21b68b
+    subdirs:
+      - fast-logger
 
 image:
   container:
