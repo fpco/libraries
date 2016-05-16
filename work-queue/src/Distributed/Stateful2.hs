@@ -25,19 +25,22 @@ import           FP.Redis (MonadConnect)
 import           Data.Serialize (Serialize)
 import           Control.Concurrent.STM.TMChan
 
+withTMChan :: (MonadConnect m) => (TMChan a -> m b) -> m b
+withTMChan = bracket (liftIO newTMChanIO) (atomically . closeTMChan)
+
 runSlavePure :: forall m context input state output a.
        (MonadConnect m, NFData state, NFData output, Serialize state)
     => (context -> input -> state -> m (state, output))
     -> (SlaveConn m state context input output -> m a)
     -> m a
-runSlavePure update_ cont = do
-    reqChan :: TMChan (SlaveReq state context input) <- liftIO newTMChanIO
-    respChan :: TMChan (SlaveResp state output) <- liftIO newTMChanIO
-    let slaveConn = chanStatefulConn respChan reqChan
-    let masterConn = chanStatefulConn reqChan respChan
-    fmap (either absurd id) $ Async.race
-        (finally (runSlave (SlaveArgs update_ slaveConn)) (atomically (closeTMChan respChan)))
-        (finally (cont masterConn) (atomically (closeTMChan reqChan)))
+runSlavePure update_ cont =
+    withTMChan $ \(reqChan :: TMChan (SlaveReq state context input)) ->
+    withTMChan $ \(respChan :: TMChan (SlaveResp state output)) -> do
+        let slaveConn = chanStatefulConn respChan reqChan
+        let masterConn = chanStatefulConn reqChan respChan
+        fmap (either absurd id) $ Async.race
+            (runSlave (SlaveArgs update_ slaveConn))
+            (cont masterConn)
   where
     chanStatefulConn :: forall req resp.
         TMChan req -> TMChan resp -> StatefulConn m req resp

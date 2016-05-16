@@ -35,12 +35,12 @@ import           Data.SimpleSupply
 import           Distributed.Stateful.Internal
 import           Text.Printf (printf)
 import           FP.Redis (MonadConnect)
-import           Data.Void (absurd)
 import           Control.Lens (makeLenses, set, at, _Just, over)
 import           Control.Exception (throw)
 import           Control.Exception.Lifted (evaluate)
 import           Control.DeepSeq (force, NFData)
-import           Control.Concurrent.STM.TMChan
+import qualified Control.Concurrent.STM as STM
+import           Data.Foldable (sequenceA_)
 
 -- | Arguments for 'mkMasterHandle'
 data MasterArgs = MasterArgs
@@ -335,6 +335,13 @@ updateSlavesStep maxBatchSize mbMinBatchSize respSlaveId resp statuses = case re
       let uss' = over (ussSlaves . at candidateSlaveId . _Just) moveStatesToRemoving uss
       return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
 
+data ConnWithNumMessages m state context input output = ConnWithNumMessages
+  { cwnmConn :: !(SlaveConn m state context input output)
+  , cwnmNumMessages :: !(TVar (Maybe Int))
+    -- ^ How many messages we expect on this conn. 'Nothing' if the conn
+    -- is not useful anymore -- if we should stop waiting.
+  }
+
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
      (MonadConnect m, Show input, Show output, NFData input, NFData output)
@@ -348,11 +355,11 @@ updateSlaves :: forall state context input output m.
   -- ^ Inputs to the computation
   -> m [(SlaveId, HMS.HashMap StateId (HMS.HashMap StateId output))]
 updateSlaves maxBatchSize mbMinBatchSize slaves context inputMap = do
-  incomingChan :: TMChan (SlaveId, UpdateSlaveResp output) <- liftIO newTMChanIO
-  outgoingChan :: TMChan (Maybe (SlaveId, UpdateSlaveReq input)) <- liftIO newTMChanIO
+  incomingChan :: TChan (SlaveId, UpdateSlaveResp output) <- liftIO newTChanIO
+  outgoingChan :: TChan (Maybe (SlaveId, UpdateSlaveReq input)) <- liftIO newTChanIO
   -- Write one init message per slave
   forM_ (HMS.keys slaves) $ \slaveId ->
-    atomically (writeTMChan incomingChan (slaveId, USRespInit))
+    atomically (writeTChan incomingChan (slaveId, USRespInit))
   let slaveStatus0 stateIds = SlaveStatus
         { _ssRemaining = HMS.keys stateIds
         , _ssAdding = mempty
@@ -364,65 +371,80 @@ updateSlaves maxBatchSize mbMinBatchSize slaves context inputMap = do
         , _ussOutputs = mempty
         , _ussInputs = inputMap
         }
-  status' <- fmap (either absurd snd) $ Async.race
-    (finally
-      (receiveLoops incomingChan (HMS.toList slaves))
-      (atomically (closeTMChan incomingChan)))
-    (Async.concurrently
-      (sendLoop outgoingChan)
-      (finally
-        (go incomingChan outgoingChan (HMS.size slaves) status)
-        (atomically (closeTMChan outgoingChan))))
+  connsWithMessages :: HMS.HashMap SlaveId (ConnWithNumMessages m state context input output) <-
+    for slaves $ \slave -> do
+      numMsgsVar <- liftIO (newTVarIO (Just 0))
+      return ConnWithNumMessages
+        { cwnmConn = slaveConnection slave
+        , cwnmNumMessages = numMsgsVar
+        }
+  let stopAllReceives = forM_ connsWithMessages $ \cwnm -> do
+        atomically (writeTVar (cwnmNumMessages cwnm) Nothing)
+  status' <- Async.runConcurrently $
+    sequenceA_
+      (map (Async.Concurrently . receiveLoop incomingChan) (HMS.toList connsWithMessages)) *>
+    Async.Concurrently (sendLoop outgoingChan) *>
+    Async.Concurrently
+      (finally (go incomingChan outgoingChan connsWithMessages status) stopAllReceives)
   return (HMS.toList (_ussOutputs status'))
   where
-    readOrFail chan = do
-      mbX <- atomically (readTMChan chan)
-      case mbX of
-        Nothing -> throwIO (MasterException "Could not read from chan!")
-        Just x -> return x
-
-    go incomingChan outgoingChan inFlight0 status = do
+    go incomingChan outgoingChan connsWithMessages status = do
+      {-
       when (inFlight0 <= 0) $
         throwIO (MasterException "Will never receive a response")
-      (slaveId, resp) <- readOrFail incomingChan
-      let inFlight = inFlight0 - 1
+      -}
+      (slaveId, resp) <- atomically (readTChan incomingChan)
+      -- let inFlight = inFlight0 - 1
       (status', res) <-
         updateSlavesStep maxBatchSize mbMinBatchSize slaveId resp status
-      -- This is to force exceptions now mostly
+      -- This is to force exceptions ASAP
       void (evaluate (force (status', res)))
       case res of
         USSDone -> do
+          {-
           unless (inFlight == 0) $
             throwIO (MasterException ("Done, but we still have " ++ tshow inFlight ++ " in-flight messages"))
-          atomically (writeTMChan outgoingChan Nothing)
+          -}
+          atomically (writeTChan outgoingChan Nothing)
           return status'
         USSNotDone reqs -> do
-          mapM_ (atomically . writeTMChan outgoingChan . Just) reqs
-          go incomingChan outgoingChan (inFlight + length reqs) status'
+          forM_ reqs $ \(slaveId_, req) -> do
+            let cwnm = connsWithMessages HMS.! slaveId_
+            either throwIO return =<< atomically (do
+              mbNumMsgs <- readTVar (cwnmNumMessages cwnm)
+              case mbNumMsgs of
+                Nothing -> return (Left (MasterException "Got Nothing in cwnmNumMessages in go"))
+                Just numMsgs -> do
+                  writeTVar (cwnmNumMessages cwnm) (Just (numMsgs + 1))
+                  return (Right ()))
+            atomically (writeTChan outgoingChan (Just (slaveId_, req)))
+          go incomingChan outgoingChan connsWithMessages status'
 
-    {-# INLINE receiveLoops #-}
-    receiveLoops slaveRespsChan = \case
-      [] -> throwIO (MasterException "No slaves in updateSlaves, this should never happen")
-      [(slId, sl)] -> receiveLoop slaveRespsChan slId sl
-      (slId, sl) : sls ->
-        fmap (either absurd absurd) $
-        Async.race (receiveLoop slaveRespsChan slId sl) (receiveLoops slaveRespsChan sls)
-
-    {-# INLINE receiveLoop #-}
-    receiveLoop incomingChan slaveId slave = forever $ do
-      resp0 <- scRead (slaveConnection slave)
-      resp <- case resp0 of
-        SRespResetState -> throwIO (UnexpectedResponse (displayResp resp0))
-        SRespGetStates _ -> throwIO (UnexpectedResponse (displayResp resp0))
-        SRespError err -> throwIO (ExceptionFromSlave err)
-        SRespAddStates addedStates -> return (USRespAddStates addedStates)
-        SRespRemoveStates requestingSlaveId removedStates ->
-          return (USRespRemoveStates requestingSlaveId removedStates)
-        SRespUpdate outputs -> return (USRespUpdate outputs)
-      atomically (writeTMChan incomingChan (slaveId, resp))
+    receiveLoop incomingChan slave@(slaveId, ConnWithNumMessages{..}) = do
+      continue <- atomically $ do
+        mbNumMsgs <- readTVar cwnmNumMessages
+        case mbNumMsgs of
+          Nothing -> return False
+          Just numMsgs -> if numMsgs == 0
+            then STM.retry
+            else do
+              writeTVar cwnmNumMessages (Just (numMsgs - 1))
+              return True
+      when continue $ do
+        resp0 <- scRead cwnmConn
+        resp <- case resp0 of
+          SRespResetState -> throwIO (UnexpectedResponse (displayResp resp0))
+          SRespGetStates _ -> throwIO (UnexpectedResponse (displayResp resp0))
+          SRespError err -> throwIO (ExceptionFromSlave err)
+          SRespAddStates addedStates -> return (USRespAddStates addedStates)
+          SRespRemoveStates requestingSlaveId removedStates ->
+            return (USRespRemoveStates requestingSlaveId removedStates)
+          SRespUpdate outputs -> return (USRespUpdate outputs)
+        atomically (writeTChan incomingChan (slaveId, resp))
+        receiveLoop incomingChan slave
 
     sendLoop outgoingChan = do
-      mbReq <- readOrFail outgoingChan
+      mbReq <- atomically (readTChan outgoingChan)
       case mbReq of
         Nothing -> return ()
         Just (slaveId, req0) -> do
