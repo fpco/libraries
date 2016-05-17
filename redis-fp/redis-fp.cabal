@@ -31,8 +31,6 @@ library
                        FP.Redis.Connection
                        FP.Redis.Internal
                        FP.Redis.PubSub
-                       -- FP.Redis.Mutex
-                       -- FP.Redis.Mutex.Types
                        FP.Redis.Types
                        FP.Redis.Types.Internal
                        FP.Redis.Managed

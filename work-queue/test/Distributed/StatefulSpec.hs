@@ -1,220 +1,132 @@
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ParallelListComp #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
 module Distributed.StatefulSpec (spec) where
 
-import           ClassyPrelude
-import           Control.Concurrent.Async
-import           Control.Concurrent.STM (retry, check)
-import           Control.DeepSeq (NFData)
-import           Control.Exception (BlockedIndefinitelyOnSTM(..))
-import           Control.Monad.Logger
-import           Data.Bits
-import           Data.Conduit.Network (serverSettings)
-import qualified Data.Conduit.Network as CN
+import ClassyPrelude
+import Data.Serialize (Serialize)
+import Test.Hspec hiding (shouldBe)
+import qualified Test.Hspec
+import FP.Redis (MonadConnect)
+import Control.Concurrent (threadDelay)
+import qualified Test.QuickCheck as QC
+import Control.DeepSeq (NFData)
 import qualified Data.HashMap.Strict as HMS
-import qualified Data.HashSet as HS
-import           Data.Serialize (Serialize)
-import           Data.Streaming.NetworkMessage
-import qualified Data.Streaming.NetworkMessage as NM
-import           Data.TypeFingerprint (mkManyHasTypeFingerprint)
-import           Data.TypeFingerprintSpec ()
-import           Distributed.JobQueue.Stateful
-import           Distributed.JobQueue.Client
-import           Distributed.Stateful
-import           Distributed.Stateful.Internal (StateId(..))
--- import           Distributed.Stateful.Master
--- import           Distributed.Stateful.Slave
-import           Distributed.TestUtil
-import           Distributed.Types
-import           FP.Redis
-import qualified Test.Hspec as Hspec
-import           Test.Hspec.Expectations.Lifted (shouldBe)
-import           Test.QuickCheck hiding (output)
+import System.Random (randomRIO)
 
-newtype Context = Context Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
-newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq)
-newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq, NFData)
-newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Serialize, Eq, NFData)
+import TestUtils
+import Distributed.Stateful
+import Distributed.Stateful.Master
 
-$(mkManyHasTypeFingerprint
-    [ [t| Context |]
-    , [t| Input |]
-    , [t| State |]
-    , [t| Output |]
-    ])
+shouldBe :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
+shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
 
-spec :: Hspec.Spec
+newtype State = State [Input] -- All the inputs up to now
+  deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq, Ord, NFData)
+newtype Input = Input Int
+  deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq, Ord, NFData)
+newtype Output = Output [Input] -- All the inputs up to now
+  deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq, Ord, NFData)
+
+testUpdate ::
+     (MonadConnect m)
+  => MasterHandle m State () Input Output
+  -> HMS.HashMap StateId [Input] -- ^ Inputs
+  -> m () -- ^ Will crash if the output is not right
+testUpdate mh inputs = do
+  prevStates <- getStates mh
+  outputs <- update mh () inputs
+  forM_ (HMS.toList outputs) $ \(oldStateId, stateOutputs) -> do
+    case HMS.lookup oldStateId inputs of
+      Nothing -> stateOutputs `shouldBe` mempty
+      Just stateInputs -> do
+        Just (State inputs_) <- return (HMS.lookup oldStateId prevStates)
+        let expectedOutputs = [Output (input : inputs_) | input <- stateInputs]
+        sort (HMS.elems stateOutputs) `shouldBe`  sort expectedOutputs
+
+runSimpleTest :: forall m.
+     (MonadConnect m)
+  => Int -- ^ Num slaves
+  -> Int -- ^ Max batch size
+  -> Int -- ^ Initial number of states
+  -> Int -- ^ Inputs iterations
+  -> m ()
+runSimpleTest numSlaves maxBatchSize initialStates iterations = do
+  let ma = MasterArgs{maMaxBatchSize = Just maxBatchSize, maMinBatchSize = Nothing}
+  runSimplePure ma numSlaves f $ \mh -> do
+    void (resetStates mh (map State (replicate initialStates [])))
+    tokenCount :: IORef Int <- newIORef 0
+    replicateM_ iterations $ do
+      states0 <- getStates mh
+      inputs <- for states0 $ \_ -> do
+        children :: Int <- liftIO (randomRIO (0, 3))
+        replicateM children $ do
+          count <- readIORef tokenCount
+          writeIORef tokenCount (count+1)
+          return (Input count)
+      testUpdate mh inputs
+  where
+    f :: () -> Input -> State -> m (State, Output)
+    f _ input (State inputs) = do
+      liftIO (threadDelay =<< randomRIO (100, 1000))
+      return (State (input : inputs), Output (input : inputs))
+
+spec :: Spec
 spec = do
-    it "Sends data around properly" $ do
-        runSimple $ \mh -> do
-            states <- getStates mh
-            print states
-            sids <- getStateIds mh
-            let inputs = HMS.fromList $ map (, ["input 1"]) $ HS.toList sids
-            outputs <- update mh () inputs
-            print outputs
-            -- states `shouldBe` (HMS.map (\(_input, initial) -> [Right "step 1", Left initial]) inputsy)
-    -- setReplay (mkQCGen 957312063, 0) $
-    Hspec.it "Passes quickcheck comparison with pure implementation" $
-      property $ forAll arbitrary $
-      \( Blind (function :: Context -> Input -> State -> (State, Output))
-       , initialStates :: [State]
-       , updates :: [(Context, [[Input]])]
-       ) -> ioProperty $ do
-         runMasterAndSlaves 7000 4 (\c i s -> return (function c i s)) initialStates $ \mh -> do
-           let go :: PureState State -> (Context, [[Input]]) -> IO (PureState State)
-               go ps (ctx, inputs) = do
-                 let sids' = sort (HMS.keys (pureStates ps))
-                 let inputMap = HMS.fromList (zip sids' (inputs ++ repeat []))
-                 let (ps', outputs') = pureUpdate function ctx inputMap ps
-                 -- putStrLn "===="
-                 -- print ctx
-                 -- print ("inputs", inputMap)
-                 -- print ("outputs", outputs')
-                 -- print ("before", ps)
-                 -- print ("after", ps')
-                 sids <- getStateIds mh
-                 sort (HS.toList sids) `shouldBe` sids'
-                 curStates <- getStates mh
-                 curStates `shouldBe` pureStates ps
-                 outputs <- update mh ctx inputMap
-                 -- print outputs
-                 -- print outputs'
-                 outputs `shouldBe` outputs'
-                 return ps'
-           void $ foldM go (initialPureState initialStates) (take 4 updates)
-         return True
-    Hspec.it "Integrates with job-queue" $ do
-        clearRedisKeys
-        logFunc <- getLogFunc
-        nms <- nmSettings
-        let sma = StatefulMasterArgs
-                { smaMasterArgs = MasterArgs Nothing (Just 5)
-                , smaRequestSlaveCount = 2
-                , smaMasterWaitTime = Seconds 1
-                , smaLogFunc = logFunc
-                , smaRedisConfig = redisConfig
-                , smaHostName = "localhost"
-                , smaNMSettings = nms
-                }
-        let slaveFunc _ (Input y) (State z) = return (State (y `xor` z), Output (y `xor` z))
-        let masterFunc :: Redis -> RequestId -> Context -> MasterHandle State Context Input Output -> IO Int
-            masterFunc _redis _rid r mh = do
-              sids <- HMS.keys <$> resetStates mh (map State [1..16])
-              outputs <- update mh r (HMS.fromList (zip sids (map ((:[]) . Input) [17..32])))
-              let outputValues = map (\(Output n) -> n) (concatMap HMS.elems (HMS.elems outputs))
-              return (foldl' xor 0 outputValues)
-        void $ mapConcurrently (\_ -> statefulJQWorker jqConfig sma slaveFunc masterFunc) [1..(2 :: Int)]
-          `race` do
-            jc <- newJobClient logFunc jqConfig
-            fetchOutput <- submitRequestAndWaitForResponse jc (RequestId "request") (Context 1)
-            res <- atomically $ do
-                mres <- fetchOutput
-                case mres of
-                    Just res -> return res
-                    Nothing -> retry
-            res `shouldBe` Right (32 :: Int)
-    Hspec.it "Throws InputMissingException" $
-        runSimple $ \mh -> do
-            (sid0:sids) <- HS.toList <$> getStateIds mh
-            let inputs = HMS.fromList $ map (, ["input 1"]) sids
-            void (update mh () inputs) `shouldThrow` (== InputMissingException sid0)
-    Hspec.it "Throws UnusedInputsException" $
-        runSimple $ \mh -> do
-            let extra = StateId 10
-            sids <- ((extra:) . HS.toList) <$> getStateIds mh
-            let inputs = HMS.fromList $ map (, ["input 1"]) sids
-            void (update mh () inputs) `shouldThrow` (== UnusedInputsException [extra])
-    Hspec.it "Throws NoSlavesConnectedException" $ do
-        logFunc <- getLogFunc
-        mh <- mkMasterHandle (MasterArgs Nothing Nothing) logFunc
-        void (resetStates (mh :: MasterHandle State Context Input Output) [])
-          `shouldThrow` (== NoSlavesConnectedException)
-    Hspec.it "Throws exception for non-positive maxBatchSize" $ do
-        let ma = MasterArgs
-              { maMinBatchSize = Nothing
-              , maMaxBatchSize = Just 0
-              }
-        logFunc <- getLogFunc
-        void (mkMasterHandle ma logFunc) `shouldThrow` \case { MasterException _ -> True; _ -> False }
-    Hspec.it "Throws exception for negative minBatchSize" $ do
-        let ma = MasterArgs
-              { maMinBatchSize = Just (-1)
-              , maMaxBatchSize = Nothing
-              }
-        logFunc <- getLogFunc
-        void (mkMasterHandle ma logFunc) `shouldThrow` \case { MasterException _ -> True; _ -> False }
-    Hspec.it "Throws exception for minBatchSize greater than maxBatchSize" $ do
-        let ma = MasterArgs
-              { maMinBatchSize = Just 5
-              , maMaxBatchSize = Just 4
-              }
-        logFunc <- getLogFunc
-        void (mkMasterHandle ma logFunc) `shouldThrow` \case { MasterException _ -> True; _ -> False }
+  loggingIt "Passes simple comparison with pure implementation (small)" $
+    runSimpleTest 1 2 10 5
+  loggingIt "Passes simple comparison with pure implementation (medium)" $
+    runSimpleTest 10 5 100 5
+  -- loggingIt "Passes simple comparison with pure implementation (large)" $
+  --   runSimpleTest 500 5 5000 5
 
-it :: String -> IO () -> Hspec.Spec
-it name f = Hspec.it name f
+{-
+  it "Passes quickcheck comparison with the pure implementation" $
+    QC.property $ QC.forAll QC.arbitrary $
+    \( QC.Blind (function :: Context -> Input -> State -> (State, Output))
+     , initialStates :: [State]
+     , updates :: [(Context, [[Input]])]
+     , numSlaves :: Int
+     ) -> (QC.==>) (numSlaves > 2) $ loggingProperty $ do
+      runSimplePure (MasterArgs (Just 5) Nothing) numSlaves (\a b c -> return (function a b c)) $ \mh -> do
+        let go :: PureState State -> (Context, [[Input]]) -> LoggingT IO (PureState State)
+            go ps (ctx, inputs) = do
+              let sids' = sort (HMS.keys (pureStates ps))
+              let inputMap = HMS.fromList (zip sids' (inputs ++ repeat []))
+              let (ps', outputs') = pureUpdate function ctx inputMap ps
+              -- putStrLn "===="
+              -- print ctx
+              -- print ("inputs", inputMap)
+              -- print ("outputs", outputs')
+              -- print ("before", ps)
+              -- print ("after", ps')
+              sids <- getStateIds mh
+              sort (HS.toList sids) `shouldBe` sids'
+              curStates <- getStates mh
+              curStates `shouldBe` pureStates ps
+              outputs <- update mh ctx inputMap
+              -- print outputs
+              -- print outputs'
+              outputs `shouldBe` outputs'
+              return ps'
+        void $ foldM go (initialPureState initialStates) (take 4 updates)
+        return True
 
-runSimple :: (MasterHandle [Either Int String] () String String -> IO a) -> IO a
-runSimple = runMasterAndSlaves 7000 4 simpleSlaveUpdate simpleInitialStates
-
-simpleSlaveUpdate :: () -> String -> [Either Int String] -> IO ([Either Int String], String)
-simpleSlaveUpdate _context input state = return (Right input : state, input)
-
-simpleInitialStates :: [[Either Int String]]
-simpleInitialStates = map ((:[]) . Left) [1..4]
-
-runMasterAndSlaves
-    :: forall state context input output a.
-       (NFData state, Sendable state, Sendable context, Sendable input, NFData output, Sendable output)
-    => Int
-    -> Int
-    -> (context -> input -> state -> IO (state, output))
-    -> [state]
-    -> (MasterHandle state context input output -> IO a)
-    -> IO a
-runMasterAndSlaves port slaveCnt slaveUpdate initialStates inner = do
-    nms <- nmSettings
-    logFunc <- getLogFunc
-    -- Running slaves
-    let slaveArgs = SlaveArgs
-            { saUpdate = slaveUpdate
-            , saInit = return ()
-            , saNMSettings = nms
-            , saConnectInfo = WorkerConnectInfo "localhost" port
-            , saLogFunc = logFunc
-            }
-    let runSlaves = mapConcurrently (\_ -> runSlave slaveArgs) (replicate slaveCnt () :: [()])
-    -- Running master
-    let masterArgs = MasterArgs
-            { maMinBatchSize = Nothing
-            , maMaxBatchSize = Just 5
-            }
-    mh <- mkMasterHandle masterArgs logFunc
-    masterReady <- newEmptyMVar
-    someConnected <- newEmptyMVar
-    doneVar <- newEmptyMVar
-    let ss = CN.setAfterBind (\_ -> tryPutMVar masterReady () >> return ()) (serverSettings port "*")
-    let acceptConns =
-            -- timeout (1000 * 1000 * 2) $
-            CN.runGeneralTCPServer ss $ NM.runNMApp nms $ \nm -> do
-                addSlaveConnection mh nm
-                void $ tryPutMVar someConnected ()
-                readMVar doneVar
-    withAsync ((takeMVar masterReady >> runSlaves) `concurrently` acceptConns) $ \_ -> do
-        atomically (check . (> 0) =<< getSlaveCount mh)
-          `catch` \BlockedIndefinitelyOnSTM -> fail "No slaves connected"
-        void $ resetStates mh initialStates
-        r <- inner mh
-        putMVar doneVar ()
-        return r
+newtype Context = Context Int deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq)
+newtype Input = Input Int deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq)
+newtype State = State Int deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq, NFData)
+newtype Output = Output Int deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq, NFData)
 
 data PureState state = PureState
     { pureStates :: HMS.HashMap StateId state
@@ -250,31 +162,4 @@ pureUpdate f context inputs ps = (ps', outputs)
     results = map (\(sid, sid', input) -> (sid, sid', f context input (pureStates ps HMS.! sid))) labeledInputs
     outputs :: HMS.HashMap StateId (HMS.HashMap StateId output)
     outputs = HMS.fromListWith (<>) (map (\(sid, sid', (_, output)) -> (sid, HMS.singleton sid' output)) results)
-
-jqConfig :: JobQueueConfig
-jqConfig = defaultJobQueueConfig { jqcRedisConfig = redisConfig }
-
-redisConfig :: RedisConfig
-redisConfig = defaultRedisConfig { rcKeyPrefix = redisTestPrefix }
-
-nmSettings :: IO NMSettings
-nmSettings = do
-    nms <- defaultNMSettings
-    return $ setNMHeartbeat 5000000 nms -- 5 seconds
-
-getLogFunc :: IO (Loc -> LogSource -> LogLevel -> LogStr -> IO ())
-getLogFunc = runStdoutLoggingT (filterLogger (\_ -> (> LevelDebug)) askLoggerIO)
-
-{- Utility for doing a quickcheck replay
-
-setReplay :: (QCGen, Int) -> Hspec.SpecWith a -> Hspec.SpecWith a
-setReplay v = modifyArgs (\x -> x {replay = Just v})
-
--- Copied from
--- https://github.com/hspec/hspec/blob/2644587355583d340658cc3fb38b9e38a43c7c4a/hspec-core/src/Test/Hspec/Core/QuickCheck.hs
-modifyArgs :: (Args -> Args) -> Hspec.SpecWith a -> Hspec.SpecWith a
-modifyArgs = Hspec.modifyParams . modify
-  where
-    modify :: (Args -> Args) -> Hspec.Params -> Hspec.Params
-    modify f p = p {Hspec.paramsQuickCheckArgs = f (Hspec.paramsQuickCheckArgs p)}
 -}

@@ -17,50 +17,24 @@ Flag coverage
     Description:       Run tests with code coverage.
     Default:           False
 
-Flag long-tests
-    Description:       Run tests that take a lot of time.
-    Default:           False
-
 library
-
   exposed-modules:     Data.TypeFingerprint
                        Distributed.Types
                        Distributed.JobQueue.Client
                        Distributed.JobQueue.Worker
                        Distributed.JobQueue.MasterOrSlave
+                       -- Distributed.JobQueue.Status
                        Distributed.Redis
                        Distributed.Heartbeat
                        Distributed.RequestSlaves
                        Data.Streaming.NetworkMessage
                        Distributed.Stateful.Master
                        Distributed.Stateful.Slave
-                       Distributed.Stateful2
+                       Distributed.Stateful
                        Distributed.Stateful.Internal
+                       Data.WorkQueue
   other-modules:       Distributed.JobQueue.Internal
                        Data.SimpleSupply
-
---   exposed-modules:     Data.WorkQueue
---                        Data.Streaming.NetworkMessage
---                        Data.TypeFingerprint
---                        Distributed.Types
---                        Distributed.Stateful
---                        Distributed.WorkQueue
---                        Distributed.WorkQueue.CLI
---                        Distributed.JobQueue.Client
---                        Distributed.JobQueue.Status
---                        Distributed.JobQueue.Worker
---                        Distributed.JobQueue.WorkQueue
---                        Distributed.JobQueue.Stateful
---                        Distributed.Redis
--- 
--- 
---   other-modules:       Data.SimpleSupply
---                        Distributed.Stateful.Master
---                        Distributed.Stateful.Slave
---                        Distributed.JobQueue.Internal
---                        Distributed.JobQueue.Client.Internal
---                        Distributed.Heartbeat
---                        Distributed.Heartbeat.Internal
   build-depends:       base
                      , stm-chans
                      , lens
@@ -120,11 +94,11 @@ test-suite wq-test
   other-modules:       TestUtils
                      , Distributed.HeartbeatSpec
                      , Distributed.RequestSlavesSpec
-                     , Distributed.StatefulSpec2
+                     , Distributed.StatefulSpec
                      , Data.Streaming.NetworkMessageSpec
-                     , Data.TypeFingerprintSpec
+                     , Data.WorkQueueSpec
   ghc-options:         -Wall
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N4
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   build-depends:       base
                      , stm-chans
                      , lens
@@ -171,53 +145,6 @@ test-suite wq-test
                      , cryptohash
                      , text
 
--- executable hpc-example-factorial
---   main-is:             factorial.hs
---   hs-source-dirs:      examples/factorial
---   default-language:    Haskell2010
---   build-depends:       base
---                      , stm
---                      , work-queue
---   ghc-options:         -Wall -threaded
--- 
--- executable hpc-example-war
---   main-is:             best-deck.hs
---   other-modules:       Data.War
---   hs-source-dirs:      examples/war
---   default-language:    Haskell2010
---   build-depends:       base
---                      , containers
---                      , hybrid-vectors
---                      , mwc-random
---                      , primitive
---                      , stm
---                      , vector
---                      , vector-algorithms
---                      , work-queue
---                      , mutable-containers
---                      , fpco-cereal
---   ghc-options:         -Wall -threaded
--- 
--- executable hpc-example-redis
---   main-is:             redis.hs
---   hs-source-dirs:      examples/redis
---   default-language:    Haskell2010
---   build-depends:       base
---                      , redis-fp
---                      , work-queue
---                      , split
---                      , stm
---                      , bytestring
---                      , classy-prelude
---                      , monad-logger
---                      , transformers
---                      , lifted-base
---                      , unix
---                      , semigroups
---                      , thread-file-logger
---                      , async
---   ghc-options:         -Wall -threaded
--- 
 -- executable hpc-example-stateful-client
 --   main-is:             StatefulClient.hs
 --   hs-source-dirs:      examples/stateful
@@ -242,102 +169,3 @@ test-suite wq-test
 --                      , monad-logger
 --                      , unordered-containers
 --   ghc-options:         -Wall -threaded
--- 
--- test-suite wq-test
---   type:                exitcode-stdio-1.0
---   hs-source-dirs:      test
---   main-is:             Main.hs
---   other-modules:       Data.Streaming.NetworkMessageSpec
---                        Data.WorkQueueSpec
---                        Distributed.JobQueueSpec
---                        Distributed.StatefulSpec
---                        Distributed.WorkQueueSpec
---                        Distributed.TestUtil
---                        Spec
---   build-depends:       base
---                      , QuickCheck
---                      , async
---                      , fpco-cereal
---                      , bytestring
---                      , classy-prelude
---                      , conduit-extra
---                      , containers
---                      , deepseq
---                      , directory
---                      , enclosed-exceptions
---                      , executable-path
---                      , hspec
---                      , hspec-core
---                      , hspec-expectations
---                      , hspec-expectations-lifted
---                      , lifted-base
---                      , monad-control
---                      , monad-logger
---                      , network
---                      , process
---                      , random
---                      , redis-fp
---                      , resourcet
---                      , semigroups
---                      , silently
---                      , split
---                      , stm
---                      , streaming-commons
---                      , thread-file-logger
---                      , time
---                      , transformers-base
---                      , unix
---                      , unordered-containers
---                      , vector
---                      , work-queue
---                      , uuid
---                      , cryptohash
---   default-language:    Haskell2010
---   ghc-options:         -Wall -threaded
---   if flag(coverage)
---       ghc-options:     -fhpc
---       cpp-options:     -DCOVERAGE
---   if flag(long-tests)
---       cpp-options:     -DLONG_TESTS
--- 
--- benchmark wq-bench
---   type:                exitcode-stdio-1.0
---   hs-source-dirs:      test, bench
---   main-is:             bench.hs
---   other-modules:       Distributed.WorkQueueSpec
---   build-depends:       base
---                      , work-queue
---                      , hspec
---                      , QuickCheck
---                      , vector
---                      , stm
---                      , random
---                      , streaming-commons
---                      , async
---                      , bytestring
---                      , fpco-cereal
---                      , network
---                      , enclosed-exceptions
---                      , unix
---                      , split
---                      , classy-prelude
---                      , system-fileio
---                      , executable-path
---                      , process
---                      , silently
---                      , monad-logger
---                      , redis-fp
---                      , lifted-base
---                      , semigroups
---                      , monad-control
---                      , resourcet
---                      , criterion
---                      , thread-file-logger
---                      , directory
---                      , transformers
---   default-language:    Haskell2010
---   ghc-options:         -Wall -threaded
---   if flag(coverage)
---       ghc-options:     -fhpc
---       cpp-options:     -DCOVERAGE
--- 

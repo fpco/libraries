@@ -1,113 +1,74 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Distributed.Stateful
-    ( -- * 'MasterHandle' operations
-      MasterHandle
-    , StateId
-    , update
-    , resetStates
-    , getStateIds
-    , getStates
-    , getSlaveCount
-    , SlaveNMAppData
-    , addSlaveConnection
-    -- * Running the slave
-    , SlaveArgs(..)
-    , statefulSlave
-    , S.runSlave
-    -- * Running the master
-    , MasterArgs(..)
-    , StatefulMasterArgs(..)
-    , MasterException(..)
-    , mkMasterHandle
-    , statefulMaster
+    ( -- * Pure implementation
+      runSlavePure
+    , runSimplePure
+      -- * JobQueue/RequestSlaves implementation
     ) where
 
 import           ClassyPrelude
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import           Control.Concurrent.STM (check)
 import           Control.DeepSeq (NFData)
-import           Control.Monad.Logger
-import qualified Data.Conduit.Network as CN
-import           Data.Streaming.NetworkMessage
-import           Distributed.ConnectRequest
-import           Distributed.JobQueue.Worker
-import           Distributed.Redis
+import           Data.Serialize.Orphans ()
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import           Distributed.Stateful.Slave
+import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
-import           Distributed.Stateful.Slave (SlaveArgs(..))
-import qualified Distributed.Stateful.Slave as S
-import           Distributed.Types
-import           FP.Redis
-import           System.Timeout (timeout)
 import           Data.Void (absurd)
+import           FP.Redis (MonadConnect)
+import           Data.Serialize (Serialize)
+import           Control.Concurrent.STM.TMChan
 
--- * Running stateful master / slave without job-queue
+withTMChan :: (MonadConnect m) => (TMChan a -> m b) -> m b
+withTMChan = bracket (liftIO newTMChanIO) (atomically . closeTMChan)
 
-statefulSlave
-    :: forall state context input output m.
-     ( NFData state, NFData output, MonadConnect m
-     , Sendable state, Sendable context, Sendable input, Sendable output
-     )
-    => NMSettings
-    -> RedisConfig
+runSlavePure :: forall m context input state output a.
+       (MonadConnect m, NFData state, NFData output, Serialize state)
+    => (context -> input -> state -> m (state, output))
+    -> (SlaveConn m state context input output -> m a)
+    -> m a
+runSlavePure update_ cont =
+    withTMChan $ \(reqChan :: TMChan (SlaveReq state context input)) ->
+    withTMChan $ \(respChan :: TMChan (SlaveResp state output)) -> do
+        let slaveConn = chanStatefulConn respChan reqChan
+        let masterConn = chanStatefulConn reqChan respChan
+        fmap (either absurd id) $ Async.race
+            (runSlave (SlaveArgs update_ slaveConn))
+            (cont masterConn)
+  where
+    chanStatefulConn :: forall req resp.
+        TMChan req -> TMChan resp -> StatefulConn m req resp
+    chanStatefulConn reqChan respChan = StatefulConn
+        { scWrite = \x -> atomically (writeTMChan reqChan x)
+        , scRead = do
+            mbX <- atomically (readTMChan respChan)
+            case mbX of
+                Nothing -> fail "runSlavePure: trying to read on closed chan"
+                Just x -> return x
+        }
+
+runSimplePure :: forall m context input state output a.
+       (MonadConnect m, NFData state, NFData output, Serialize state)
+    => MasterArgs
+    -> Int -- ^ Desired slaves
     -> (context -> input -> state -> m (state, output))
-    -> m ()
-statefulSlave nms redisConfig slave =
-    withRedis redisConfig $ \r ->
-        withConnectRequests r $ \wci ->
-            S.runSlave SlaveArgs
-                { saUpdate = slave
-                , saConnectInfo = wci
-                , saNMSettings = nms
-                }
-
-data StatefulMasterArgs = StatefulMasterArgs
-  { smaMasterArgs :: MasterArgs
-  , smaRequestSlaveCount :: Int
-    -- ^ How many slaves to request. Note that this is not a guaranteed
-    -- number of slaves, just a suggestion.
-  , smaMasterWaitTime :: Seconds
-    -- ^ How long to wait for slaves to connect (if no slaves connect in
-    -- this time, then the work gets aborted). If all the requested
-    -- slaves connect, then waiting is aborted.
-  , smaRedisConfig :: RedisConfig
-  , smaHostName :: ByteString
-  , smaNMSettings :: NMSettings
-  }
-
-statefulMaster
-    :: forall state context input output response m.
-     ( NFData state, NFData output, MonadConnect m
-     , Sendable state, Sendable context, Sendable input, Sendable output
-     )
-    => StatefulMasterArgs
-    -> (MasterHandle state context input output -> m (Either CancelOrReenqueue response))
-    -> m (Either CancelOrReenqueue response)
-statefulMaster StatefulMasterArgs{..} master = do
-    (ss, getPort) <- liftIO (getPortAfterBind (CN.serverSettings 0 "*"))
-    mh <- mkMasterHandle smaMasterArgs
-    doneVar <- newEmptyMVar
-    let acceptConns =
-          CN.runGeneralTCPServer ss $ runNMApp smaNMSettings $ \nm -> do
-            addSlaveConnection mh nm
-            readMVar doneVar
-    let runMaster' = do
-          res <- liftIO $ timeout (1000 * 1000 * fromIntegral (unSeconds smaMasterWaitTime)) $
-            atomically (check . (== smaRequestSlaveCount) =<< getSlaveCount mh)
-          slaveCount <- atomically (getSlaveCount mh)
-          case (res, slaveCount) of
-            (Nothing, 0) -> do
-              logWarnN "Timed out waiting for slaves to connect"
-              return (Left Cancel)
-            _ -> master mh
-    let requestSlaves = do
-            port <- liftIO getPort
-            let wci = WorkerConnectInfo smaHostName port
-            withRedis smaRedisConfig $ \redis ->
-                mapM_ (\_ -> requestWorker redis wci) [1..smaRequestSlaveCount]
-    fmap (either (absurd . snd) id) $ Async.race
-      (Async.concurrently requestSlaves acceptConns)
-      (runMaster' `finally` putMVar doneVar ())
+    -> (MasterHandle m state context input output -> m a)
+    -> m a
+runSimplePure ma slavesNum0 update_ cont = if slavesNum0 < 1
+    then fail "runSimplePure: slavesNum0 < 1"
+    else do
+        mh <- mkMasterHandle ma
+        go mh slavesNum0
+  where
+    go mh slavesNum = if slavesNum == 0
+        then cont mh
+        else runSlavePure update_ $ \conn -> do
+            addSlaveConnection mh conn
+            go mh (slavesNum - 1)

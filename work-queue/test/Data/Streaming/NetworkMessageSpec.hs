@@ -7,6 +7,8 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 module Data.Streaming.NetworkMessageSpec (spec) where
 
 import           ClassyPrelude
@@ -15,7 +17,6 @@ import qualified Data.ByteString.Lazy as LBS
 import           Data.Streaming.Network
 import qualified Data.Conduit.Network as CN
 import           Data.Streaming.NetworkMessage
-import           Data.TypeFingerprintSpec ()
 import           Test.Hspec hiding (shouldBe)
 import qualified Test.Hspec
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
@@ -23,11 +24,15 @@ import           FP.Redis (MonadConnect)
 import           Control.Monad.Trans.Control (control)
 import           Control.Concurrent (threadDelay)
 import           Data.Void (absurd)
+import           Data.TypeFingerprint (mkManyHasTypeFingerprint)
 
 import           TestUtils
 
 shouldBe :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
 shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
+
+mkManyHasTypeFingerprint
+    [[t|Bool|], [t|ByteString|], [t|Maybe Bool|], [t|Int|], [t|LBS.ByteString|]]
 
 spec :: Spec
 spec = do

@@ -28,7 +28,7 @@ import ClassyPrelude hiding (keys)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Time
 import Data.Time.Clock.POSIX
-import Distributed.Heartbeat.Internal (heartbeatActiveKey, heartbeatLastCheckKey)
+import Distributed.Heartbeat
 import Distributed.JobQueue.Internal
 import Distributed.Redis
 import Distributed.Types
@@ -57,16 +57,15 @@ data RequestStatus = RequestStatus
     , rsStart :: !(Maybe POSIXTime)
     } deriving Show
 
-getJobQueueStatus :: MonadCommand m => Redis -> m JobQueueStatus
+getJobQueueStatus :: MonadConnect m => Redis -> m JobQueueStatus
 getJobQueueStatus r = do
     checkRedisSchemaVersion r
-    mLastTime <- getRedisTime r (heartbeatLastCheckKey r)
+    mLastTime <- lastHeartbeatCheck r
     pending <- run r $ lrange (requestsKey r) 0 (-1)
     wids <- getActiveWorkers r
     workers <- forM wids $ \wid -> do
-        mtime <- fmap (fmap (posixSecondsToUTCTime . realToFrac)) <$>
-            run r $ zscore (heartbeatActiveKey r) (unWorkerId wid)
-        erequests <- try $ run r $ lrange (LKey (activeKey r wid)) 0 (-1)
+        mtime <- lastHeartbeatForWorker r wid
+        erequests <- try $ run r $ lrange (activeKey r wid) 0 (-1)
         case erequests of
             -- Indicates heartbeat failure
             Left (CommandException (isPrefixOf "WRONGTYPE" -> True)) ->
@@ -85,7 +84,7 @@ getJobQueueStatus r = do
                     , wsRequests = map RequestId requests
                     }
     return JobQueueStatus
-        { jqsLastHeartbeat = fmap posixSecondsToUTCTime mLastTime
+        { jqsLastHeartbeat = mLastTime
         , jqsPending = map RequestId pending
         , jqsWorkers = workers
         }

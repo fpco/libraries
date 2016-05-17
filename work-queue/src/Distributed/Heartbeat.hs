@@ -12,6 +12,8 @@ module Distributed.Heartbeat
 
     -- * Testing/debugging
     , activeOrUnhandledWorkers
+    , lastHeartbeatCheck
+    , lastHeartbeatForWorker
     ) where
 
 import ClassyPrelude
@@ -59,6 +61,15 @@ heartbeatLastCheckKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:last-check
 activeOrUnhandledWorkers :: (MonadConnect m) => Redis -> m [WorkerId]
 activeOrUnhandledWorkers r =
     map WorkerId <$> run r (zrange (heartbeatActiveKey r) 0 (-1) False)
+
+lastHeartbeatCheck :: (MonadConnect m) => Redis -> m (Maybe UTCTime)
+lastHeartbeatCheck r =
+    fmap posixSecondsToUTCTime <$> getRedisTime r (heartbeatLastCheckKey r)
+
+lastHeartbeatForWorker :: (MonadConnect m) => Redis -> WorkerId -> m (Maybe UTCTime)
+lastHeartbeatForWorker r wid =
+    fmap (posixSecondsToUTCTime . realToFrac) <$>
+    run r (zscore (heartbeatActiveKey r) (unWorkerId wid))
 
 -- | Periodically check worker heartbeats. See #78 for a description of
 -- how this works.
