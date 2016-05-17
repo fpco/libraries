@@ -14,7 +14,9 @@ module Distributed.Stateful.Master
     , MasterHandle
     , MasterException(..)
     , StateId
-    , mkMasterHandle
+    , SlaveId
+    , initMaster
+    , closeMaster
     , update
     , resetStates
     , getStateIds
@@ -26,7 +28,7 @@ module Distributed.Stateful.Master
 
 import           ClassyPrelude
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import           Control.Monad.Logger (MonadLogger)
+import           Control.Monad.Logger (MonadLogger, logError)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -82,14 +84,11 @@ data MasterException
 
 instance Exception MasterException
 
--- | Create a new 'MasterHandle' based on the 'MasterArgs'. This
--- 'MasterHandle' should be used for all interactions with this
--- particular stateful computation (via 'update' and 'resample').
-mkMasterHandle
-  :: (MonadBaseControl IO m, MonadIO m, MonadLogger m)
+initMaster ::
+     (MonadBaseControl IO m, MonadIO m, MonadLogger m)
   => MasterArgs
   -> m (MasterHandle m state context input output)
-mkMasterHandle ma@MasterArgs{..} = do
+initMaster ma@MasterArgs{..} = do
   let throwME = throwAndLog . MasterException . pack
   case (maMinBatchSize, maMaxBatchSize) of
     (_, Just maxBatchSize) | maxBatchSize < 1 ->
@@ -109,6 +108,26 @@ mkMasterHandle ma@MasterArgs{..} = do
         , mhArgs = ma
         }
   MasterHandle <$> newMVar mh
+
+-- | This will shut down all the slaves.
+closeMaster ::
+     (MonadConnect m)
+  => MasterHandle m state context input output
+  -> m ()
+closeMaster (MasterHandle mhv) =
+  withMVar mhv $ \MasterHandle_{..} -> do
+    -- Ignore all exceptions we might have when quitting the slaves
+    forM_ (HMS.toList mhSlaves) $ \(slaveId, slave) -> do
+      mbErr <- tryAny $ do 
+        scWrite (slaveConnection slave) SReqQuit
+        readExpect (slaveConnection slave) $ \case
+          SRespQuit -> return ()
+          _ -> Nothing
+      case mbErr of
+        Left err -> do
+          $logError $ pack $ printf
+            "Error while quitting slave %d: %s" slaveId (show err)
+        Right () -> return ()
 
 {-# INLINE readExpect #-}
 readExpect ::
@@ -435,6 +454,7 @@ updateSlaves maxBatchSize mbMinBatchSize slaves context inputMap = do
         resp <- case resp0 of
           SRespResetState -> throwIO (UnexpectedResponse (displayResp resp0))
           SRespGetStates _ -> throwIO (UnexpectedResponse (displayResp resp0))
+          SRespQuit -> throwIO (UnexpectedResponse (displayResp resp0))
           SRespError err -> throwIO (ExceptionFromSlave err)
           SRespAddStates addedStates -> return (USRespAddStates addedStates)
           SRespRemoveStates requestingSlaveId removedStates ->

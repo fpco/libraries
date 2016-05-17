@@ -52,6 +52,7 @@ data SlaveReq state context input
       -- provides the new StateIds, and the inputs which should be
       -- provided to 'saUpdate'.
   | SReqGetStates
+  | SReqQuit
   deriving (Generic, Eq, Show, NFData, B.Serialize)
 
 instance (HasTypeFingerprint state, HasTypeFingerprint context, HasTypeFingerprint input) => HasTypeFingerprint (SlaveReq state context input) where
@@ -74,6 +75,7 @@ data SlaveResp state output
   | SRespUpdate !(HMS.HashMap StateId (HMS.HashMap StateId output)) -- TODO consider making this a simple list -- we don't really need it to be a HMS.
   | SRespGetStates !(HMS.HashMap StateId state)
   | SRespError Text
+  | SRespQuit
   deriving (Generic, Eq, Show, NFData, B.Serialize)
 
 instance (HasTypeFingerprint state, HasTypeFingerprint output) => HasTypeFingerprint (SlaveResp state output) where
@@ -89,6 +91,7 @@ displayReq (SReqAddStates mp) = "SReqAddStates (" <> pack (show (HMS.keys mp)) <
 displayReq (SReqRemoveStates k mp) = "SReqRemoveStates (" <> pack (show k) <> ") (" <>pack (show (HS.toList mp)) <> ")"
 displayReq (SReqUpdate _ mp) = "SReqUpdate (" <> pack (show (fmap HMS.keys mp)) <> ")"
 displayReq SReqGetStates = "SReqGetStates"
+displayReq SReqQuit = "SReqQuit"
 
 displayResp :: SlaveResp state output -> Text
 displayResp SRespResetState = "SRespResetState"
@@ -97,6 +100,7 @@ displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> pack (show k) <>
 displayResp (SRespUpdate mp) = "SRespUpdate (" <> pack (show (fmap HMS.keys mp)) <> ")"
 displayResp (SRespGetStates mp) = "SRespGetStates (" <> pack (show (HMS.keys mp)) <> ")"
 displayResp (SRespError err) = "SRespError " <> pack (show err)
+displayResp SRespQuit = "SRespQuit"
 
 throwAndLog :: (Exception e, MonadIO m, MonadLogger m) => e -> m a
 throwAndLog err = do

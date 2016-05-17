@@ -7,7 +7,8 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ViewPatterns #-}
-module Distributed.Stateful.Slave
+{-# LANGUAGE TemplateHaskell #-}
+  module Distributed.Stateful.Slave
   ( SlaveArgs(..)
   , StatefulConn(..)
   , runSlave
@@ -40,13 +41,12 @@ data SlaveException
 
 instance Exception SlaveException
 
--- | Runs a stateful slave. Returns when it gets disconnected from the
--- master.
+-- | Runs a stateful slave. Returns then the master sends the "quit" command.
 {-# INLINE runSlave #-}
-runSlave :: forall state context input output void m.
+runSlave :: forall state context input output m.
      (MonadConnect m, NFData state, NFData output, C.Serialize state)
   => SlaveArgs m state context input output
-  -> m void
+  -> m ()
 runSlave SlaveArgs{..} = do
     let recv = scRead saConn
     let send = scWrite saConn
@@ -58,14 +58,14 @@ runSlave SlaveArgs{..} = do
          m (SlaveReq state context input)
       -> (SlaveResp state output -> m ())
       -> (HMS.HashMap StateId state)
-      -> m void
+      -> m ()
     go recv send states = do
       req <- recv
       debug (displayReq req)
       eres <- tryAny ((do
         res <- case req of
-          SReqResetState states' -> return (SRespResetState, states')
-          SReqGetStates -> return (SRespGetStates states, states)
+          SReqResetState states' -> return (SRespResetState, (Just states'))
+          SReqGetStates -> return (SRespGetStates states, (Just states))
           SReqAddStates newStates0 -> do
             let decodeOrThrow bs = case C.decodeEof bs of
                   Left err -> throw (DecodeStateError err)
@@ -73,7 +73,7 @@ runSlave SlaveArgs{..} = do
             newStates <- mapM decodeOrThrow newStates0
             let aliased = HMS.keys (HMS.intersection newStates states)
             unless (null aliased) $ throw (AddingExistingStates aliased)
-            return (SRespAddStates (HS.fromList (HMS.keys newStates)), HMS.union newStates states)
+            return (SRespAddStates (HS.fromList (HMS.keys newStates)), Just (HMS.union newStates states))
           SReqRemoveStates requesting stateIdsToDelete -> do
             let eitherLookup sid =
                   case HMS.lookup sid states of
@@ -82,7 +82,7 @@ runSlave SlaveArgs{..} = do
             let (missing, toSend) = partitionEithers $ map eitherLookup $ HS.toList stateIdsToDelete
             unless (null missing) $ throw (MissingStatesToRemove missing)
             let states' = foldl' (flip HMS.delete) states stateIdsToDelete
-            return (SRespRemoveStates requesting (C.encode <$> HMS.fromList toSend), states')
+            return (SRespRemoveStates requesting (C.encode <$> HMS.fromList toSend), Just states')
           SReqUpdate context inputs -> do
             results <- forM (HMS.toList inputs) $ \(oldStateId, innerInputs) -> do
               state <- case HMS.lookup oldStateId states of
@@ -93,13 +93,17 @@ runSlave SlaveArgs{..} = do
             let resultsMap = HMS.fromList results
             let states' = foldMap (fmap fst) resultsMap
             let outputs = fmap (fmap snd) resultsMap
-            return (SRespUpdate outputs, states' `HMS.union` (states `HMS.difference` inputs))
-        evaluate (force res)) :: m (SlaveResp state output, HMS.HashMap StateId state))
+            return (SRespUpdate outputs, Just (states' `HMS.union` (states `HMS.difference` inputs)))
+          SReqQuit -> do
+            return (SRespQuit, Nothing)
+        evaluate (force res)) :: m (SlaveResp state output, Maybe (HMS.HashMap StateId state)))
       case eres of
-        Right (output, states') -> do
+        Right (output, mbStates) -> do
           send output
           debug (displayResp output)
-          go recv send states'
+          case mbStates of
+            Nothing -> return ()
+            Just states' -> go recv send states'
         Left (err :: SomeException) -> do
           send (SRespError (pack (show err)))
           throwAndLog err
