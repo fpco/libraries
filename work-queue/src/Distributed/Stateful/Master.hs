@@ -363,7 +363,7 @@ data ConnWithNumMessages m state context input output = ConnWithNumMessages
 
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
-     (MonadConnect m, Show input, Show output, NFData input, NFData output)
+     (MonadConnect m, NFData input, NFData output)
   => Int -- ^ Max batch size
   -> Maybe Int -- ^ Maybe min batch size
   -> HMS.HashMap SlaveId (Slave m state context input output)
@@ -490,7 +490,7 @@ updateSlaves maxBatchSize mbMinBatchSize slaves context inputMap = do
 -- inconsistent state, and the whole computation should be aborted.
 {-# INLINE update #-}
 update :: forall state context input output m.
-     (MonadConnect m, Show input, Show output, NFData input, NFData output)
+     (MonadConnect m, NFData input, NFData output)
   => MasterHandle m state context input output
   -> context
   -> HMS.HashMap StateId [input]
