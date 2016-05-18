@@ -25,6 +25,7 @@ import qualified Control.Concurrent.STM as STM
 import qualified Data.List.NonEmpty as NE
 import           Control.Concurrent (threadDelay)
 import           Control.Monad.Logger
+import qualified Data.Conduit.Network as CN
 
 import           Distributed.Redis
 import           Data.Streaming.NetworkMessage
@@ -67,16 +68,13 @@ slaveLog (SlaveId mid) msg = "(S" ++ tshow mid ++ ") " ++ msg
 runMaster :: forall m a.
        (MonadConnect m)
     => Redis -> NMApp MasterSends SlaveSends m () -> m a -> m a
-runMaster r contSlave cont = do
-    nmSettings <- defaultNMSettings
-    acceptSlaveConnections r nmSettings "127.0.0.1" contSlave (\_ -> cont)
+runMaster r =
+    acceptSlaveConnections r (CN.serverSettings 0 "*") "127.0.0.1" Nothing
 
 runSlave :: forall m void.
        (MonadConnect m)
     => Redis -> NMApp SlaveSends MasterSends m () -> m void
-runSlave r cont = do
-    nmSettings <- defaultNMSettings
-    connectToMaster r nmSettings cont
+runSlave r cont = connectToMaster r cont
 
 runMasterCollectResults :: (MonadConnect m) => Redis -> MasterId -> Int -> m ()
 runMasterCollectResults r mid numSlaves = do

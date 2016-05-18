@@ -16,6 +16,11 @@ module Distributed.Stateful
     , runNMStatefulSlave
     , runNMStatefulMaster
     , runSimpleNMStateful
+    {-
+      -- * NetworkMessage backend with automatic slave request
+    , runRequestedStatefulSlave
+    , runRequestingStatefulMaster
+    -}
     ) where
 
 import           ClassyPrelude
@@ -36,6 +41,7 @@ import qualified Data.Conduit.Network as CN
 import           Control.Monad.Trans.Control (control)
 import           Data.Void (absurd)
 import           Data.TypeFingerprint (HasTypeFingerprint)
+-- import           Distributed.RequestSlaves
 
 import Control.Exception (AsyncException)
 
@@ -116,10 +122,9 @@ nmStatefulConn ad = StatefulConn
 
 runNMStatefulSlave ::
        (MonadConnect m, NFData state, Serialize state, NFData output, Serialize output, Serialize context, Serialize input)
-    => NMAppData (SlaveResp state output) (SlaveReq state context input)
-    -> (context -> input -> state -> m (state, output))
-    -> m ()
-runNMStatefulSlave ad update_ = runSlave SlaveArgs
+    => (context -> input -> state -> m (state, output))
+    -> NMApp (SlaveResp state output) (SlaveReq state context input) m ()
+runNMStatefulSlave update_ ad = runSlave SlaveArgs
     { saUpdate = update_
     , saConn = nmStatefulConn ad
     }
@@ -221,6 +226,48 @@ runSimpleNMStateful host ma numSlaves update_ cont = do
     go cs nmSettings numSlaves_ = if numSlaves_ == 0
         then return ()
         else void $ Async.concurrently
-            (do () <- control (\invert -> CN.runTCPClient cs (invert . runNMApp nmSettings (\nm -> runNMStatefulSlave nm update_)))
+            (do () <- control (\invert -> CN.runTCPClient cs (invert . runNMApp nmSettings (runNMStatefulSlave update_)))
                 return ())
             (go cs nmSettings (numSlaves_ - 1))
+
+{-
+-- * RequestSlave
+-----------------------------------------------------------------------
+
+runRequestedStatefulSlave ::
+       (MonadConnect m, NFData state, Serialize state, NFData output, Serialize output, Serialize context, Serialize input)
+    => Redis
+    -> (context -> input -> state -> m (state, output))
+    -> m void
+runRequestedStatefulSlave r update_ = connectToMaster r (runNMStatefulSlave update_)
+
+runRequestingStatefulMaster ::
+       (MonadConnect m, NFData state, Serialize state, NFData output, Serialize output, Serialize context, Serialize input)
+    => Redis
+    -> CN.ServerSettings
+    -- ^ The settings used to create the server. You can use 0 as port number to have
+    -- it automatically assigned
+    -> ByteString
+    -- ^ The host that will be used by the slaves to connect
+    -> Maybe Int
+    -- ^ The port that will be used by the slaves to connect.
+    -- If Nothing, the port the server is locally bound to will be used
+    -> MasterArgs
+    -> NMStatefulMasterArgs
+    -> (MasterHandle m state context input output -> m b)
+    -> m (Maybe b)
+runRequestingStatefulMaster r ss host mbPort ma nmsma =
+    runNMStatefulMaster ma nmsma (acceptSlaveConnections r ss host mbPort)
+
+-- * JobQueue
+-----------------------------------------------------------------------
+
+runJobQueueStateful ::
+       (MonadConnect m, NFData state, Serialize state, NFData output, Serialize output, Serialize context, Serialize input)
+    => JobQueueConfig
+    -> (context -> input -> state -> m (state, output))
+    -> (MasterHandle m state context input output -> request -> m response)
+    -> m void
+runJobQueueStateful jqc = runMasterOrSlave jqc
+    (\r wcis -> connectToAMaster r (runNMStatefulSlave update_)
+-}

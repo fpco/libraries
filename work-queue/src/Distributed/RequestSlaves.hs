@@ -15,6 +15,7 @@ module Distributed.RequestSlaves
     , withSlaveRequests
       -- * Utilities to run a master that waits for slaves, and for slaves to connect to it
     , connectToMaster
+    , connectToAMaster
     , acceptSlaveConnections
     ) where
 
@@ -29,6 +30,7 @@ import Data.Serialize (Serialize)
 import qualified Data.List.NonEmpty as NE
 import Data.Streaming.NetworkMessage
 import qualified Data.Conduit.Network as CN
+import qualified Data.Streaming.Network.Internal as CN
 import Control.Monad.Trans.Control (control)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Data.Void (absurd)
@@ -147,21 +149,24 @@ workerRequestsKey r = ZKey $ Key $ redisKeyPrefix r <> "connect-requests"
 -- * Utilities to run master/slaves
 -----------------------------------------------------------------------
 
--- | Runs a slave that runs an action when it connects to master
-connectToMaster :: forall m slaveSends masterSends void.
+connectToAMaster :: forall m slaveSends masterSends.
        (MonadConnect m, Sendable slaveSends, Sendable masterSends)
-    => Redis
-    -> NMSettings
-    -> NMApp slaveSends masterSends m () -- ^ What to do when we connect
-    -> m void
-connectToMaster r nmSettings cont0 = withSlaveRequests r (\wcis -> go (toList wcis) [])
+    => NMApp slaveSends masterSends m ()
+    -- ^ What to do when we connect. This continuation will be run at
+    -- most once, but it could be not run if we couldn't connect to any
+    -- master.
+    -> NonEmpty WorkerConnectInfo
+    -> m ()
+connectToAMaster cont0 wcis0 = do
+    nmSettings <- defaultNMSettings
+    go nmSettings (toList wcis0) []
   where
     cont wci nm = do
         $logDebug ("Managed to connect to master " ++ tshow wci)
         cont0 nm
 
-    go :: [WorkerConnectInfo] -> [SomeException] -> m ()
-    go wcis_ excs = case wcis_ of
+    go :: NMSettings -> [WorkerConnectInfo] -> [SomeException] -> m ()
+    go nmSettings wcis_ excs = case wcis_ of
         [] -> do
             $logWarn ("Could not connect to any of the masters, because of exceptions " ++ tshow excs ++ ". This is probably OK, will give up as slave.")
             return ()
@@ -176,8 +181,16 @@ connectToMaster r nmSettings cont0 = withSlaveRequests r (\wcis -> go (toList wc
                 Left err -> if acceptableException err
                     then do
                         $logInfo ("Could not connect to master " ++ tshow wci ++ ", because of acceptable exception " ++ tshow err ++ ", continuing")
-                        go wcis (err : excs)
+                        go nmSettings wcis (err : excs)
                     else throwIO err
+
+-- | Runs a slave that runs an action when it connects to master
+connectToMaster :: forall m slaveSends masterSends void.
+       (MonadConnect m, Sendable slaveSends, Sendable masterSends)
+    => Redis
+    -> NMApp slaveSends masterSends m () -- ^ What to do when we connect
+    -> m void
+connectToMaster r cont = withSlaveRequests r (connectToAMaster cont)
 
 acceptableException :: SomeException -> Bool
 acceptableException err
@@ -192,15 +205,24 @@ getWorkerId = do
 acceptSlaveConnections :: forall m masterSends slaveSends a.
        (MonadConnect m, Sendable masterSends, Sendable slaveSends)
     => Redis
-    -> NMSettings
-    -> ByteString -- ^ Hostname that will be used in the 'WorkerConnectInfo'
-    -> NMApp masterSends slaveSends m () -- ^ What to do when a slave gets added
-    -> (WorkerConnectInfo -> m a)
-    -- ^ Continuation with the connect info the master is listening on
+    -> CN.ServerSettings
+    -- ^ The settings used to create the server. You can use 0 as port number to have
+    -- it automatically assigned
+    -> ByteString
+    -- ^ The host that will be used by the slaves to connect
+    -> Maybe Int
+    -- ^ The port that will be used by the slaves to connect.
+    -- If Nothing, the port the server is locally bound to will be used
+    -> NMApp masterSends slaveSends m ()
+    -- ^ What to do when a slave gets added
     -> m a
-acceptSlaveConnections r nmSettings host contSlaveConnect cont = do
+    -- ^ Continuation, the master will quit when requesting slaves when this
+    -- continuation exits
+    -> m a
+acceptSlaveConnections r ss0 host mbPort contSlaveConnect cont = do
+    nmSettings <- defaultNMSettings
     wid <- getWorkerId
-    (ss, getPort) <- liftIO (getPortAfterBind (CN.serverSettings 0 "*"))
+    (ss, getPort) <- liftIO (getPortAfterBind ss0)
     whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
     let acceptConns =
             CN.runGeneralTCPServer ss $ \ad -> do
@@ -224,10 +246,12 @@ acceptSlaveConnections r nmSettings host contSlaveConnect cont = do
                         else $logError ("acceptSlaveConnections: got unexpected exception" ++ tshow err)
                     Right () -> return ()
     let runMaster = do
+            -- This is used to get the port if we need it, but also to wait
+            -- for the server to be up.
             port <- liftIO getPort
-            $logDebug ("Master starting on " ++ tshow (host, port))
-            let wci = WorkerConnectInfo host port
+            $logDebug ("Master starting on " ++ tshow (CN.serverHost ss, port))
+            let wci = WorkerConnectInfo host (fromMaybe port mbPort)
             requestSlaves r wid wci $ \wsc -> do
                 putMVar whenSlaveConnectsVar wsc
-                cont wci
+                cont
     fmap (either absurd id) (Async.race acceptConns runMaster)

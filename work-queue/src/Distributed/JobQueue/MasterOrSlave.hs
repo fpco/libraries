@@ -20,7 +20,6 @@ import Distributed.Types
 import FP.Redis
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Distributed.RequestSlaves
-import Data.Void (absurd)
 import Distributed.JobQueue.Worker
 import Data.List.NonEmpty (NonEmpty)
 
@@ -29,7 +28,7 @@ data MasterOrSlave = Idle | Slave | Master
 
 -- REVIEW: To request slaves, there is a separate queue from normal requests, the
 -- reason being that we want to prioritize slave requests over normal requests.
-runMasterOrSlave :: forall m request response.
+runMasterOrSlave :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
     -> (Redis -> NonEmpty WorkerConnectInfo -> m ())
@@ -37,20 +36,20 @@ runMasterOrSlave :: forall m request response.
     -- with 'connectToMaster', which will do the right thing with the list of
     -- candidate masters.
     -> (Redis -> RequestId -> request -> m (Either CancelOrReenqueue response))
-    -- ^ Master function
-    -> m ()
+    -- ^ Master function.
+    -> m void
 runMasterOrSlave config slaveFunc masterFunc = do
     stateVar <- liftIO (newTVarIO Idle)
-    fmap (either absurd absurd) $ Async.race
-        (handleWorkerRequests stateVar) (handleRequests stateVar)
+    fmap (either id id) $ Async.race
+        (handleSlaveRequests stateVar) (handleMasterRequests stateVar)
   where
-    handleWorkerRequests :: TVar MasterOrSlave -> m void
-    handleWorkerRequests stateVar =
+    handleSlaveRequests :: TVar MasterOrSlave -> m void
+    handleSlaveRequests stateVar =
         withRedis (jqcRedisConfig config) $ \redis ->
             withSlaveRequests redis $ \wcis -> do
                 -- If it can't transition to slave, that's fine: all the
                 -- other slave candidates will get the connection request anyway.
-                -- In fact, this note itself will get it again, since
+                -- In fact, this node itself will get it again, since
                 -- 'withSubscribedNotifyChannel' gets every request every
                 -- 100 ms.
                 mb <- transitionIdleTo stateVar Slave (slaveFunc redis wcis)
@@ -58,8 +57,8 @@ runMasterOrSlave config slaveFunc masterFunc = do
                     Nothing -> $logDebug ("Tried to transition to slave, but couldn't. Will not run slave function with connections " ++ tshow wcis)
                     Just () -> return ()
 
-    handleRequests :: TVar MasterOrSlave -> m void
-    handleRequests stateVar =
+    handleMasterRequests :: TVar MasterOrSlave -> m void
+    handleMasterRequests stateVar =
         jobWorker config $ \redis rid request -> do
             -- If you couldn't transition to master, re-enqueue.
             mbRes <- transitionIdleTo stateVar Master $ do
