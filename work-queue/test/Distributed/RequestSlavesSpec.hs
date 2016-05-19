@@ -74,7 +74,7 @@ runMaster r =
 runSlave :: forall m void.
        (MonadConnect m)
     => Redis -> NMApp SlaveSends MasterSends m () -> m void
-runSlave r cont = connectToMaster r cont
+runSlave r cont = connectToMaster r (Milliseconds 100) cont
 
 runMasterCollectResults :: (MonadConnect m) => Redis -> MasterId -> Int -> m ()
 runMasterCollectResults r mid numSlaves = do

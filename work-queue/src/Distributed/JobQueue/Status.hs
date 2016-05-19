@@ -43,8 +43,8 @@ data JobQueueStatus = JobQueueStatus
 
 data WorkerStatus = WorkerStatus
     { wsWorker :: !WorkerId
-    , wsHeartbeatFailure :: !Bool
     , wsLastHeartbeat :: !(Maybe UTCTime)
+    , wsHeartbeatFailure :: !Bool
     -- REVIEW: This is the last heartbeat _sent_ by the worker (it might have not been
     -- received by anyone).
     , wsRequests :: ![RequestId]
@@ -58,6 +58,8 @@ data RequestStatus = RequestStatus
     } deriving Show
 
 getJobQueueStatus :: MonadConnect m => Redis -> m JobQueueStatus
+getJobQueueStatus = error "TODO"
+{-
 getJobQueueStatus r = do
     checkRedisSchemaVersion r
     mLastTime <- lastHeartbeatCheck r
@@ -88,7 +90,9 @@ getJobQueueStatus r = do
         , jqsPending = map RequestId pending
         , jqsWorkers = workers
         }
+-}
 
+{-
 clearHeartbeatFailure :: MonadCommand m => Redis -> WorkerId -> m ()
 clearHeartbeatFailure r wid = do
      let k = activeKey r wid
@@ -98,8 +102,9 @@ clearHeartbeatFailure r wid = do
          Left ex -> liftIO $ throwIO ex
          -- Indicates heartbeat failure
          Right _ -> void $ run r $ del (k :| [])
+-}
 
-getActiveWorkers :: MonadCommand m => Redis -> m [WorkerId]
+getActiveWorkers :: MonadConnect m => Redis -> m [WorkerId]
 getActiveWorkers r = do
     let activePrefix = redisKeyPrefix r <> "active:"
     activeKeys <- run r $ keys (activePrefix <> "*")
@@ -116,7 +121,7 @@ data RequestStats = RequestStats
     -- REVIEW: This is the number of times the request has been read by the client.
     }
 
-getRequestStats :: MonadCommand m => Redis -> RequestId -> m (Maybe RequestStats)
+getRequestStats :: MonadConnect m => Redis -> RequestId -> m (Maybe RequestStats)
 getRequestStats r k = do
     evs <- getRequestEvents r k
     case evs of
@@ -131,13 +136,13 @@ getRequestStats r k = do
             rsTotalTime = diffUTCTime <$> rsComputeFinishTime <*> rsEnqueueTime
             rsFetchCount = length [() | (_, RequestResponseRead) <- evs]
 
-getAllRequests :: MonadCommand m => Redis -> m [RequestId]
+getAllRequests :: MonadConnect m => Redis -> m [RequestId]
 getAllRequests r =
     fmap (mapMaybe (fmap RequestId . (stripSuffix ":events" =<<) . stripPrefix requestPrefix . unKey)) $
     run r (keys (requestPrefix <> "*"))
   where
     requestPrefix = redisKeyPrefix r <> "request:"
 
-getAllRequestStats :: MonadCommand m => Redis -> m [(RequestId, RequestStats)]
+getAllRequestStats :: MonadConnect m => Redis -> m [(RequestId, RequestStats)]
 getAllRequestStats r =
     fmap catMaybes . mapM (\k -> fmap (k,) <$> getRequestStats r k) =<< getAllRequests r

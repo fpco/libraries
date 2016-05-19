@@ -19,6 +19,7 @@ packages:
       commit: d2afcf87eae9c599761a04423fb43a891e21b68b
     subdirs:
       - fast-logger
+      - wai-logger
 
 image:
   container:

@@ -16,11 +16,12 @@ module Distributed.Stateful
     , runNMStatefulSlave
     , runNMStatefulMaster
     , runSimpleNMStateful
-    {-
       -- * NetworkMessage backend with automatic slave request
+    , NMStatefulMasterArgs(..)
     , runRequestedStatefulSlave
     , runRequestingStatefulMaster
-    -}
+      -- * JobQueue backend
+    , runJobQueueStatefulWorker
     ) where
 
 import           ClassyPrelude
@@ -34,16 +35,22 @@ import           FP.Redis (MonadConnect)
 import           Data.Serialize (Serialize)
 import           Control.Concurrent.STM.TMChan
 import           Data.Streaming.NetworkMessage
-import           Control.Monad.Logger (logError, logWarn)
+import           Control.Monad.Logger (logError, logWarn, logDebug)
 import           Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.STM as STM
 import qualified Data.Conduit.Network as CN
 import           Control.Monad.Trans.Control (control)
 import           Data.Void (absurd)
 import           Data.TypeFingerprint (HasTypeFingerprint)
--- import           Distributed.RequestSlaves
-
-import Control.Exception (AsyncException)
+import           Distributed.Redis (Redis)
+import           Distributed.RequestSlaves
+import qualified Data.Streaming.Network.Internal as CN
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID
+import           Distributed.JobQueue.Worker
+import           Distributed.Types
+import           Distributed.JobQueue.MasterOrSlave
+import           FP.Redis (Milliseconds)
 
 -- * Pure version, useful for testing, debugging, etc.
 -----------------------------------------------------------------------
@@ -139,19 +146,11 @@ data NMStatefulMasterArgs = NMStatefulMasterArgs
     -- ^ How much to wait for slaves, in microseconds.
     }
 
-logException :: (MonadConnect m) => Text -> m a -> m a
-logException loc m =
-    catch m $ \(err :: SomeException) -> do
-        case fromException err of
-            Just (_ :: AsyncException) -> return ()
-            Nothing -> $logError (loc ++ ": " ++ tshow err)
-        throwIO err
-
 runNMStatefulMaster :: forall m state output input context b.
        (MonadConnect m, NFData state, Serialize state, NFData output, Serialize output, Serialize context, Serialize input)
     => MasterArgs m state context input output
     -> NMStatefulMasterArgs
-    -> (forall a. NMApp (SlaveReq state context input) (SlaveResp state output) m () -> m a -> m a)
+    -> (forall void. NMApp (SlaveReq state context input) (SlaveResp state output) m () -> m void)
     -- ^ Function providing access to running a NMApp server. The first argument
     -- is the handler that gets called on each connection. The second argument
     -- is a continuation that will run alongside with the server, when the continuation
@@ -182,7 +181,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
             added <- withMVar slaveAddLock $ \() -> do
                 slaves <- atomically (readTVar slavesConnectedVar)
                 let shouldAdd = case nmsmaMaximumSlaves of
-                        Nothing -> False
+                        Nothing -> True
                         Just n -> slaves <= n
                 when shouldAdd $ do
                     addSlaveConnection mh (nmStatefulConn ad)
@@ -210,7 +209,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
                     $logError ("Timed out waiting for slaves to connect. Needed " ++ tshow minSlaves ++ ", got " ++ tshow slaves)
                     return Nothing
                 else Just <$> cont mh doneWaitingForSlaves
-    runServer onSlaveConnection $ finally server $ do
+    fmap (either absurd id) $ Async.race (runServer onSlaveConnection) $ finally server $ do
         closeMaster mh
         putMVar doneVar ()
 
@@ -230,20 +229,19 @@ runSimpleNMStateful host ma numSlaves cont = do
         fail ("runSimpleNMStateful: numSlaves < 0 (" ++ show numSlaves ++ ")")
     (ss, getPort) <- liftIO (getPortAfterBind (CN.serverSettings 0 "*"))
     nmSettings <- defaultNMSettings
-    let acceptConns :: forall b.
-            NMApp (SlaveReq state context input) (SlaveResp state output) m () -> m b -> m b
-        acceptConns f cont_ = fmap (either absurd id) $
-            Async.race (CN.runGeneralTCPServer ss (runNMApp nmSettings f)) cont_
+    let acceptConns :: forall void.
+            NMApp (SlaveReq state context input) (SlaveResp state output) m () -> m void
+        acceptConns f = CN.runGeneralTCPServer ss (runNMApp nmSettings f)
     let nmsma = NMStatefulMasterArgs
             { nmsmaMinimumSlaves = Just numSlaves
             , nmsmaMaximumSlaves = Just numSlaves
             , nmsmaSlavesWaitingTime = 5 * 1000 * 1000
             }
-    let runAllSlaves = logException "slaves" $ do
+    let runAllSlaves = do
             port <- liftIO getPort
             let cs = CN.clientSettings port host
             go cs nmSettings numSlaves
-    mbX <- fmap snd $ Async.concurrently runAllSlaves $ logException "master" $
+    mbX <- fmap snd $ Async.concurrently runAllSlaves $
         runNMStatefulMaster ma nmsma acceptConns (\mh wait -> wait >> cont mh)
     case mbX of
         Nothing -> fail ("runSimpleNMStateful: failed waiting for slaves, should not happen.")
@@ -256,19 +254,19 @@ runSimpleNMStateful host ma numSlaves cont = do
                 return ())
             (go cs nmSettings (numSlaves_ - 1))
 
-{-
 -- * RequestSlave
 -----------------------------------------------------------------------
 
 runRequestedStatefulSlave ::
-       (MonadConnect m, NFData state, Serialize state, NFData output, Serialize output, Serialize context, Serialize input)
+       (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input)
     => Redis
+    -> Milliseconds
     -> (context -> input -> state -> m (state, output))
     -> m void
-runRequestedStatefulSlave r update_ = connectToMaster r (runNMStatefulSlave update_)
+runRequestedStatefulSlave r failsafeTimeout update_ = connectToMaster r failsafeTimeout (runNMStatefulSlave update_)
 
-runRequestingStatefulMaster ::
-       (MonadConnect m, NFData state, Serialize state, NFData output, Serialize output, Serialize context, Serialize input)
+runRequestingStatefulMaster :: forall m state output context input b.
+       (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input)
     => Redis
     -> CN.ServerSettings
     -- ^ The settings used to create the server. You can use 0 as port number to have
@@ -278,22 +276,80 @@ runRequestingStatefulMaster ::
     -> Maybe Int
     -- ^ The port that will be used by the slaves to connect.
     -- If Nothing, the port the server is locally bound to will be used
-    -> MasterArgs
+    -> MasterArgs m state context input output
     -> NMStatefulMasterArgs
     -> (MasterHandle m state context input output -> m b)
     -> m (Maybe b)
-runRequestingStatefulMaster r ss host mbPort ma nmsma =
-    runNMStatefulMaster ma nmsma (acceptSlaveConnections r ss host mbPort)
+runRequestingStatefulMaster r ss0 host mbPort ma nmsma cont = do
+    nmSettings <- defaultNMSettings
+    (ss, getPort) <- liftIO (getPortAfterBind ss0)
+    whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
+    let acceptConns :: forall void.
+            NMApp (SlaveReq state context input) (SlaveResp state output) m () -> m void
+        acceptConns contSlaveConnect =
+            CN.runGeneralTCPServer ss $ \ad -> do
+                -- This is just to get the exceptions in the logs rather than on the
+                -- terminal: this is run in a separate thread anyway, and so they'd be
+                -- lost forever otherwise.
+                -- In other words, the semantics of the program are not affected.
+                let whenSlaveConnects nm = do
+                        join (readMVar whenSlaveConnectsVar)
+                        contSlaveConnect nm
+                mbExc <- tryAny (runNMApp nmSettings whenSlaveConnects ad)
+                case mbExc of
+                    Left err ->
+                        $logWarn ("requestingStatefulMaster: got exception in slave handler " ++ tshow err)
+                    Right () -> return ()
+    keepRequestingSlaves :: MVar () <- newEmptyMVar
+    let runRequestsSlave = do
+            -- This is used to get the port if we need it, but also to wait
+            -- for the server to be up.
+            port <- liftIO getPort
+            $logDebug ("Master starting on " ++ tshow (CN.serverHost ss, port))
+            let wci = WorkerConnectInfo host (fromMaybe port mbPort)
+            wid <- getWorkerId
+            requestSlaves r wid wci $ \wsc -> do
+                putMVar whenSlaveConnectsVar wsc
+                takeMVar keepRequestingSlaves
+    let stopRequestingSlaves = tryPutMVar keepRequestingSlaves ()
+    runNMStatefulMaster ma nmsma
+        (\nma -> fmap fst $ Async.concurrently
+            (finally (acceptConns nma) stopRequestingSlaves)
+            runRequestsSlave)
+        (\mh maxSlavesReached ->
+            Async.withAsync (cont mh) $ \contAsync ->
+            Async.withAsync (maxSlavesReached >> stopRequestingSlaves) $ \maxSlavesAsync -> do
+              contOrMaxSlaves <- Async.waitEither contAsync maxSlavesAsync
+              case contOrMaxSlaves of
+                Left x -> return x
+                Right _ -> Async.wait contAsync)
+
+getWorkerId :: (MonadIO m) => m WorkerId
+getWorkerId = do
+    liftIO (WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom)
 
 -- * JobQueue
 -----------------------------------------------------------------------
 
-runJobQueueStateful ::
-       (MonadConnect m, NFData state, Serialize state, NFData output, Serialize output, Serialize context, Serialize input)
+runJobQueueStatefulWorker ::
+       (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input, Sendable request, Sendable response)
     => JobQueueConfig
-    -> (context -> input -> state -> m (state, output))
-    -> (MasterHandle m state context input output -> request -> m response)
+    -> CN.ServerSettings
+    -- ^ The settings used to create the server. You can use 0 as port number to have
+    -- it automatically assigned
+    -> ByteString
+    -- ^ The host that will be used by the slaves to connect
+    -> Maybe Int
+    -- ^ The port that will be used by the slaves to connect.
+    -- If Nothing, the port the server is locally bound to will be used
+    -> MasterArgs m state context input output
+    -> NMStatefulMasterArgs
+    -> (MasterHandle m state context input output -> RequestId -> request -> m (Reenqueue response))
     -> m void
-runJobQueueStateful jqc = runMasterOrSlave jqc
-    (\r wcis -> connectToAMaster r (runNMStatefulSlave update_)
--}
+runJobQueueStatefulWorker jqc ss host mbPort ma nmsma cont = runMasterOrSlave jqc
+    (\_r wcis -> connectToAMaster (runNMStatefulSlave (maUpdate ma)) wcis)
+    (\r reqId req -> do
+      mbResp <- runRequestingStatefulMaster r ss host mbPort ma nmsma (\mh -> cont mh reqId req)
+      case mbResp of
+        Nothing -> liftIO (fail "Timed out waiting for slaves to connect")
+        Just resp -> return resp)

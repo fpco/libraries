@@ -8,6 +8,7 @@
 {-# LANGUAGE RecordWildCards #-}
 module TestUtils
     ( testRedisConfig
+    , testJobQueueConfig
     , redisIt
     , redisIt_
     , loggingIt
@@ -27,6 +28,7 @@ import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           System.Random (randomRIO)
 import           Control.Concurrent (threadDelay)
 import qualified Test.QuickCheck as QC
+import           Distributed.JobQueue.Worker
 
 import           Distributed.Redis
 
@@ -34,11 +36,19 @@ testRedisConfig :: RedisConfig
 testRedisConfig = defaultRedisConfig
     { rcKeyPrefix = "test:" }
 
+testJobQueueConfig :: JobQueueConfig
+testJobQueueConfig = defaultJobQueueConfig
+    { jqcRedisConfig = testRedisConfig
+    , jqcRequestNotificationFailsafeTimeout = Milliseconds 1000
+    , jqcSlaveRequestsNotificationFailsafeTimeout = Milliseconds 1000
+    }
+
 clearRedisKeys :: (MonadConnect m) => Redis -> m ()
 clearRedisKeys redis = do
     matches <- run redis (keys "test:*")
     mapM_ (run_ redis . del) (NE.nonEmpty matches)
 
+minimumLogLevel :: LogLevel -> Bool
 minimumLogLevel ll = ll >= LevelError
 
 loggingIt :: String -> (forall m. (MonadConnect m) => m ()) -> Spec

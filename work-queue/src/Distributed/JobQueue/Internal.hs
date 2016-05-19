@@ -158,16 +158,6 @@ data JobQueueConfig = JobQueueConfig
     --
     -- REVIEW: This config is used by both the client and the worker to
     -- set up heartbeats. The documentation is elsewhere.
-    , jqcHeartbeatFailureExpiry :: !Seconds
-    -- ^ How long a heartbeat failure should stick around. This should
-    -- be a quite large amount of time, as the worker might eventually
-    -- reconnect, and it should know that it has been heartbeat-failure
-    -- collected. Garbage collecting them to save resources doesn't
-    -- matter very much. The main reason it matters is so that the UI
-    -- doesn't end up with tons of heartbeat failure records.
-    --
-    -- REVIEW: With "garbage collection" above we mean collection of
-    -- heartbeat-related data in redis.
     , jqcRequestExpiry :: !Seconds
     -- ^ The expiry time of the request data stored in redis. If it
     -- takes longer than this time for the worker to attempt to fetch
@@ -190,6 +180,8 @@ data JobQueueConfig = JobQueueConfig
     , jqcCancelCheckIvl :: !Seconds
     -- ^ How often the worker should poll redis for an indication that
     -- the request has been cancelled.
+    , jqcRequestNotificationFailsafeTimeout :: !Milliseconds
+    , jqcSlaveRequestsNotificationFailsafeTimeout :: !Milliseconds
     }
 
 -- | Default settings for the job-queue:
@@ -207,11 +199,12 @@ defaultJobQueueConfig :: JobQueueConfig
 defaultJobQueueConfig = JobQueueConfig
     { jqcRedisConfig = defaultRedisConfig
     , jqcHeartbeatConfig = defaultHeartbeatConfig
-    , jqcHeartbeatFailureExpiry = Seconds 3600 -- 1 hour
     , jqcRequestExpiry = Seconds 3600
     , jqcResponseExpiry = Seconds 3600
     , jqcEventExpiry = Seconds (3600 * 24) -- 1 day
     , jqcCancelCheckIvl = Seconds 10
+    , jqcRequestNotificationFailsafeTimeout = Milliseconds (10 * 1000) -- 10 secs
+    , jqcSlaveRequestsNotificationFailsafeTimeout = Milliseconds (10 * 1000) -- 10 secs
     }
 
 data JobRequest = JobRequest

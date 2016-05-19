@@ -109,8 +109,7 @@ jobClientThread JobClient{..} = do
             atomically (modifyTVar watchVar (\rw -> rw{rwGotNotification = True}))
 
 -- | Submits a new request.
-submitRequest
-    :: forall request response m.
+submitRequest :: forall request response m.
        (MonadConnect m, Sendable request, Sendable response)
     => JobClient response
     -> RequestId

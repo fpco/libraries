@@ -7,14 +7,16 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveTraversable #-}
 
 -- This module provides a job-queue with heartbeat checking.
 module Distributed.JobQueue.Worker
     ( JobQueueConfig(..)
     , defaultJobQueueConfig
     , jobWorker
-    , CancelOrReenqueue(..)
-    -- , runJQWorker
+    , Reenqueue(..)
     ) where
 
 import ClassyPrelude
@@ -48,7 +50,7 @@ import Data.Serialize (encode, Serialize)
 jobWorker :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
-    -> (Redis -> RequestId -> request -> m (Either CancelOrReenqueue response))
+    -> (Redis -> RequestId -> request -> m (Reenqueue response))
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m void
@@ -56,22 +58,22 @@ jobWorker config@JobQueueConfig {..} f = do
     wid <- liftIO getWorkerId
     let withTag = withLogTag (LogTag ("worker-" ++ tshow (unWorkerId wid)))
     withTag $ withRedis jqcRedisConfig $ \r -> do
-        $logDebug "Starting heartbeats"
+        $logInfo "Starting heartbeats"
         withHeartbeats jqcHeartbeatConfig r wid $ do
-            $logDebug "Initial heartbeat sent, starting worker"
+            $logInfo "Initial heartbeat sent, starting worker"
             withSubscribedNotifyChannel
                 (rcConnectInfo jqcRedisConfig)
-                (Milliseconds 100) -- Check anyway 10 times a second
+                jqcRequestNotificationFailsafeTimeout
                 (requestChannel r)
                 (\waitForReq -> do
                     -- writeIORef everConnectedRef True
                     jobWorkerThread config r wid waitForReq (f r))
 
-data CancelOrReenqueue
-    = Cancel
+data Reenqueue a
+    = DontReenqueue !a
     | Reenqueue
-    deriving (Eq, Show, Generic, Typeable)
-instance Serialize CancelOrReenqueue
+    deriving (Eq, Show, Generic, Typeable, Functor, Foldable, Traversable)
+instance (Serialize a) => Serialize (Reenqueue a)
 
 jobWorkerThread :: forall request response m void.
        (MonadConnect m, Sendable request, Sendable response)
@@ -80,13 +82,15 @@ jobWorkerThread :: forall request response m void.
     -> WorkerId
     -> m ()
     -- ^ This action, when executed, blocks until we think a new response is present.
-    -> (RequestId -> request -> m (Either CancelOrReenqueue response))
+    -> (RequestId -> request -> m (Reenqueue response))
     -> m void
 jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
     mbRidbs <- run r (rpoplpush (requestsKey r) (activeKey r wid))
     forM_ mbRidbs $ \ridBs -> do
         let rid = RequestId ridBs
+        $logInfo ("Executing request " ++ tshow rid)
         mbReqBs <- receiveRequest r wid rid
+        $logInfo ("Got contents of request " ++ tshow rid)
         -- Nothing if it has to be re-enqueued.
         mbRespOrErr :: Maybe (Either DistributedException response) <- case mbReqBs of
             Nothing ->
@@ -95,14 +99,13 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
                 Left err -> return (Just (Left err))
                 Right req -> do
                     $logDebug ("Starting to work on request " ++ tshow ridBs)
-                    cancelledOrResp :: Either () (Either SomeException (Either CancelOrReenqueue response)) <-
+                    cancelledOrResp :: Either () (Either SomeException (Reenqueue response)) <-
                         Async.race (watchForCancel r rid jqcCancelCheckIvl) (tryAny (f rid req))
                     case cancelledOrResp of
                         Left () -> return (Just (Left (RequestCanceled rid)))
                         Right (Left err) -> return (Just (Left (wrapException err)))
-                        Right (Right (Left Reenqueue)) -> return Nothing
-                        Right (Right (Left Cancel)) -> return (Just (Left (RequestCanceled rid)))
-                        Right (Right (Right res)) -> return (Just (Right res))
+                        Right (Right Reenqueue) -> return Nothing
+                        Right (Right (DontReenqueue res)) -> return (Just (Right res))
         let gotX msg = "Request " ++ tshow rid ++ " got " ++ msg
         case mbRespOrErr of
             Nothing -> do
@@ -112,7 +115,7 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
             Just res -> do
                 case res of
                     Left err -> $logWarn (gotX ("exception: " ++ tshow err))
-                    Right _ -> $logDebug (gotX ("Request " ++ tshow rid ++ " got respose"))
+                    Right _ -> $logInfo (gotX ("Request " ++ tshow rid ++ " got response"))
                 sendResponse r jqcResponseExpiry wid rid (encode res)
                 addRequestEvent r rid (RequestWorkFinished wid)
     -- Wait for notification only if we've already consumed all the available requests

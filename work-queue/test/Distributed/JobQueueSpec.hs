@@ -42,7 +42,7 @@ import Distributed.Heartbeat
 -- | Contains how many
 data Request = Request
     { requestDelay :: !Int
-    , requestResponse :: !(Either CancelOrReenqueue Response)
+    , requestResponse :: !(Reenqueue Response)
     } deriving (Eq, Show, Generic, Typeable)
 instance Serialize Request
 
@@ -65,10 +65,10 @@ testJQConfig = defaultJobQueueConfig
         }
     }
 
-jobWorker_ :: (MonadConnect m) => (Request -> m (Either CancelOrReenqueue Response)) -> m void
+jobWorker_ :: (MonadConnect m) => (Request -> m (Reenqueue Response)) -> m void
 jobWorker_ work = jobWorker testJQConfig (\_r _rid -> work)
 
-processRequest :: (MonadConnect m) => Request -> m (Either CancelOrReenqueue Response)
+processRequest :: (MonadConnect m) => Request -> m (Reenqueue Response)
 processRequest Request{..} = do
     liftIO (threadDelay requestDelay)
     return requestResponse
@@ -118,7 +118,7 @@ spec = do
         let resp = Response "test"
         let req = Request
                 { requestDelay = 0
-                , requestResponse = Right resp
+                , requestResponse = DontReenqueue resp
                 }
         resp' <- runWorkerAndClient (\jc -> waitForResponse_ jc =<< submitTestRequest jc req)
         resp' `shouldBe` Just resp
@@ -126,7 +126,7 @@ spec = do
         let resp = Response "test"
         let req = Request
                 { requestDelay = 0
-                , requestResponse = Right resp
+                , requestResponse = DontReenqueue resp
                 }
         mbResp :: Maybe (Maybe Response) <-
             withTestJobClient $ \jc -> do
@@ -136,7 +136,7 @@ spec = do
         let resp = Response "test"
         let req = Request
                 { requestDelay = 5 * 1000 * 1000
-                , requestResponse = Right resp
+                , requestResponse = DontReenqueue resp
                 }
         workCountRef :: IORef Int <- newIORef 0
         let onStartWork = modifyIORef workCountRef (+1)
@@ -151,14 +151,14 @@ spec = do
         let resp = Response "test"
         let req = Request
                 { requestDelay = 0
-                , requestResponse = Right resp
+                , requestResponse = DontReenqueue resp
                 }
         workCountRef :: IORef Int <- newIORef 0
         resp' :: Maybe Response <- fmap (either absurd id) $ Async.race
             (jobWorker_ $ \req' -> do
                 workCount <- readIORef workCountRef
                 res <- if
-                    | workCount == 0 -> return (Left Reenqueue)
+                    | workCount == 0 -> return Reenqueue
                     | workCount == 1 -> processRequest req'
                     | True -> fail ("Unexpected work count " ++ show workCount)
                 modifyIORef workCountRef (+1)
@@ -247,7 +247,7 @@ chaosTest = do
                     let resp = Response (BSC8.pack (show clientId ++ "-" ++ show reqN))
                     let req = Request
                             { requestDelay = reqDuration
-                            , requestResponse = Right resp
+                            , requestResponse = DontReenqueue resp
                             }
                     withTestJobClient (\jc -> submitTestRequest jc req)
                 -- Then insert the reqids

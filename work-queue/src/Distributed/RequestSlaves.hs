@@ -110,24 +110,25 @@ requestSlaves r wid wci0 cont = do
 withSlaveRequests ::
        MonadConnect m
     => Redis
+    -> Milliseconds
     -> (NonEmpty WorkerConnectInfo -> m ())
     -- A list of masters to connect to, sorted by preference. Note that
     -- it might be the case that masters are already down. The intended
     -- use of this list is that you keep traversing it in order until you
     -- find a master to connect to.
     -> m void
-withSlaveRequests redis f = do
-    withSubscribedNotifyChannel (managedConnectInfo (redisConnection redis)) (Milliseconds 100) (workerRequestsNotify redis) $
+withSlaveRequests redis failsafeTimeout f = do
+    withSubscribedNotifyChannel (managedConnectInfo (redisConnection redis)) failsafeTimeout (workerRequestsNotify redis) $
         \waitNotification -> forever $ do
             waitNotification
             reqs <- getWorkerRequests redis
             case NE.nonEmpty reqs of
                 Nothing -> do
-                    $logDebug ("Tried to got masters to connect to but got none")
+                    $logDebug ("Tried to get masters to connect to but got none")
                     return ()
                 Just reqs' -> do
                     $logDebug ("Got " ++ tshow reqs' ++ " masters to try to connect to")
-                    mbRes :: Either SomeException () <- try (f reqs')
+                    mbRes :: Either SomeException () <- tryAny (f reqs')
                     case mbRes of
                         Left err -> do
                             $logWarn ("withSlaveRequests: got error " ++ tshow err ++ ", continuing")
@@ -172,7 +173,7 @@ connectToAMaster cont0 wcis0 = do
             return ()
         wci@(WorkerConnectInfo host port) : wcis -> do
             mbExc :: Either SomeException (Either SomeException ()) <-
-                try $ control $ \invert -> CN.runTCPClient (CN.clientSettings port host) $ \ad ->
+                tryAny $ control $ \invert -> CN.runTCPClient (CN.clientSettings port host) $ \ad ->
                     invert $
                         runNMApp nmSettings (\nm -> (try (cont wci nm) :: m (Either SomeException ()))) ad
             case mbExc of
@@ -188,9 +189,10 @@ connectToAMaster cont0 wcis0 = do
 connectToMaster :: forall m slaveSends masterSends void.
        (MonadConnect m, Sendable slaveSends, Sendable masterSends)
     => Redis
+    -> Milliseconds
     -> NMApp slaveSends masterSends m () -- ^ What to do when we connect
     -> m void
-connectToMaster r cont = withSlaveRequests r (connectToAMaster cont)
+connectToMaster r failsafeTimeout cont = withSlaveRequests r failsafeTimeout (connectToAMaster cont)
 
 acceptableException :: SomeException -> Bool
 acceptableException err
@@ -226,14 +228,14 @@ acceptSlaveConnections r ss0 host mbPort contSlaveConnect cont = do
     whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
     let acceptConns =
             CN.runGeneralTCPServer ss $ \ad -> do
+                let whenSlaveConnects nm = do
+                        join (readMVar whenSlaveConnectsVar)
+                        contSlaveConnect nm
                 -- This is just to get the exceptions in the logs rather than on the
                 -- terminal: this is run in a separate thread anyway, and so they'd be
                 -- lost forever otherwise.
                 -- In other words, the semantics of the program are not affected.
-                let whenSlaveConnects nm = do
-                        join (readMVar whenSlaveConnectsVar)
-                        contSlaveConnect nm
-                mbExc :: Either SomeException () <- try (runNMApp nmSettings whenSlaveConnects ad)
+                mbExc :: Either SomeException () <- tryAny (runNMApp nmSettings whenSlaveConnects ad)
                 -- We check for this because of the 'readMVar' above -- if the main thread
                 -- is killed, we might get this.
                 let blockedOnMVar :: SomeException -> Bool
