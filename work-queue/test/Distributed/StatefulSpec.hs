@@ -60,9 +60,8 @@ testUpdate mh inputs = do
         sort (HMS.elems stateOutputs) `shouldBe`  sort expectedOutputs
 
 type Runner m = forall a.
-       MasterArgs
+       MasterArgs m State () Input Output
     -> Int -- ^ Desired slaves
-    -> (() -> Input -> State -> m (State, Output))
     -> (MasterHandle m State () Input Output -> m a)
     -> m a
 
@@ -75,8 +74,8 @@ runSimpleTest :: forall m.
   -> Int -- ^ Inputs iterations
   -> m ()
 runSimpleTest runner numSlaves maxBatchSize initialStates iterations = do
-  let ma = MasterArgs{maMaxBatchSize = Just maxBatchSize, maMinBatchSize = Nothing}
-  runner ma numSlaves f $ \mh -> do
+  let ma = MasterArgs{maMaxBatchSize = Just maxBatchSize, maMinBatchSize = Nothing, maUpdate = f}
+  runner ma numSlaves $ \mh -> do
     void (resetStates mh (map State (replicate initialStates [])))
     tokenCount :: IORef Int <- newIORef 0
     replicateM_ iterations $ do
@@ -96,6 +95,8 @@ runSimpleTest runner numSlaves maxBatchSize initialStates iterations = do
 
 genericSpec :: (forall m. (MonadConnect m) => Runner m) -> Spec
 genericSpec runner = do
+  loggingIt "Passes simple comparison with pure implementation (no slaves)" $
+    runSimpleTest runner 0 2 10 5
   loggingIt "Passes simple comparison with pure implementation (small)" $
     runSimpleTest runner 1 2 10 5
   loggingIt "Passes simple comparison with pure implementation (medium)" $
@@ -105,7 +106,7 @@ genericSpec runner = do
 
 spec :: Spec
 spec = do
-  describe "Pure" (genericSpec runSimplePureStateful)
+  -- describe "Pure" (genericSpec runSimplePureStateful)
   describe "NetworkMessage" (genericSpec (runSimpleNMStateful "127.0.0.1"))
 
 {-

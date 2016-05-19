@@ -106,3 +106,27 @@ throwAndLog :: (Exception e, MonadIO m, MonadLogger m) => e -> m a
 throwAndLog err = do
   logErrorN (pack (show err))
   liftIO $ throwIO err
+
+data StatefulUpdateException
+  = InputStateNotFound !StateId
+  deriving (Eq, Show, Typeable)
+instance Exception StatefulUpdateException
+
+statefulUpdate ::
+     (MonadThrow m)
+  => (context -> input -> state -> m (state, output))
+  -> HMS.HashMap StateId state
+  -> context
+  -> HMS.HashMap StateId (HMS.HashMap StateId input)
+  -> m (HMS.HashMap StateId state, HMS.HashMap StateId (HMS.HashMap StateId output))
+statefulUpdate update states context inputs = do
+  results <- forM (HMS.toList inputs) $ \(oldStateId, innerInputs) -> do
+    state <- case HMS.lookup oldStateId states of
+      Nothing -> throwM (InputStateNotFound oldStateId)
+      Just state0 -> return state0
+    fmap ((oldStateId, ) . HMS.fromList) $ forM (HMS.toList innerInputs) $ \(newStateId, input) ->
+      fmap (newStateId, ) $ update context input state
+  let resultsMap = HMS.fromList results
+  let states' = foldMap (fmap fst) resultsMap
+  let outputs = fmap (fmap snd) resultsMap
+  return (states' `HMS.union` (states `HMS.difference` inputs), outputs)

@@ -34,7 +34,7 @@ import           FP.Redis (MonadConnect)
 import           Data.Serialize (Serialize)
 import           Control.Concurrent.STM.TMChan
 import           Data.Streaming.NetworkMessage
-import           Control.Monad.Logger (logError)
+import           Control.Monad.Logger (logError, logWarn)
 import           Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.STM as STM
 import qualified Data.Conduit.Network as CN
@@ -94,20 +94,19 @@ runPureStatefulSlave update_ cont = do
 
 runSimplePureStateful :: forall m context input state output a.
        (MonadConnect m, NFData state, NFData output, Serialize state)
-    => MasterArgs
-    -> Int -- ^ Desired slaves
-    -> (context -> input -> state -> m (state, output))
+    => MasterArgs m state context input output 
+    -> Int -- ^ Desired slaves. Must be >= 0
     -> (MasterHandle m state context input output -> m a)
     -> m a
-runSimplePureStateful ma slavesNum0 update_ cont = if slavesNum0 < 1
-    then fail "runSimplePureStateful: slavesNum0 < 1"
+runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
+    then fail "runSimplePureStateful: slavesNum0 < 0"
     else do
         mh <- initMaster ma
         go mh slavesNum0
   where
     go mh slavesNum = if slavesNum == 0
         then finally (cont mh) (closeMaster mh)
-        else runPureStatefulSlave update_ $ \conn -> do
+        else runPureStatefulSlave (maUpdate ma) $ \conn -> do
           addSlaveConnection mh conn
           go mh (slavesNum - 1)
 
@@ -132,8 +131,11 @@ runNMStatefulSlave update_ ad = runSlave SlaveArgs
 data NMStatefulMasterArgs = NMStatefulMasterArgs
     { nmsmaMinimumSlaves :: !(Maybe Int)
     -- ^ The minimum amount of slaves master needs to proceed. If present, must be
-    -- greater or equal to 1. 1 by default.
-    , nmsmaSlaveWaitTimeout :: !Int
+    -- greater or equal to 0. With no slaves will be waited for and
+    -- master will do all the work if no slaves connect.
+    , nmsmaMaximumSlaves :: !(Maybe Int)
+    -- ^ The maximum amount of slaves to accept. If present, must be >= 0.
+    , nmsmaSlavesWaitingTime :: !Int
     -- ^ How much to wait for slaves, in microseconds.
     }
 
@@ -147,44 +149,67 @@ logException loc m =
 
 runNMStatefulMaster :: forall m state output input context b.
        (MonadConnect m, NFData state, Serialize state, NFData output, Serialize output, Serialize context, Serialize input)
-    => MasterArgs
+    => MasterArgs m state context input output
     -> NMStatefulMasterArgs
     -> (forall a. NMApp (SlaveReq state context input) (SlaveResp state output) m () -> m a -> m a)
     -- ^ Function providing access to running a NMApp server. The first argument
     -- is the handler that gets called on each connection. The second argument
     -- is a continuation that will run alongside with the server, when the continuation
     -- quits the server will quit too.
-    -> (MasterHandle m state context input output -> m b)
+    -> (MasterHandle m state context input output -> m () -> m b)
+    -- ^ The second argument is a function that will return when the maximum number
+    -- of slaves is reached. It'll never return if there is no maximum. This is useful
+    -- if for example we're requesting the slaves with the RequestSlaves and we want
+    -- to stop.
     -> m (Maybe b)
     -- ^ 'Nothing' if we ran out of time waiting for slaves.
 runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
-    minSlaves <- case nmsmaMinimumSlaves of
-        Nothing -> return 1
-        Just minSlaves -> if minSlaves < 1
-            then fail ("runTCPStatefulMaster: minSlaves < 1 (" ++ show minSlaves ++ ")")
-            else return minSlaves
+    case nmsmaMinimumSlaves of
+        Just n | n < 0 -> fail ("runTCPStatefulMaster: nmsmaMinimumSlaves < 0 (" ++ show n ++ ")")
+        _ -> return ()
+    case nmsmaMaximumSlaves of
+        Just n -> do
+            let minMax = fromMaybe 0 nmsmaMinimumSlaves
+            when (n < minMax) $
+              fail ("runTCPStatefulMaster: nmsmaMaximumSlaves < " ++ show minMax ++ " (" ++ show n ++ ")")
+        _ -> return ()
     mh <- initMaster ma
     slavesConnectedVar :: TVar Int <- liftIO (newTVarIO 0)
+    slaveAddLock :: MVar () <- newMVar ()
     doneVar :: MVar () <- newEmptyMVar
     let onSlaveConnection :: NMApp (SlaveReq state context input) (SlaveResp state output) m ()
         onSlaveConnection ad = do
-            addSlaveConnection mh (nmStatefulConn ad)
-            atomically (modifyTVar slavesConnectedVar (+1))
-            readMVar doneVar -- Hold the connection for as long as the master runs
-    let waitForEnoughSlaves :: m ()
-        waitForEnoughSlaves = atomically $ do
-            numSlaves <- readTVar slavesConnectedVar
-            unless (numSlaves >= minSlaves) STM.retry
+            added <- withMVar slaveAddLock $ \() -> do
+                slaves <- atomically (readTVar slavesConnectedVar)
+                let shouldAdd = case nmsmaMaximumSlaves of
+                        Nothing -> False
+                        Just n -> slaves <= n
+                when shouldAdd $ do
+                    addSlaveConnection mh (nmStatefulConn ad)
+                    atomically (writeTVar slavesConnectedVar (slaves + 1))
+                return shouldAdd
+            if added 
+                then readMVar doneVar
+                else $logWarn "Slave tried to connect while past the number of maximum slaves"
     let server :: m (Maybe b)
         server = do
-            mbContinue <- Async.race (liftIO (threadDelay nmsmaSlaveWaitTimeout)) waitForEnoughSlaves
-            case mbContinue of
-                Left () -> do
-                    numSlaves <- atomically (readTVar slavesConnectedVar)
-                    $logError ("Timed out waiting for slaves to connect. Needed " ++ tshow minSlaves ++ ", got " ++ tshow numSlaves)
+            let waitForMaxSlaves n = atomically $ do
+                    connected <- readTVar slavesConnectedVar
+                    unless (connected == n) STM.retry
+            let doneWaitingForSlaves = case nmsmaMaximumSlaves of
+                    Nothing -> liftIO (forever (threadDelay maxBound))
+                    Just n -> waitForMaxSlaves n
+            let wait = liftIO (threadDelay nmsmaSlavesWaitingTime)
+            case nmsmaMaximumSlaves of
+                Nothing -> wait
+                Just n -> void (Async.race wait (waitForMaxSlaves n))
+            slaves <- getNumSlaves mh
+            let minSlaves = fromMaybe 0 nmsmaMinimumSlaves
+            if slaves < minSlaves
+                then do
+                    $logError ("Timed out waiting for slaves to connect. Needed " ++ tshow minSlaves ++ ", got " ++ tshow slaves)
                     return Nothing
-                Right () -> do
-                    Just <$> cont mh
+                else Just <$> cont mh doneWaitingForSlaves
     runServer onSlaveConnection $ finally server $ do
         closeMaster mh
         putMVar doneVar ()
@@ -196,14 +221,13 @@ runSimpleNMStateful :: forall m state input output context a.
        , HasTypeFingerprint state, HasTypeFingerprint input, HasTypeFingerprint output, HasTypeFingerprint context
        )
     => ByteString -- ^ Desired host for the master
-    -> MasterArgs
+    -> MasterArgs m state context input output
     -> Int -- ^ Desired slaves
-    -> (context -> input -> state -> m (state, output))
     -> (MasterHandle m state context input output -> m a)
     -> m a
-runSimpleNMStateful host ma numSlaves update_ cont = do
-    when (numSlaves < 1) $
-        fail ("runSimpleNMStateful: numSlaves < 1 (" ++ show numSlaves ++ ")")
+runSimpleNMStateful host ma numSlaves cont = do
+    when (numSlaves < 0) $
+        fail ("runSimpleNMStateful: numSlaves < 0 (" ++ show numSlaves ++ ")")
     (ss, getPort) <- liftIO (getPortAfterBind (CN.serverSettings 0 "*"))
     nmSettings <- defaultNMSettings
     let acceptConns :: forall b.
@@ -212,13 +236,15 @@ runSimpleNMStateful host ma numSlaves update_ cont = do
             Async.race (CN.runGeneralTCPServer ss (runNMApp nmSettings f)) cont_
     let nmsma = NMStatefulMasterArgs
             { nmsmaMinimumSlaves = Just numSlaves
-            , nmsmaSlaveWaitTimeout = 5 * 1000 * 1000
+            , nmsmaMaximumSlaves = Just numSlaves
+            , nmsmaSlavesWaitingTime = 5 * 1000 * 1000
             }
     let runAllSlaves = logException "slaves" $ do
             port <- liftIO getPort
             let cs = CN.clientSettings port host
             go cs nmSettings numSlaves
-    mbX <- fmap snd $ Async.concurrently runAllSlaves (logException "master" (runNMStatefulMaster ma nmsma acceptConns cont))
+    mbX <- fmap snd $ Async.concurrently runAllSlaves $ logException "master" $
+        runNMStatefulMaster ma nmsma acceptConns (\mh wait -> wait >> cont mh)
     case mbX of
         Nothing -> fail ("runSimpleNMStateful: failed waiting for slaves, should not happen.")
         Just x -> return x
@@ -226,7 +252,7 @@ runSimpleNMStateful host ma numSlaves update_ cont = do
     go cs nmSettings numSlaves_ = if numSlaves_ == 0
         then return ()
         else void $ Async.concurrently
-            (do () <- control (\invert -> CN.runTCPClient cs (invert . runNMApp nmSettings (runNMStatefulSlave update_)))
+            (do () <- control (\invert -> CN.runTCPClient cs (invert . runNMApp nmSettings (runNMStatefulSlave (maUpdate ma))))
                 return ())
             (go cs nmSettings (numSlaves_ - 1))
 
