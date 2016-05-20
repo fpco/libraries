@@ -33,8 +33,6 @@ import Distributed.JobQueue.Client
 import Distributed.JobQueue.Worker
 import TestUtils
 import Distributed.Types
--- import Distributed.Redis
-import Distributed.Heartbeat
 
 -- * Utils
 -----------------------------------------------------------------------
@@ -47,26 +45,14 @@ data Request = Request
 instance Serialize Request
 
 newtype Response = Response
-    { responseEcho :: ByteString
+    { _responseEcho :: ByteString
     } deriving (Eq, Ord, Show, Generic, Typeable)
 instance Serialize Response
 
 $(mkManyHasTypeFingerprint [[t|Request|], [t|Response|]])
 
-heartbeatCheckIvl :: Seconds
-heartbeatCheckIvl = Seconds 2
-
-testJQConfig :: JobQueueConfig
-testJQConfig = defaultJobQueueConfig
-    { jqcRedisConfig = testRedisConfig
-    , jqcHeartbeatConfig = HeartbeatConfig
-        { hcSenderIvl = Seconds 1
-        , hcCheckerIvl = heartbeatCheckIvl
-        }
-    }
-
 jobWorker_ :: (MonadConnect m) => (Request -> m (Reenqueue Response)) -> m void
-jobWorker_ work = jobWorker testJQConfig (\_r _rid -> work)
+jobWorker_ work = jobWorker testJobQueueConfig (\_r _rid -> work)
 
 processRequest :: (MonadConnect m) => Request -> m (Reenqueue Response)
 processRequest Request{..} = do
@@ -79,12 +65,12 @@ testJobWorkerOnStartWork onStartWork = jobWorker_ $ \req -> do
     processRequest req
 
 testJobWorker :: (MonadConnect m) => m void
-testJobWorker = jobWorker testJQConfig $ \_r _rid Request{..} -> do
+testJobWorker = jobWorker testJobQueueConfig $ \_r _rid Request{..} -> do
     liftIO (threadDelay requestDelay)
     return requestResponse
 
 withTestJobClient :: (MonadConnect m) => (JobClient Response -> m a) -> m a
-withTestJobClient = withJobClient testJQConfig
+withTestJobClient = withJobClient testJobQueueConfig
 
 getRequestId :: (MonadIO m) => m RequestId
 getRequestId = liftIO (RequestId . UUID.toASCIIBytes <$> UUID.V4.nextRandom)
@@ -141,7 +127,7 @@ spec = do
         workCountRef :: IORef Int <- newIORef 0
         let onStartWork = modifyIORef workCountRef (+1)
         resp' :: Maybe Response <- fmap (either absurd id) $ Async.race
-            (do maybe () absurd <$> timeout (1 * 1000 * 1000) (testJobWorkerOnStartWork onStartWork)
+            (do maybe () absurd <$> timeout (2 * 1000 * 1000) (testJobWorkerOnStartWork onStartWork)
                 testJobWorkerOnStartWork onStartWork)
             (withTestJobClient (\jc -> waitForResponse_ jc =<< submitTestRequest jc req))
         resp' `shouldBe` Just resp
@@ -167,8 +153,33 @@ spec = do
         resp' `shouldBe` Just resp
         workCount <- readIORef workCountRef
         workCount `shouldBe` 2
-    -- Cancel request (in handler)
-    -- Cancel request (remote)
+    redisIt_ "Can cancel request" $ do
+        let resp = Response "test"
+        let req = Request
+                { requestDelay = 5 * 1000 * 1000
+                , requestResponse = DontReenqueue resp
+                }
+        workStartedRef :: IORef Int <- newIORef 0
+        workEndedRef :: IORef Int <- newIORef 0
+        fmap (either absurd id) $ Async.race
+            (jobWorker_ $ \req' -> do
+                atomicModifyIORef' workStartedRef (\c -> (c + 1, ()))
+                res <- processRequest req'
+                atomicModifyIORef' workEndedRef (\c -> (c + 1, ()))
+                return res)
+            -- It's important that we do the check inside the async, so that
+            -- the worker does not get killed because we terminate here, which
+            -- will lead to the work being stopped even if the cancel doesn't work.
+            (do resp' :: Maybe Response <- withTestJobClient $ \jc -> do
+                    rid <- submitTestRequest jc req
+                    liftIO (threadDelay (1 * 1000 * 1000))
+                    cancelRequest (Seconds 50) jc rid
+                    waitForResponse_ jc rid
+                resp' `shouldBe` Nothing
+                workStarted <- readIORef workStartedRef
+                workStarted `shouldBe` 1
+                workEnded <- readIORef workEndedRef
+                workEnded `shouldBe` 0)
     -- Type mismatch
     -- Submitting the same req twice computes once
     -- Waiting on non-existant response gets you nothing

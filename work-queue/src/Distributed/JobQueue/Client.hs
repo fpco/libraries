@@ -177,8 +177,7 @@ waitForResponse jc@JobClient{..} rid cont = do
         case mbResp of
             Just resp -> return resp
             Nothing -> do
-                -- Check 10 times a second anyway, we can't rely on notifications
-                liftIO (threadDelay (100 * 1000))
+                liftIO (threadDelay (fromIntegral (unMilliseconds (jqcWaitForResponseNotificationFailsafeTimeout jcConfig) * 1000)))
                 -- Before resuming, see if the request got deleted -- this can happen,
                 -- and we don't want to be stuck forever.
                 reqExists <- requestExists jcRedis rid
@@ -239,16 +238,22 @@ checkForResponse JobClient{..} rid = do
         addRequestEvent jcRedis rid RequestResponseRead
         return result
 
--- | Cancel a request. (Note that this does
--- *not* guarantee that the worker actually manages to cancel its work).
+-- | Cancel a request. This has the effect of erasing the presence of
+-- the 'Request' from the system, so that:
 --
--- FIXME: I think there's a race here where deleting the data could
--- cause a 'RequestMissingException'
-cancelRequest :: MonadConnect m => Seconds -> Redis -> RequestId -> m ()
-cancelRequest expiry redis k = do
-    run_ redis (del (unVKey (requestDataKey redis k) :| []))
-    run_ redis (lrem (requestsKey redis) 1 (unRequestId k))
-    run_ redis (set (cancelKey redis k) cancelValue [EX expiry])
+-- * If the request is currently enqueued, it'll disappear from the queue.
+-- * If the request is completed, the response will be erased.
+-- * If the request is currently being worked on, the work will cease.
+--
+-- Note that work might not stop immediately, but it guaranteed to eventually
+-- stop (by default the delay can be up to 10 seconds).
+cancelRequest :: MonadConnect m => Seconds -> JobClient response -> RequestId -> m ()
+cancelRequest expiry JobClient{..} k = do
+    $logInfo ("Cancelling request " ++ tshow k)
+    run_ jcRedis (set (cancelKey jcRedis k) cancelValue [EX expiry])
+    run_ jcRedis (del (unVKey (requestDataKey jcRedis k) :| []))
+    run_ jcRedis (del (unVKey (responseDataKey jcRedis k) :| []))
+    run_ jcRedis (lrem (requestsKey jcRedis) 1 (unRequestId k))
 
 handleWorkerFailure :: (MonadConnect m) => Redis -> WorkerId -> m Bool
 handleWorkerFailure r wid = do

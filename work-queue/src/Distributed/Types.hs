@@ -88,9 +88,6 @@ data DistributedException
     | NoLongerWaitingForWorkerRequest
     -- ^ Exception thrown by worker functions that block waiting for
     -- worker requests.
-    | RequestCanceled !RequestId
-    -- ^ Exception returned to the user when the request has been
-    -- cancelled, and is no longer being worked on.
     | NetworkMessageException !NetworkMessageException
     -- ^ Exceptions thrown by "Data.Streaming.NetworkMessage"
     | InternalJobQueueException !Text
@@ -160,8 +157,6 @@ instance Show DistributedException where
         [ "NoLongerWaitingForWorkerRequest "
         , "{- This is usually because we lost the connection to redis, and couldn't reconnect. -}"
         ]
-    show (RequestCanceled rid) =
-        "RequestCanceled (" ++ show rid ++ ")"
     show (NetworkMessageException nme) =
         "NetworkMessageException (" ++ show nme ++ ")"
     show (InternalJobQueueException txt) =

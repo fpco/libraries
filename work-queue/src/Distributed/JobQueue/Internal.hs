@@ -182,6 +182,7 @@ data JobQueueConfig = JobQueueConfig
     -- the request has been cancelled.
     , jqcRequestNotificationFailsafeTimeout :: !Milliseconds
     , jqcSlaveRequestsNotificationFailsafeTimeout :: !Milliseconds
+    , jqcWaitForResponseNotificationFailsafeTimeout :: !Milliseconds
     }
 
 -- | Default settings for the job-queue:
@@ -205,6 +206,7 @@ defaultJobQueueConfig = JobQueueConfig
     , jqcCancelCheckIvl = Seconds 10
     , jqcRequestNotificationFailsafeTimeout = Milliseconds (10 * 1000) -- 10 secs
     , jqcSlaveRequestsNotificationFailsafeTimeout = Milliseconds (10 * 1000) -- 10 secs
+    , jqcWaitForResponseNotificationFailsafeTimeout = Milliseconds 1000 -- 1 secs
     }
 
 data JobRequest = JobRequest

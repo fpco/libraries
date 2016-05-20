@@ -8,6 +8,7 @@
 {-# LANGUAGE RecordWildCards #-}
 module TestUtils
     ( testRedisConfig
+    , testHeartbeatCheckIvl
     , testJobQueueConfig
     , redisIt
     , redisIt_
@@ -29,6 +30,7 @@ import           System.Random (randomRIO)
 import           Control.Concurrent (threadDelay)
 import qualified Test.QuickCheck as QC
 import           Distributed.JobQueue.Worker
+import           Distributed.Heartbeat
 
 import           Distributed.Redis
 
@@ -36,11 +38,20 @@ testRedisConfig :: RedisConfig
 testRedisConfig = defaultRedisConfig
     { rcKeyPrefix = "test:" }
 
+testHeartbeatCheckIvl :: Seconds
+testHeartbeatCheckIvl = Seconds 2
+
 testJobQueueConfig :: JobQueueConfig
 testJobQueueConfig = defaultJobQueueConfig
     { jqcRedisConfig = testRedisConfig
     , jqcRequestNotificationFailsafeTimeout = Milliseconds 1000
     , jqcSlaveRequestsNotificationFailsafeTimeout = Milliseconds 1000
+    , jqcWaitForResponseNotificationFailsafeTimeout = Milliseconds 100
+    , jqcCancelCheckIvl = Seconds 1
+    , jqcHeartbeatConfig = HeartbeatConfig
+        { hcSenderIvl = Seconds 1
+        , hcCheckerIvl = testHeartbeatCheckIvl
+        }
     }
 
 clearRedisKeys :: (MonadConnect m) => Redis -> m ()

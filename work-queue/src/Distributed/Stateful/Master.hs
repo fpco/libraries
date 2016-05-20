@@ -60,7 +60,7 @@ data MasterArgs m state context input output = MasterArgs
   }
 
 newtype MasterHandle m state context input output =
-  MasterHandle {unMasterHandle :: MVar (MasterHandle_ m state context input output)}
+  MasterHandle {_unMasterHandle :: MVar (MasterHandle_ m state context input output)}
 
 data Slaves m state context input output
   = NoSlavesYet !(HMS.HashMap StateId state)

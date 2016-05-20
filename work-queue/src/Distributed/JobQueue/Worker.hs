@@ -75,6 +75,11 @@ data Reenqueue a
     deriving (Eq, Show, Generic, Typeable, Functor, Foldable, Traversable)
 instance (Serialize a) => Serialize (Reenqueue a)
 
+data WorkerResult response
+    = RequestGotCancelled
+    | RequestShouldBeReenqueued
+    | GotResponse (Either DistributedException response)
+
 jobWorkerThread :: forall request response m void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
@@ -88,36 +93,37 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
     mbRidbs <- run r (rpoplpush (requestsKey r) (activeKey r wid))
     forM_ mbRidbs $ \ridBs -> do
         let rid = RequestId ridBs
-        $logInfo ("Executing request " ++ tshow rid)
+        $logInfo ("Receiving request " ++ tshow rid)
         mbReqBs <- receiveRequest r wid rid
-        $logInfo ("Got contents of request " ++ tshow rid)
-        -- Nothing if it has to be re-enqueued.
-        mbRespOrErr :: Maybe (Either DistributedException response) <- case mbReqBs of
-            Nothing ->
-                return (Just (Left (RequestMissingException rid)))
-            Just reqBs -> case checkRequest (Proxy :: Proxy response) rid reqBs of
-                Left err -> return (Just (Left err))
-                Right req -> do
-                    $logDebug ("Starting to work on request " ++ tshow ridBs)
-                    cancelledOrResp :: Either () (Either SomeException (Reenqueue response)) <-
-                        Async.race (watchForCancel r rid jqcCancelCheckIvl) (tryAny (f rid req))
-                    case cancelledOrResp of
-                        Left () -> return (Just (Left (RequestCanceled rid)))
-                        Right (Left err) -> return (Just (Left (wrapException err)))
-                        Right (Right Reenqueue) -> return Nothing
-                        Right (Right (DontReenqueue res)) -> return (Just (Right res))
-        let gotX msg = "Request " ++ tshow rid ++ " got " ++ msg
-        case mbRespOrErr of
+        case mbReqBs of
             Nothing -> do
-                $logInfo (gotX "reenqueue")
-                reenqueueRequest r wid rid
-                addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
-            Just res -> do
-                case res of
-                    Left err -> $logWarn (gotX ("exception: " ++ tshow err))
-                    Right _ -> $logInfo (gotX ("Request " ++ tshow rid ++ " got response"))
-                sendResponse r jqcResponseExpiry wid rid (encode res)
-                addRequestEvent r rid (RequestWorkFinished wid)
+                $logWarn ("Failed getting the content of request " ++ tshow rid ++ ". This can happen if the requset is cancelled.")
+            Just reqBs -> do
+                $logInfo ("Got contents of request " ++ tshow rid)
+                mbResp :: WorkerResult response <- case checkRequest (Proxy :: Proxy response) rid reqBs of
+                    Left err -> return (GotResponse (Left err))
+                    Right req -> do
+                        $logDebug ("Starting to work on request " ++ tshow ridBs)
+                        cancelledOrResp :: Either () (Either SomeException (Reenqueue response)) <-
+                            Async.race (watchForCancel r rid jqcCancelCheckIvl) (tryAny (f rid req))
+                        case cancelledOrResp of
+                            Left () -> return RequestGotCancelled
+                            Right (Left err) -> return (GotResponse (Left (wrapException err)))
+                            Right (Right Reenqueue) -> return RequestShouldBeReenqueued
+                            Right (Right (DontReenqueue res)) -> return (GotResponse (Right res))
+                let gotX msg = "Request " ++ tshow rid ++ " got " ++ msg
+                case mbResp of
+                    RequestGotCancelled -> $logInfo (gotX "cancel")
+                    RequestShouldBeReenqueued -> do
+                        $logInfo (gotX "reenqueue")
+                        reenqueueRequest r wid rid
+                        addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
+                    GotResponse res -> do
+                        case res of
+                            Left err -> $logWarn (gotX ("exception: " ++ tshow err))
+                            Right _ -> $logInfo (gotX ("Request " ++ tshow rid ++ " got response"))
+                        sendResponse r jqcResponseExpiry wid rid (encode res)
+                        addRequestEvent r rid (RequestWorkFinished wid)
     -- Wait for notification only if we've already consumed all the available requests
     -- -- the notifications only tell us about _new_ requests, nothing about how many
     -- there might be backed up in the queue.
@@ -172,7 +178,7 @@ reenqueueRequest r (WorkerId wid) (RequestId rid) = do
             $logWarn ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got nothing. This means that the worker has been detected as dead by a client.")
         Just rid' ->
             unless (rid == rid') $
-                throwM (InternalJobQueueException ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got " ++ tshow rid))
+                throwM (InternalJobQueueException ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got " ++ tshow rid'))
 
 -- | Send a response for a particular request. Once the response is
 -- successfully sent, this also removes the request data, as it's no
@@ -230,6 +236,7 @@ watchForCancel r k ivl = loop
   where
     loop :: m ()
     loop = do
+        $logDebug "Checking for cancel"
         mres <- run r (get (cancelKey r k))
         case mres of
             Just res
@@ -237,6 +244,7 @@ watchForCancel r k ivl = loop
                 | otherwise -> liftIO $ throwIO $ InternalJobQueueException
                     "Didn't get expected value at cancelKey."
             Nothing -> do
+                $logDebug "No cancel, waiting"
                 liftIO $ threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl))
                 loop
 
