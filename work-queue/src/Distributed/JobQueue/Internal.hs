@@ -183,7 +183,7 @@ data JobQueueConfig = JobQueueConfig
     , jqcRequestNotificationFailsafeTimeout :: !Milliseconds
     , jqcSlaveRequestsNotificationFailsafeTimeout :: !Milliseconds
     , jqcWaitForResponseNotificationFailsafeTimeout :: !Milliseconds
-    }
+    } deriving (Eq, Show)
 
 -- | Default settings for the job-queue:
 --

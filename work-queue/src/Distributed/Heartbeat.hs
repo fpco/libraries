@@ -39,7 +39,7 @@ data HeartbeatConfig = HeartbeatConfig
     , hcCheckerIvl :: !Seconds
     -- ^ How frequently heartbeats should be checked. Should be
     -- substantially larger than 'hcSenderIvl'.
-    }
+    } deriving (Eq, Show)
 
 defaultHeartbeatConfig :: HeartbeatConfig
 defaultHeartbeatConfig = HeartbeatConfig

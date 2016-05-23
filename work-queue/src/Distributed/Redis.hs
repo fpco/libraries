@@ -9,6 +9,7 @@
 module Distributed.Redis
     ( -- * Types
       RedisConfig(..)
+    , rcConnectInfo
     , defaultRedisConfig
     , defaultRetryPolicy
     , Redis(..)
@@ -57,12 +58,13 @@ import           Data.Void (absurd)
 
 -- | Configuration of redis connection, along with a prefix for keys.
 data RedisConfig = RedisConfig
-    { rcConnectInfo :: !ConnectInfo
+    { rcHost :: !ByteString
+    , rcPort :: !Int
     -- ^ Redis host and port.
     , rcKeyPrefix :: !ByteString
     -- ^ Prefix to prepend to redis keys.
     , rcMaxConnections :: !Int
-    }
+    } deriving (Eq, Show)
 
 -- | Default settingfs for connecting to redis:
 --
@@ -74,8 +76,8 @@ data RedisConfig = RedisConfig
 -- almost always get set to something else.
 defaultRedisConfig :: RedisConfig
 defaultRedisConfig = RedisConfig
-    { rcConnectInfo = (connectInfo "localhost")
-          { connectRetryPolicy = Just defaultRetryPolicy }
+    { rcHost = "127.0.0.1"
+    , rcPort = 6379
     , rcKeyPrefix = "job-queue:"
     , rcMaxConnections = 10
     }
@@ -97,12 +99,15 @@ data Redis = Redis
 -- Operations
 -----------------------------------------------------------------------
 
+rcConnectInfo :: RedisConfig -> ConnectInfo
+rcConnectInfo RedisConfig{..} = (connectInfo rcHost){connectPort = rcPort}
+
 -- | Connect to redis, and provide the connection to the inner action.
 -- When the inner action exits (either via return or exception), the
 -- connection is released.
 withRedis :: MonadConnect m => RedisConfig -> (Redis -> m a) -> m a
-withRedis RedisConfig{..} f =
-    withManagedConnection rcConnectInfo rcMaxConnections $ \conn -> f Redis
+withRedis rc@RedisConfig{..} f = do
+    withManagedConnection (rcConnectInfo rc) rcMaxConnections $ \conn -> f Redis
         { redisConnection = conn
         , redisKeyPrefix = rcKeyPrefix
         }
