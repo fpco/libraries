@@ -9,6 +9,7 @@ module Distributed.Heartbeat
     , checkHeartbeats
     , withCheckHeartbeats
     , withHeartbeats
+    , deadWorkers
 
     -- * Testing/debugging
     , activeOrUnhandledWorkers
@@ -20,6 +21,7 @@ import ClassyPrelude
 import Control.Concurrent.Lifted (threadDelay)
 import Control.Monad.Logger (logDebug, logInfo)
 import Data.List.NonEmpty (NonEmpty((:|)))
+import qualified Data.List.NonEmpty as NE
 import Data.Time.Clock.POSIX
 import FP.Redis
 import FP.ThreadFileLogger
@@ -56,11 +58,22 @@ heartbeatActiveKey r = ZKey $ Key $ redisKeyPrefix r <> "heartbeat:active"
 heartbeatLastCheckKey :: Redis -> VKey
 heartbeatLastCheckKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:last-check"
 
+-- | A sorted set of 'WorkerId's that are considered dead, i.e., they
+-- failed a heartbeat check.  Score is the time of the unsuccessful
+-- heartbeat check.
+heartbeatDeadKey :: Redis -> ZKey
+heartbeatDeadKey r = ZKey $ Key $ redisKeyPrefix r <> "heartbeat:dead"
+
 -- | Returns all the heartbeats currently in redis. Should only be useful
 -- for testing/debugging
 activeOrUnhandledWorkers :: (MonadConnect m) => Redis -> m [WorkerId]
 activeOrUnhandledWorkers r =
     map WorkerId <$> run r (zrange (heartbeatActiveKey r) 0 (-1) False)
+
+-- | Return all the dead workers.
+deadWorkers :: MonadConnect m => Redis -> m [WorkerId]
+deadWorkers r =
+    map WorkerId <$> run r (zrange (heartbeatDeadKey r) 0 (-1) False)
 
 lastHeartbeatCheck :: (MonadConnect m) => Redis -> m (Maybe UTCTime)
 lastHeartbeatCheck r =
@@ -120,6 +133,9 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
                 inactive : inactives0 -> do
                     let inactives = inactive :| inactives0
                     $logInfo ("Got inactive workers: " ++ tshow inactives)
+                    deadones <- run r (zadd (heartbeatDeadKey r) (NE.zip (NE.repeat (realToFrac startTime)) inactives))
+                    unless (deadones == fromIntegral (length inactives)) $
+                        $logDebug ("Expecting to have registered " ++ tshow (length inactives) ++ " dead workers, but got " ++ tshow deadones ++ ", some other client probably took care of it already.")
                     -- TODO consider catching exceptins here
                     handleFailures
                         (map WorkerId inactives)

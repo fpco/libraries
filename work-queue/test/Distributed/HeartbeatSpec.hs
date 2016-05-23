@@ -48,6 +48,12 @@ checkNoWorkers r = do
     unless (null wids) $
         fail ("Expected no workers, but got " ++ show (map unWorkerId wids))
 
+checkDeadWorker :: MonadConnect m => Redis -> WorkerId -> m ()
+checkDeadWorker r wid = do
+    bodies <- deadWorkers r
+    unless (bodies == [wid]) $
+        fail "Expected a dead worker, found none."
+
 -- Tests
 -----------------------------------------------------------------------
 
@@ -64,6 +70,7 @@ detectDeadWorker redis dieAfter = do
                 putMVar stopChecking ())
             (takeMVar stopChecking)
     checkNoWorkers redis
+    checkDeadWorker redis wid
 
 spec :: Spec
 spec = do
