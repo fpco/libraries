@@ -16,6 +16,7 @@ module Distributed.JobQueue.Client
     , waitForResponse_
     , checkForResponse
     , cancelRequest
+    , uniqueRequestId
     ) where
 
 import           ClassyPrelude
@@ -36,6 +37,8 @@ import           FP.Redis
 import           FP.ThreadFileLogger
 import qualified Data.HashMap.Strict as HMS
 import           Data.Void (absurd)
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID.V4
 
 data JobClient response = JobClient
     { jcConfig :: !JobQueueConfig
@@ -237,6 +240,9 @@ checkForResponse JobClient{..} rid = do
         result <- decodeOrThrow "checkForResponse" response
         addRequestEvent jcRedis rid RequestResponseRead
         return result
+
+uniqueRequestId :: (MonadIO m) => m RequestId
+uniqueRequestId = liftIO (RequestId . UUID.toASCIIBytes <$> UUID.V4.nextRandom)
 
 -- | Cancel a request. This has the effect of erasing the presence of
 -- the 'Request' from the system, so that:
