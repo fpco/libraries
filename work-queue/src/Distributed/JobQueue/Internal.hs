@@ -196,9 +196,9 @@ data JobQueueConfig = JobQueueConfig
 -- * 'EventLogMessage's expire after a day.
 --
 -- * Workers check for cancellation every 10 seconds.
-defaultJobQueueConfig :: JobQueueConfig
-defaultJobQueueConfig = JobQueueConfig
-    { jqcRedisConfig = defaultRedisConfig
+defaultJobQueueConfig :: ByteString -> JobQueueConfig
+defaultJobQueueConfig prefix = JobQueueConfig
+    { jqcRedisConfig = defaultRedisConfig prefix
     , jqcHeartbeatConfig = defaultHeartbeatConfig
     , jqcRequestExpiry = Seconds 3600
     , jqcResponseExpiry = Seconds 3600

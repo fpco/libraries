@@ -35,16 +35,14 @@ import           Distributed.Heartbeat
 import           Distributed.Redis
 
 testRedisConfig :: RedisConfig
-testRedisConfig = defaultRedisConfig
-    { rcKeyPrefix = "test:" }
+testRedisConfig = defaultRedisConfig "test:"
 
 testHeartbeatCheckIvl :: Seconds
 testHeartbeatCheckIvl = Seconds 2
 
 testJobQueueConfig :: JobQueueConfig
-testJobQueueConfig = defaultJobQueueConfig
-    { jqcRedisConfig = testRedisConfig
-    , jqcRequestNotificationFailsafeTimeout = Milliseconds 1000
+testJobQueueConfig = (defaultJobQueueConfig "test:")
+    { jqcRequestNotificationFailsafeTimeout = Milliseconds 1000
     , jqcSlaveRequestsNotificationFailsafeTimeout = Milliseconds 1000
     , jqcWaitForResponseNotificationFailsafeTimeout = Milliseconds 100
     , jqcCancelCheckIvl = Seconds 1

@@ -71,14 +71,11 @@ data RedisConfig = RedisConfig
 -- * Use port 6379 (redis default port)
 --
 -- * Use 'defaultRetryPolicy' to determine redis reconnect behavior.
---
--- * It will use \"job-queue:\" as a key prefix in redis. This should
--- almost always get set to something else.
-defaultRedisConfig :: RedisConfig
-defaultRedisConfig = RedisConfig
+defaultRedisConfig :: ByteString -> RedisConfig
+defaultRedisConfig prefix = RedisConfig
     { rcHost = "127.0.0.1"
     , rcPort = 6379
-    , rcKeyPrefix = "job-queue:"
+    , rcKeyPrefix = prefix
     , rcMaxConnections = 10
     }
 
