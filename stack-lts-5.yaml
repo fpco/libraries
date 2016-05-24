@@ -1,15 +1,17 @@
 resolver: lts-5.0
 extra-deps:
   - retry-0.6
+  - store-0.1.0.0
+  - fail-4.9.0.0
+  - th-lift-instances-0.1.7
+  - th-utilities-0.1.0.1
 packages:
   - ./redis-fp
   - ./thread-file-logger
   - ./work-queue
   - ./hpc-manager
   - ./th-relative-paths
-  - location:
-      git: https://github.com/fpco/fpco-cereal.git
-      commit: 0b9059f3d1ff5e286b36bc21d654af30d4218ea6
+  - ./th-type-hash
 
 image:
   container:

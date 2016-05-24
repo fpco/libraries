@@ -47,7 +47,6 @@ library
                      , aeson
                      , async
                      , base64-bytestring
-                     , fpco-cereal
                      , bytestring
                      , classy-prelude
                      , conduit-extra
@@ -71,6 +70,7 @@ library
                      , split
                      , stm
                      , stm-containers
+                     , store
                      , streaming-commons
                      , text
                      , template-haskell
@@ -114,7 +114,7 @@ executable hpc-example-war
                      , vector-algorithms
                      , work-queue
                      , mutable-containers
-                     , fpco-cereal
+                     , store
   ghc-options:         -Wall -threaded
 
 executable hpc-example-redis
@@ -166,7 +166,6 @@ test-suite wq-test
   build-depends:       base
                      , QuickCheck
                      , async
-                     , fpco-cereal
                      , bytestring
                      , classy-prelude
                      , conduit-extra
@@ -189,6 +188,7 @@ test-suite wq-test
                      , silently
                      , split
                      , stm
+                     , store
                      , streaming-commons
                      , thread-file-logger
                      , time
@@ -221,7 +221,6 @@ benchmark wq-bench
                      , streaming-commons
                      , async
                      , bytestring
-                     , fpco-cereal
                      , network
                      , enclosed-exceptions
                      , unix
@@ -235,6 +234,7 @@ benchmark wq-bench
                      , redis-fp
                      , lifted-base
                      , semigroups
+                     , store
                      , monad-control
                      , resourcet
                      , criterion

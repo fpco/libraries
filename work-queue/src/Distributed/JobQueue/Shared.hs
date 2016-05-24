@@ -51,8 +51,8 @@ import           Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LBS
 import           Data.List.NonEmpty
-import           Data.Serialize (Serialize, encode)
-import           Data.Serialize.Orphans ()
+import           Data.Store (Store)
+import qualified Data.Store as S
 import           Data.Streaming.NetworkMessage (NetworkMessageException)
 import           Data.TypeFingerprint
 import           Data.Typeable (typeOf)
@@ -69,7 +69,7 @@ data JobRequest = JobRequest
     , jrBody :: ByteString
     } deriving (Generic, Show, Typeable)
 
-instance Serialize JobRequest
+instance Store JobRequest
 
 notifyRequestAvailable :: MonadCommand m => RedisInfo -> m ()
 notifyRequestAvailable r = run_ r $ publish (requestChannel r) ""
@@ -138,8 +138,8 @@ data RequestEvent
     | RequestResponseRead
     deriving (Generic, Show, Typeable)
 
-instance Serialize RequestEvent
 instance Aeson.ToJSON RequestEvent
+instance Store RequestEvent
 
 data EventLogMessage
     = EventLogMessage
@@ -158,7 +158,7 @@ requestEventsKey r k = LKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestI
 addRequestEvent :: (MonadCommand m, MonadLogger m) => RedisInfo -> RequestId -> RequestEvent -> m ()
 addRequestEvent r k x = do
     now <- liftIO getCurrentTime
-    run_ r $ rpush (requestEventsKey r k) (encode (now, x) :| [])
+    run_ r $ rpush (requestEventsKey r k) (S.encode (now, x) :| [])
     $logInfo $ decodeUtf8 $ LBS.toStrict $ Aeson.encode $ EventLogMessage
         { logTime = show now
         , logRequest = k
@@ -181,7 +181,7 @@ getRequestEvents r k =
 -- * Slave Requests
 
 -- | Hostname and port of the master the slave should connect to.  The
--- 'Serialize' instance for this is used to serialize this info to the
+-- 'Store' instance for this is used to serialize this info to the
 -- list stored at 'slaveRequestsKey'.
 data MasterConnectInfo = MasterConnectInfo
     { mciHost :: ByteString
@@ -189,7 +189,7 @@ data MasterConnectInfo = MasterConnectInfo
     }
     deriving (Generic, Show, Typeable)
 
-instance Serialize MasterConnectInfo
+instance Store MasterConnectInfo
 
 -- | This command is used by the master to request that a slave
 -- connect to it.
@@ -224,7 +224,7 @@ requestSlave
     -> MasterConnectInfo
     -> m ()
 requestSlave r mci = do
-    let encoded = encode mci
+    let encoded = S.encode mci
     run_ r $ lpush (slaveRequestsKey r) (encoded :| [])
     notifyRequestAvailable r
 
@@ -325,7 +325,7 @@ data DistributedJobQueueException
     deriving (Eq, Typeable, Generic)
 
 instance Exception DistributedJobQueueException
-instance Serialize DistributedJobQueueException
+instance Store DistributedJobQueueException
 
 instance Show DistributedJobQueueException where
     show (WorkStillInProgress wid) =

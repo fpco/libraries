@@ -11,21 +11,20 @@ import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
-import qualified Data.Serialize as B
-import           Data.Serialize.Orphans ()
 import           Data.TypeFingerprint
 import           Text.Printf (PrintfArg(..))
 import           Data.Proxy (Proxy(..))
 import           Distributed.RedisQueue
+import           Data.Store (Store)
 
 newtype SlaveId = SlaveId {unSlaveId :: Int}
-  deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Serialize)
+  deriving (Generic, Eq, Ord, Show, Hashable, NFData, Store)
 instance PrintfArg SlaveId where
   formatArg = formatArg . unSlaveId
   parseFormat = parseFormat . unSlaveId
 
 newtype StateId = StateId {unStateId :: Int}
-  deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Serialize)
+  deriving (Generic, Eq, Ord, Show, Hashable, NFData, Store)
 instance PrintfArg StateId where
   formatArg = formatArg . unStateId
   parseFormat = parseFormat . unStateId
@@ -46,7 +45,7 @@ data SlaveReq state context input
       -- provides the new StateIds, and the inputs which should be
       -- provided to 'saUpdate'.
   | SReqGetStates
-  deriving (Generic, Eq, Show, NFData, B.Serialize)
+  deriving (Generic, Eq, Show, NFData, Store)
 
 instance (HasTypeFingerprint state, HasTypeFingerprint context, HasTypeFingerprint input) => HasTypeFingerprint (SlaveReq state context input) where
     typeFingerprint _ = typeFingerprint (Proxy :: Proxy (state, context, input))
@@ -61,7 +60,7 @@ data SlaveResp state output
   | SRespUpdate !(HMS.HashMap StateId (HMS.HashMap StateId output)) -- TODO consider making this a simple list -- we don't really need it to be a HMS.
   | SRespGetStates !(HMS.HashMap StateId state)
   | SRespError Text
-  deriving (Generic, Eq, Show, NFData, B.Serialize)
+  deriving (Generic, Eq, Show, NFData, Store)
 
 instance (HasTypeFingerprint state, HasTypeFingerprint output) => HasTypeFingerprint (SlaveResp state output) where
     typeFingerprint _ = typeFingerprint (Proxy :: Proxy (state, output))

@@ -38,7 +38,7 @@ import Control.Concurrent.Async (Async, cancel, cancelWith, waitEither)
 import Control.Monad.Logger (MonadLogger, logErrorS, logInfoS, logDebugS, logWarnS)
 import Control.Monad.Trans.Control (MonadBaseControl, liftBaseWith)
 import Data.Bits (xor)
-import Data.Serialize (encode)
+import qualified Data.Store as S
 import Data.Streaming.Network (ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP)
 import Data.Streaming.NetworkMessage
 import Data.TypeFingerprint
@@ -360,7 +360,7 @@ jobQueueWorkerInternal params@WorkerParams{..} slave master = do
         addRequestEvent wpRedis k (RequestWorkFinished wpId)
       where
         expiry = workerResponseDataExpiry wpConfig
-        encoded = encode result
+        encoded = S.encode result
     -- Heartbeats get their own redis connection, as this way it's
     -- less likely that they'll fail due to the main redis connection
     -- transferring lots of data.

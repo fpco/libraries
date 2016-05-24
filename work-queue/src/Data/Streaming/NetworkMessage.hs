@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE NoImplicitPrelude          #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
@@ -48,7 +49,8 @@ import           Control.Exception (AsyncException(ThreadKilled), BlockedIndefin
 import           Control.Monad.Base (liftBase)
 import           Control.Monad.Trans.Control (MonadBaseControl, control)
 import           Data.Function (fix)
-import qualified Data.Serialize as B
+import           Data.Store (Store, PeekException (..))
+import qualified Data.Store.Streaming as S
 import           Data.Streaming.Network (AppData, appRead, appWrite)
 import           Data.Streaming.Network (ServerSettings, setAfterBind)
 import           Data.TypeFingerprint
@@ -57,6 +59,8 @@ import           Data.Void (absurd)
 import           GHC.IO.Exception (IOException(ioe_type), IOErrorType(ResourceVanished))
 import           Network.Socket (socketPort)
 import           System.Executable.Hash (executableHash)
+import           System.IO.ByteBuffer (ByteBuffer)
+import qualified System.IO.ByteBuffer as BB
 
 -- | A network message application.
 --
@@ -66,7 +70,7 @@ import           System.Executable.Hash (executableHash)
 -- application (@a@). Restrictions on these types:
 --
 -- * @iSend@ and @youSend@ must both be instances of 'Sendable'.  In
--- other words, they must both implement 'Typeable' and 'Serialize'.
+-- other words, they must both implement 'Typeable' and 'Store'.
 --
 -- * @m@ must be an instance of 'MonadBaseControl' 'IO'.
 --
@@ -83,7 +87,7 @@ type NMApp iSend youSend m a = NMAppData iSend youSend -> m a
 
 -- | Constraint synonym for the constraints required to send data from
 -- / to an 'NMApp'.
-type Sendable a = (B.Serialize a, HasTypeFingerprint a)
+type Sendable a = (Store a, HasTypeFingerprint a)
 
 -- | Provides an 'NMApp' with a means of communicating with the other side of a
 -- connection. See other functions provided by this module.
@@ -130,7 +134,7 @@ data Handshake = Handshake
     , hsExeHash   :: Maybe ByteString
     }
     deriving (Generic, Show, Eq, Typeable)
-instance B.Serialize Handshake
+instance Store Handshake
 
 mkHandshake
     :: forall iSend youSend m a. (HasTypeFingerprint iSend, HasTypeFingerprint youSend)
@@ -144,23 +148,23 @@ mkHandshake _ hb eh = Handshake
 
 -- | Convert an 'NMApp' into a "Data.Streaming.Network" application.
 runNMApp :: forall iSend youSend m a.
-       (MonadBaseControl IO m, Sendable iSend, Sendable youSend)
+       (MonadIO m, MonadBaseControl IO m, Sendable iSend, Sendable youSend)
     => NMSettings
     -> NMApp iSend youSend m a
     -> AppData
     -> m a
-runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
-    (yourHS, leftover) <- liftBase $ do
+runNMApp (NMSettings heartbeat exeHash) nmApp ad = BB.with Nothing $ \ buffer -> do
+    yourHS <- liftBase $ do
         let myHS = mkHandshake nmApp heartbeat exeHash
-        forM_ (toChunks $ B.encodeLazy myHS) (appWrite ad)
-        mgot <- appGet mempty (appRead ad)
+        (appWrite ad) (encode myHS)
+        mgot <- appGet buffer (appRead ad)
         case mgot of
-            Just (yourHS, leftover) -> do
+            Just yourHS -> do
                 when (hsISend myHS /= hsYouSend yourHS ||
                       hsYouSend myHS /= hsISend yourHS ||
                       hsExeHash myHS /= hsExeHash yourHS) $ do
                     throwIO $ NMMismatchedHandshakes myHS yourHS
-                return (yourHS, leftover)
+                return yourHS
             Nothing -> throwIO NMConnectionDropped
     control $ \runInBase -> do
         -- FIXME use a bounded chan perhaps? (Make the queue size
@@ -212,7 +216,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                             return (Just (Left err))
                 }
             sendSTM :: Message iSend -> STM ()
-            sendSTM x = writeTChan outgoing $! B.encode x
+            sendSTM x = writeTChan outgoing $! encode x
             send :: Message iSend -> IO ()
             send = atomically . sendSTM
         -- Ping / heartbeat are managed by withAsync, so that they're
@@ -220,7 +224,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
         A.withAsync (sendPing send yourHS `A.race` checkHeartbeat lastPing active blocked) $ \pingThread -> do
             linkNoThreadKilled pingThread $
                 A.runConcurrently $
-                    A.Concurrently (recvWorker incoming lastPing active blocked leftover) *>
+                    A.Concurrently (recvWorker incoming lastPing active blocked buffer) *>
                     A.Concurrently (sendWorker outgoing incoming active) *>
                     A.Concurrently (runInBase (nmApp nad) `finally`
                                     send Complete `finally`
@@ -258,8 +262,10 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
     -- blocked are only read by the 'checkHeartbeat' thread.  That
     -- checking is done periodically at a user specified interval, and
     -- so reordering of concurrent reads / writes is acceptable.
-    recvWorker incoming lastPing active blocked = fix $ \loop leftover -> do
-        mgot <- appGet leftover (do
+    recvWorker incoming lastPing active blocked buffer = loop
+      where
+       loop = do
+        mgot <- appGet buffer (do
             writeIORef blocked True
             bs <- appRead ad
             writeIORef blocked False
@@ -269,14 +275,14 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
                     then return Nothing
                     else throwIO ex
         case mgot of
-            Just (Ping, leftover') ->
-                loop leftover'
-            Just (Payload p, leftover') -> do
+            Just Ping ->
+                loop
+            Just (Payload p) -> do
                 atomically (writeTChan incoming (Right p))
-                loop leftover'
+                loop
             -- We're done when the "Complete" message is received
             -- or the connection is closed
-            Just (Complete, _) -> finished incoming active NMConnectionClosed
+            Just Complete -> finished incoming active NMConnectionClosed
             Nothing -> finished incoming active NMConnectionDropped
 
     isResourceVanished ex = ioe_type ex == ResourceVanished
@@ -291,7 +297,7 @@ runNMApp (NMSettings heartbeat exeHash) nmApp ad = do
         -- receive small chunks of it.  This means that 'appRead'
         -- won't block for very long, and the heartbeat code will
         -- function properly.
-        if bs == B.encode (Complete :: Message iSend)
+        if bs == encode (Complete :: Message iSend)
             then do
                 appWrite ad bs `catch` \ex ->
                     -- Ignore resource vanished if the connection is done.
@@ -328,27 +334,27 @@ mailboxReadTChan chan select = go []
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and
 -- 'Nothing' is returned.
-appGet :: B.Serialize a
-       => ByteString -- ^ leftover bytes from previous parse.
-       -> IO ByteString -- ^ function to get more bytes
-       -> IO (Maybe (a, ByteString)) -- ^ result and leftovers
-appGet bs0 readChunk =
-    loop (B.runGetPartial B.get bs0)
+appGet :: Store a
+       => ByteBuffer    -- ^ 'ByteBuffer' for streaming
+       -> IO ByteString -- ^ action to get more bytes
+       -> IO (Maybe a)  -- ^ result
+appGet bb readChunk =
+    ((S.peekMessage bb) >>= loop)
+    `catch` (\ ex@(PeekException _ _) -> throwIO . NMDecodeFailure . show $ ex)
   where
-    loop (B.Fail str _) = throwIO (NMDecodeFailure str)
-    loop (B.Partial f) = do
+    loop (S.NeedMoreInput cont) = do
         bs <- readChunk
         if null bs
             then return Nothing
-            else loop (f bs)
-    loop (B.Done res bs) = return (Just (res, bs))
+            else cont bs >>= loop
+    loop (S.Done (S.Message x)) = return (Just x)
 
 data Message payload
     = Ping
     | Payload payload
     | Complete
     deriving (Generic, Typeable)
-instance B.Serialize payload => B.Serialize (Message payload)
+instance Store payload => Store (Message payload)
 
 data NetworkMessageException
     -- | This is thrown by 'runNMApp', during the initial handshake,
@@ -371,7 +377,7 @@ data NetworkMessageException
     | NMDecodeFailure String
     deriving (Show, Typeable, Eq, Generic)
 instance Exception NetworkMessageException
-instance B.Serialize NetworkMessageException
+instance Store NetworkMessageException
 
 -- | Settings to be used by 'runNMApp'. Use 'defaultNMSettings' and modify with
 -- setter functions.
@@ -427,3 +433,6 @@ getPortAfterBind ss = do
         , readMVar boundPortVar `catch` \BlockedIndefinitelyOnMVar ->
             error "Port will never get bound, thread got blocked indefinitely."
         )
+
+encode :: Store a => a -> ByteString
+encode = S.encodeMessage . S.Message
