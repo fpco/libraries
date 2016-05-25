@@ -44,6 +44,7 @@ import           Control.Exception.Lifted (evaluate)
 import           Control.DeepSeq (force, NFData)
 import qualified Control.Concurrent.STM as STM
 import           Data.Foldable (asum)
+import           Data.Void (absurd)
 
 -- | Arguments for 'mkMasterHandle'
 data MasterArgs m state context input output = MasterArgs
@@ -401,9 +402,11 @@ updateSlaves maxBatchSize slaves context inputMap = do
       (atomically (writeTChan outgoingChan Nothing)))
   HMS.toList . _ussOutputs <$> takeMVar statusVar
   where
-    slaveLoop outgoingChan statusVar (slaveId, slave) = go USRespInit
+    slaveLoop outgoingChan statusVar (slaveId, slave) = do
+      incomingChan :: TChan (UpdateSlaveResp output) <- liftIO newTChanIO
+      fmap (either absurd id) (Async.race (receiveLoop incomingChan) (go incomingChan USRespInit))
       where
-        go resp = do
+        go incomingChan resp = do
           res <- modifyMVar statusVar (\status -> updateSlavesStep maxBatchSize slaveId resp status)
           case res of
             USSDone -> do
@@ -412,18 +415,21 @@ updateSlaves maxBatchSize slaves context inputMap = do
             USSNotDone reqs -> do
               forM_ reqs $ \(slaveId_, req) -> do
                 atomically (writeTChan outgoingChan (Just (slaveConnection (slaves HMS.! slaveId_), req)))
-              resp0 <- scRead (slaveConnection slave)
-              $logDebug ("Received slave response from slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayResp resp0)
-              resp' <- case resp0 of
-                SRespResetState -> throwIO (UnexpectedResponse (displayResp resp0))
-                SRespGetStates _ -> throwIO (UnexpectedResponse (displayResp resp0))
-                SRespQuit -> throwIO (UnexpectedResponse (displayResp resp0))
-                SRespError err -> throwIO (ExceptionFromSlave err)
-                SRespAddStates addedStates -> return (USRespAddStates addedStates)
-                SRespRemoveStates requestingSlaveId removedStates ->
-                  return (USRespRemoveStates requestingSlaveId removedStates)
-                SRespUpdate outputs -> return (USRespUpdate outputs)
-              go resp'
+              go incomingChan =<< atomically (readTChan incomingChan)
+
+        receiveLoop incomingChan = forever $ do
+          resp0 <- scRead (slaveConnection slave)
+          $logDebug ("Received slave response from slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayResp resp0)
+          resp' <- case resp0 of
+            SRespResetState -> throwIO (UnexpectedResponse (displayResp resp0))
+            SRespGetStates _ -> throwIO (UnexpectedResponse (displayResp resp0))
+            SRespQuit -> throwIO (UnexpectedResponse (displayResp resp0))
+            SRespError err -> throwIO (ExceptionFromSlave err)
+            SRespAddStates addedStates -> return (USRespAddStates addedStates)
+            SRespRemoveStates requestingSlaveId removedStates ->
+              return (USRespRemoveStates requestingSlaveId removedStates)
+            SRespUpdate outputs -> return (USRespUpdate outputs)
+          atomically (writeTChan incomingChan resp')
 
     sendLoop outgoingChan = do
       mbReq <- atomically (readTChan outgoingChan)
