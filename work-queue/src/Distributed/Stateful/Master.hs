@@ -9,6 +9,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE BangPatterns #-}
 module Distributed.Stateful.Master
     ( MasterArgs(..)
     , MasterHandle
@@ -83,7 +84,7 @@ data MasterException
   | InputMissingException StateId
   | UnusedInputsException [StateId]
   | NoSlavesConnectedException
-  | UnexpectedResponse Text
+  | UnexpectedResponse Text Text
   | ExceptionFromSlave Text
   deriving (Eq, Show, Typeable)
 
@@ -123,7 +124,7 @@ closeMaster (MasterHandle mhv) =
         forM_ (HMS.toList slaves) $ \(slaveId, slave) -> do
           mbErr <- tryAny $ do 
             scWrite (slaveConnection slave) SReqQuit
-            readExpect (slaveConnection slave) $ \case
+            readExpect "closeMaster" (slaveConnection slave) $ \case
               SRespQuit -> return ()
               _ -> Nothing
           case mbErr of
@@ -135,15 +136,16 @@ closeMaster (MasterHandle mhv) =
 {-# INLINE readExpect #-}
 readExpect ::
      (MonadIO m, MonadBaseControl IO m)
-  => SlaveConn m state context input output
+  => Text
+  -> SlaveConn m state context input output
   -> (SlaveResp state output -> Maybe a)
   -> m a
-readExpect slave f = do
+readExpect loc slave f = do
   resp <- scRead slave
   case resp of
     SRespError err -> throwIO (ExceptionFromSlave err)
     _ -> case f resp of
-      Nothing -> throwIO (UnexpectedResponse (displayResp resp))
+      Nothing -> throwIO (UnexpectedResponse loc (displayResp resp))
       Just x -> return x
 
 {-# INLINE integrateNewStates #-}
@@ -203,15 +205,6 @@ strictMapDifference loc a b = do
       printf "%s: Bad map difference (strictMapDifference), %s - %s" loc (show (HMS.keys a)) (show (HMS.keys b))
   return c
 
-data SlaveStatus = SlaveStatus
-  { _ssRemaining :: ![StateId] -- ^ Free states that remain
-  , _ssUpdating :: !(HS.HashSet StateId) -- ^ States we're currently updating
-  , _ssRemoving :: !(HS.HashSet StateId) -- ^ States we're currently removing
-  , _ssAdding :: !(HS.HashSet StateId) -- ^ States we're currently adding
-  } deriving (Eq, Show, Generic)
-makeLenses ''SlaveStatus
-instance NFData SlaveStatus
-
 data UpdateSlaveResp output
   = USRespAddStates !(HS.HashSet StateId)
   | USRespRemoveStates !SlaveId (HMS.HashMap StateId ByteString)
@@ -227,116 +220,94 @@ data UpdateSlaveReq input
   deriving (Eq, Show, Generic)
 instance (NFData input) => NFData (UpdateSlaveReq input)
 
+{-
 data UpdateSlavesStatus input output = UpdateSlavesStatus
-  { _ussSlaves :: !(HMS.HashMap SlaveId SlaveStatus)
-  , _ussInputs :: !(HMS.HashMap StateId (HMS.HashMap StateId input))
-  , _ussOutputs :: !(HMS.HashMap SlaveId (HMS.HashMap StateId (HMS.HashMap StateId output)))
+  { _ussSlaves :: !(HMS.HashMap SlaveId SlaveStatus))
+  , _ussInputs :: !(HMS.HashMap StateId (HMS.HashMap StateId input)))
+  , _ussOutputs :: !(HMS.HashMap SlaveId (HMS.HashMap StateId (HMS.HashMap StateId output))))
   } deriving (Generic)
 makeLenses ''UpdateSlavesStatus
 instance (NFData input, NFData output) => NFData (UpdateSlavesStatus input output)
+-}
 
-data UpdateSlaveStep input
-  = USSDone
-  | USSNotDone !(Maybe (SlaveId, UpdateSlaveReq input))
-  deriving (Eq, Show, Generic)
-instance NFData input => NFData (UpdateSlaveStep input)
+data UpdateSlaveStep input output = UpdateSlaveStep
+  { ussReqs :: ![(SlaveId, UpdateSlaveReq input)]
+  , ussSlavesStatus :: !(HMS.HashMap SlaveId SlaveStatus)
+  , ussOutputs :: !(HMS.HashMap StateId (HMS.HashMap StateId output))
+  }
+
+type SlavesStatus = HMS.HashMap SlaveId SlaveStatus
+
+data SlaveStatus = SlaveStatus
+  { _ssWaitingResps :: !Int
+  , _ssRemainingStates :: ![StateId]
+  , _ssWaitingForStates :: !Bool
+  }
+makeLenses ''SlaveStatus
 
 {-# INLINE updateSlavesStep #-}
 updateSlavesStep :: forall m input output.
-     (MonadThrow m, MonadLogger m)
+     (MonadThrow m, MonadLogger m, MonadIO m)
   => Int -- ^ Max batch size
+  -> HMS.HashMap StateId (HMS.HashMap StateId input)
   -> SlaveId
   -> UpdateSlaveResp output
-  -> UpdateSlavesStatus input output
-  -> m (UpdateSlavesStatus input output, UpdateSlaveStep input)
-updateSlavesStep maxBatchSize respSlaveId resp statuses = case resp of
-  USRespInit -> do
-    findSomethingToUpdate respSlaveId statuses
-  USRespUpdate outputs -> do
-    -- Remove from ssUpdating in thisSlaveId, update the outputs, and then find something
-    -- else to do.
-    let removeUpdating updating =
-          either throw id (strictSetDifference "USRespUpdate" updating (HS.fromList (HMS.keys outputs)))
-    -- HMS.union is not efficient with small thing into big things
-    let insertAll xs m = case xs of
-          [] -> m
-          (k, v) : xs' -> insertAll xs' (HMS.insert k v m)
-    let insertOutputs allOutputs = case HMS.lookup respSlaveId allOutputs of
-          Nothing -> HMS.insert respSlaveId outputs allOutputs
-          Just existingOutputs -> HMS.insert respSlaveId (insertAll (HMS.toList outputs) existingOutputs) allOutputs
-    let statuses' =
-          over (ussSlaves . at respSlaveId . _Just . ssUpdating) removeUpdating $
-          over ussOutputs insertOutputs $
-          statuses
-    findSomethingToUpdate respSlaveId statuses'
-  USRespAddStates statesIds -> do
-    -- Move from ssAdding to ssRemaining in thisSlaveId, and then
-    -- find something else to do.
-    let removeAdding adding =
-          either throw id (strictSetDifference "USRespAddStates" adding statesIds)
-    let moveToRemaining = over ssAdding removeAdding . over ssRemaining (++ HS.toList statesIds)
-    let statuses' =
-          over (ussSlaves . at respSlaveId . _Just) moveToRemaining statuses
-    findSomethingToUpdate respSlaveId statuses'
-  USRespRemoveStates requestingSlaveId states -> do
-    -- Move from ssRemoving in thisSlaveId to ssAdding in requestingSlaveId,
-    -- and issue a request adding the slaves to requestingSlaveId
-    let removeRemoving removing =
-          either throw id (strictSetDifference "USRespRemoveStates" removing (HS.fromList (HMS.keys states)))
-    let addAdding = HS.union (HS.fromList (HMS.keys states))
-    let statuses' =
-          over (ussSlaves . at respSlaveId . _Just . ssRemoving) removeRemoving $
-          over (ussSlaves . at requestingSlaveId . _Just . ssAdding) addAdding $
-          statuses
-    return (statuses', USSNotDone (Just (requestingSlaveId, USReqAddStates states)))
+  -> SlavesStatus
+  -> m (UpdateSlaveStep input output)
+updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
+  let statuses1 = over (at respSlaveId . _Just . ssWaitingResps) (\c -> c - 1) statuses0
+  (statuses2, requests, outputs) <- case resp of
+    USRespInit -> do
+      addOutputs_ <$> findSomethingToUpdate respSlaveId statuses1
+    USRespUpdate outputs -> do
+      addOutputs outputs <$> findSomethingToUpdate respSlaveId statuses1
+    USRespAddStates statesIds -> do
+      let statuses' =
+            over (at respSlaveId . _Just) (over ssRemainingStates (++ HS.toList statesIds) . set ssWaitingForStates False) $
+            statuses1
+      addOutputs_ <$> findSomethingToUpdate respSlaveId statuses'
+    USRespRemoveStates requestingSlaveId states -> do
+      return (addOutputs_ (statuses1, [(requestingSlaveId, USReqAddStates states)]))
+  let statuses3 = foldl' (\statuses (slaveId, _) -> over (at slaveId . _Just . ssWaitingResps) (+ 1) statuses) statuses2 requests
+  return UpdateSlaveStep
+    { ussReqs = requests
+    , ussSlavesStatus = statuses3
+    , ussOutputs = outputs
+    }
   where
-    {-# INLINE areWeDone #-}
-    areWeDone :: UpdateSlavesStatus input output -> Bool
-    areWeDone uss =
-      HMS.null (_ussInputs uss) && all (\ss -> HS.null (_ssUpdating ss)) (_ussSlaves uss)
+    addOutputs outputs (statuses, requests) = (statuses, requests, outputs)
+    addOutputs_ = addOutputs mempty
 
     {-# INLINE findSomethingToUpdate #-}
     findSomethingToUpdate ::
          SlaveId
-      -> UpdateSlavesStatus input output
-      -> m (UpdateSlavesStatus input output, UpdateSlaveStep input)
+      -> SlavesStatus
+      -> m (SlavesStatus, [(SlaveId, UpdateSlaveReq input)])
     findSomethingToUpdate slaveId uss = do
       -- If we have some states in ssRemaining, just update those. Otherwise,
       -- try to steal from another slave.
-      let ss = _ussSlaves uss HMS.! slaveId
-      let (toUpdateInputs, remaining) = takeEnoughStatesToUpdate (_ussInputs uss) (_ssRemaining ss)
+      let ss = uss HMS.! slaveId
+      let (toUpdateInputs, remaining) = takeEnoughStatesToUpdate (_ssRemainingStates ss)
       if null toUpdateInputs
-        then do
-          -- We might be done, check
-          if areWeDone uss
-            then return (uss, USSDone)
-            else do -- Steal slaves
-              let mbStolen = stealSlavesFromSomebody slaveId uss
-              case mbStolen of
-                Nothing -> do -- We're done for this slave.
-                  $logInfo ("Tried to get something to do for slave " ++ tshow (unSlaveId slaveId) ++ ", but couldn't find anything")
-                  return (uss, USSNotDone Nothing)
-                Just (uss', stolenFrom, stolenStates) -> do -- Request stolen slaves
-                  $logInfo ("Stealing " ++ tshow (HS.size stolenStates) ++ " states from slave " ++ tshow (unSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId slaveId))
-                  return (uss', USSNotDone (Just (stolenFrom, USReqRemoveStates slaveId stolenStates)))
+        then do -- Steal slaves
+          let mbStolen = stealSlavesFromSomebody slaveId uss
+          case mbStolen of
+            Nothing -> do -- We're done for this slave.
+              $logInfo ("Tried to get something to do for slave " ++ tshow (unSlaveId slaveId) ++ ", but couldn't find anything")
+              return (uss, [])
+            Just (uss', stolenFrom, stolenStates) -> do -- Request stolen slaves
+              $logInfo ("Stealing " ++ tshow (HS.size stolenStates) ++ " states from slave " ++ tshow (unSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId slaveId))
+              return (uss', [(stolenFrom, USReqRemoveStates slaveId stolenStates)])
         else do -- Send update command
           let toUpdateInputsMap = HMS.fromList toUpdateInputs
-          remainingInputs <- strictMapDifference "findSomethingToUpdate" (_ussInputs uss) toUpdateInputsMap
-          let moveToUpdating = \case
-                Nothing -> throw (MasterException (pack (printf "findSomethingToUpdate: Couldn't find slave %d" slaveId)))
-                Just ss_ -> if HS.null (_ssUpdating ss_)
-                  then Just ss_{_ssRemaining = remaining, _ssUpdating = HS.fromList (map fst toUpdateInputs)}
-                  else throw (MasterException (pack (printf "findSomethingToUpdate: ssUpdating wasn't null (%s)" slaveId (show (_ssUpdating ss)))))
-          let uss' = over (ussSlaves . at slaveId) moveToUpdating $
-                     set ussInputs remainingInputs uss
-          return (uss', USSNotDone (Just (slaveId, USReqUpdate toUpdateInputsMap)))
+          let uss' = set (at slaveId . _Just . ssRemainingStates) remaining uss
+          return (uss', [(slaveId, USReqUpdate toUpdateInputsMap)])
 
     {-# INLINE takeEnoughStatesToUpdate #-}
     takeEnoughStatesToUpdate ::
-         HMS.HashMap StateId (HMS.HashMap StateId input)
-      -> [StateId]
+         [StateId]
       -> ([(StateId, HMS.HashMap StateId input)], [StateId])
-    takeEnoughStatesToUpdate inputs remaining00 = go remaining00 0
+    takeEnoughStatesToUpdate remaining00 = go remaining00 0
       where
         go remaining0 grabbed = if grabbed >= maxBatchSize
           then ([], remaining0)
@@ -349,25 +320,23 @@ updateSlavesStep maxBatchSize respSlaveId resp statuses = case resp of
     {-# INLINE stealSlavesFromSomebody #-}
     stealSlavesFromSomebody ::
          SlaveId -- Requesting the slaves
-      -> UpdateSlavesStatus input output
-      -> Maybe (UpdateSlavesStatus input output, SlaveId, HS.HashSet StateId)
+      -> SlavesStatus
+      -> Maybe (SlavesStatus, SlaveId, HS.HashSet StateId)
     stealSlavesFromSomebody requestingSlaveId uss = do
       let goodCandidate (slaveId, ss) = do
             guard (slaveId /= requestingSlaveId)
-            guard (not (null (_ssRemaining ss)))
-            let (toTransfer, remaining) = takeEnoughStatesToUpdate (_ussInputs uss) (_ssRemaining ss)
+            guard (not (null (_ssRemainingStates ss)))
+            let (toTransfer, remaining) = takeEnoughStatesToUpdate (_ssRemainingStates ss)
             return (slaveId, map fst toTransfer, sum (map (HMS.size . snd) toTransfer), remaining)
       let candidates :: [(SlaveId, [StateId], Int, [StateId])]
-          candidates = catMaybes (map goodCandidate (HMS.toList (_ussSlaves uss)))
+          candidates = catMaybes (map goodCandidate (HMS.toList uss))
       guard (not (null candidates))
       -- Pick candidate with highest number of states to steal states from
       let (candidateSlaveId, statesToBeTransferred, _, remainingStates) =
             maximumByEx (comparing (\(_, _, x, _) -> x)) candidates
-      -- Bookkeep the remaining states
-      let moveStatesToRemoving =
-            set ssRemaining remainingStates .
-            over ssRemoving (HS.union (HS.fromList statesToBeTransferred))
-      let uss' = over (ussSlaves . at candidateSlaveId . _Just) moveStatesToRemoving uss
+      let uss' =
+            set (at candidateSlaveId . _Just . ssRemainingStates) remainingStates $
+            set (at requestingSlaveId . _Just . ssWaitingForStates) True uss
       return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
 
 {-# INLINE updateSlaves #-}
@@ -382,40 +351,64 @@ updateSlaves :: forall state context input output m.
   -- ^ Inputs to the computation
   -> m [(SlaveId, HMS.HashMap StateId (HMS.HashMap StateId output))]
 updateSlaves maxBatchSize slaves context inputMap = do
-  outgoingChan :: TChan (Maybe (SlaveConn m state context input output, UpdateSlaveReq input)) <- liftIO newTChanIO
-  let slaveStatus0 stateIds = SlaveStatus
-        { _ssRemaining = HMS.keys stateIds
-        , _ssAdding = mempty
-        , _ssUpdating = mempty
-        , _ssRemoving = mempty
+  lockedConns :: HMS.HashMap SlaveId (MVar (SlaveConn m state context input output)) <-
+    forM slaves (\slave -> newMVar (slaveConnection slave))
+  let slaveStatus0 slave = SlaveStatus
+        { _ssWaitingResps = 1 -- The init
+        , _ssRemainingStates = HMS.keys (slaveStates slave)
+        , _ssWaitingForStates = False
         }
-  let status = UpdateSlavesStatus
-        { _ussSlaves = slaveStatus0 . slaveStates <$> slaves
-        , _ussOutputs = mempty
-        , _ussInputs = inputMap
-        }
-  statusVar :: MVar (UpdateSlavesStatus input output) <- newMVar status
-  void $ Async.concurrently
-    (sendLoop outgoingChan)
-    (finally
-      (Async.runConcurrently (asum (map (Async.Concurrently . slaveLoop outgoingChan statusVar) (HMS.toList slaves))))
-      (atomically (writeTChan outgoingChan Nothing)))
-  HMS.toList . _ussOutputs <$> takeMVar statusVar
+  statusVar <- newMVar (slaveStatus0 <$> slaves)
+  Async.mapConcurrently (slaveLoop lockedConns statusVar) (HMS.toList slaves)
   where
-    slaveLoop outgoingChan statusVar (slaveId, slave) = do
-      incomingChan :: TChan (UpdateSlaveResp output) <- liftIO newTChanIO
-      fmap (either absurd id) (Async.race (receiveLoop incomingChan) (go incomingChan USRespInit))
+    slaveLoop ::
+         HMS.HashMap SlaveId (MVar (SlaveConn m state context input output))
+      -> MVar SlavesStatus
+      -> (SlaveId, Slave m state context input output)
+      -> m (SlaveId, HMS.HashMap StateId (HMS.HashMap StateId output))
+    slaveLoop outgoingChans statusVar (slaveId, slave) = do
+      {-
+      incomingChan <- liftIO newTChanIO
+      outs <- either absurd id <$> Async.race (receiveLoop incomingChan) (go incomingChan mempty USRespInit)
+      return (slaveId, outs)
+      -}
+      outs <- go mempty USRespInit
+      return (slaveId, outs)
       where
-        go incomingChan resp = do
-          res <- modifyMVar statusVar (\status -> updateSlavesStep maxBatchSize slaveId resp status)
-          case res of
-            USSDone -> do
-              $logInfo ("Slave " ++ tshow slaveId ++ " received USSDone, quitting")
-              return ()
-            USSNotDone reqs -> do
-              forM_ reqs $ \(slaveId_, req) -> do
-                atomically (writeTChan outgoingChan (Just (slaveConnection (slaves HMS.! slaveId_), req)))
-              go incomingChan =<< atomically (readTChan incomingChan)
+        go !outputs0 resp = do
+          (statuses, requests, outputs1) <- modifyMVar statusVar $ \status -> do
+            UpdateSlaveStep{..} <- updateSlavesStep maxBatchSize inputMap slaveId resp status
+            return (ussSlavesStatus, (ussSlavesStatus, ussReqs, ussOutputs))
+          forM_ requests $ \(slaveId_, req0) -> do
+            let req = case req0 of
+                  USReqUpdate inputs -> SReqUpdate context inputs
+                  USReqRemoveStates x y -> SReqRemoveStates x y
+                  USReqAddStates y -> SReqAddStates y
+            withMVar (outgoingChans HMS.! slaveId_) $ \conn -> do
+              $logDebug ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req)
+              scWrite conn req
+          let outputs = outputs1 <> outputs0
+          let status = statuses HMS.! slaveId
+          if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
+            then do
+              $logInfo ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
+              return outputs
+            else do
+              resp0 <- scRead (slaveConnection slave)
+              $logDebug ("Received slave response from slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayResp resp0)
+              resp' <- case resp0 of
+                SRespResetState -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
+                SRespGetStates _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
+                SRespQuit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
+                SRespError err -> throwIO (ExceptionFromSlave err)
+                SRespAddStates addedStates -> return (USRespAddStates addedStates)
+                SRespRemoveStates requestingSlaveId removedStates ->
+                  return (USRespRemoveStates requestingSlaveId removedStates)
+                SRespUpdate outputs_ -> return (USRespUpdate outputs_)
+              go outputs resp'
+
+        {-
+            _ -> go incomingChan outputs =<< atomically (readTChan incomingChan)
 
         receiveLoop incomingChan = forever $ do
           resp0 <- scRead (slaveConnection slave)
@@ -430,19 +423,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
               return (USRespRemoveStates requestingSlaveId removedStates)
             SRespUpdate outputs -> return (USRespUpdate outputs)
           atomically (writeTChan incomingChan resp')
-
-    sendLoop outgoingChan = do
-      mbReq <- atomically (readTChan outgoingChan)
-      case mbReq of
-        Nothing -> return ()
-        Just (slaveConn, req0) -> do
-          let req = case req0 of
-                USReqUpdate inputs -> SReqUpdate context inputs
-                USReqRemoveStates x y -> SReqRemoveStates x y
-                USReqAddStates y -> SReqAddStates y
-          $logDebug ("Sending slave request to slave : " ++ displayReq req)
-          scWrite slaveConn req
-          sendLoop outgoingChan
+        -}
 
 -- | Send an update request to all the slaves. This will cause each of
 -- the slaves to apply 'saUpdate' to each of its states. The outputs of
@@ -493,7 +474,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
                 (slaveConnection (slaves HMS.! slaveId))
                 (SReqUpdate context (HMS.fromList <$> HMS.fromList inps))
             forM slaveIdsAndInputs $ \(slaveId, _) ->
-              liftM (slaveId,) $ readExpect (slaveConnection (slaves HMS.! slaveId)) $ \case
+              liftM (slaveId,) $ readExpect "update (1)" (slaveConnection (slaves HMS.! slaveId)) $ \case
                 SRespUpdate outputs -> Just outputs
                 _ -> Nothing
           Just maxBatchSize -> updateSlaves maxBatchSize slaves context (HMS.fromList <$> inputMap)
@@ -532,7 +513,7 @@ sendStates slavesWithStates = do
   forM_ slavesWithStates $ \(conn, states) -> do
     scWrite conn (SReqResetState states)
   forM_ slavesWithStates $ \(conn, _) -> do
-    readExpect conn $ \case
+    readExpect "sendStates" conn $ \case
       SRespResetState -> Just ()
       _ -> Nothing
 
@@ -595,7 +576,7 @@ getStates (MasterHandle mhv) = withMVar mhv $ \mh -> do
     Slaves slaves -> do
       forM_ slaves (\slave_ -> scWrite (slaveConnection slave_) SReqGetStates)
       responses <- forM (HMS.elems slaves) $ \slave_ -> do
-        readExpect (slaveConnection slave_) $ \case
+        readExpect "getStates" (slaveConnection slave_) $ \case
           SRespGetStates states -> Just states
           _ -> Nothing
       return (mconcat responses)
@@ -609,5 +590,3 @@ getNumSlaves (MasterHandle mhv) = do
   return $ case mhSlaves mh of
     NoSlavesYet _ -> 0
     Slaves slaves -> HMS.size slaves
-
-

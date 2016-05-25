@@ -112,7 +112,7 @@ genericSpec runner = do
 
 spec :: Spec
 spec = do
-  -- describe "Pure" (genericSpec runSimplePureStateful)
+  describe "Pure" (genericSpec runSimplePureStateful)
   describe "NetworkMessage" (genericSpec (runSimpleNMStateful "127.0.0.1"))
   describe "JobQueue" $ do
     redisIt_ "gets all slaves available" $ do
