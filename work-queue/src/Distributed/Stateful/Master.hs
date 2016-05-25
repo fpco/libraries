@@ -40,12 +40,7 @@ import           Distributed.Stateful.Internal
 import           Text.Printf (printf)
 import           FP.Redis (MonadConnect)
 import           Control.Lens (makeLenses, set, at, _Just, over)
-import           Control.Exception (throw)
-import           Control.Exception.Lifted (evaluate)
-import           Control.DeepSeq (force, NFData)
-import qualified Control.Concurrent.STM as STM
-import           Data.Foldable (asum)
-import           Data.Void (absurd)
+import           Control.DeepSeq (NFData)
 
 -- | Arguments for 'mkMasterHandle'
 data MasterArgs m state context input output = MasterArgs
@@ -183,28 +178,6 @@ assignInputsToSlaves slaveStates inputMap = do
     throwM (UnusedInputsException (HMS.keys unusedInputs))
   return slavesIdsAndInputs
 
-{-# INLINE strictSetDifference #-}
-strictSetDifference ::
-     (Show a, Eq a, Hashable a, MonadThrow m)
-  => String -> HS.HashSet a -> HS.HashSet a -> m (HS.HashSet a)
-strictSetDifference loc a b = do
-  let c = a `HS.difference` b
-  unless (HS.size c == HS.size a - HS.size b) $
-    throwM $ MasterException $ pack $
-      printf "%s: Bad set difference (strictSetDifference), %s - %s" loc (show a) (show b)
-  return c
-
-{-# INLINE strictMapDifference #-}
-strictMapDifference ::
-     (Show a, Eq a, Hashable a, MonadThrow m)
-  => String -> HMS.HashMap a b -> HMS.HashMap a c -> m (HMS.HashMap a b)
-strictMapDifference loc a b = do
-  let c = a `HMS.difference` b
-  unless (HMS.size c == HMS.size a - HMS.size b) $
-    throwM $ MasterException $ pack $
-      printf "%s: Bad map difference (strictMapDifference), %s - %s" loc (show (HMS.keys a)) (show (HMS.keys b))
-  return c
-
 data UpdateSlaveResp output
   = USRespAddStates !(HS.HashSet StateId)
   | USRespRemoveStates !SlaveId (HMS.HashMap StateId ByteString)
@@ -219,16 +192,6 @@ data UpdateSlaveReq input
   | USReqRemoveStates !SlaveId !(HS.HashSet StateId)
   deriving (Eq, Show, Generic)
 instance (NFData input) => NFData (UpdateSlaveReq input)
-
-{-
-data UpdateSlavesStatus input output = UpdateSlavesStatus
-  { _ussSlaves :: !(HMS.HashMap SlaveId SlaveStatus))
-  , _ussInputs :: !(HMS.HashMap StateId (HMS.HashMap StateId input)))
-  , _ussOutputs :: !(HMS.HashMap SlaveId (HMS.HashMap StateId (HMS.HashMap StateId output))))
-  } deriving (Generic)
-makeLenses ''UpdateSlavesStatus
-instance (NFData input, NFData output) => NFData (UpdateSlavesStatus input output)
--}
 
 data UpdateSlaveStep input output = UpdateSlaveStep
   { ussReqs :: ![(SlaveId, UpdateSlaveReq input)]
@@ -392,11 +355,6 @@ updateSlaves maxBatchSize slaves context inputMap = do
       -> (SlaveId, Slave m state context input output)
       -> m (SlaveId, HMS.HashMap StateId (HMS.HashMap StateId output))
     slaveLoop outgoingChans statusVar (slaveId, slave) = do
-      {-
-      incomingChan <- liftIO newTChanIO
-      outs <- either absurd id <$> Async.race (receiveLoop incomingChan) (go incomingChan mempty USRespInit)
-      return (slaveId, outs)
-      -}
       outs <- go mempty USRespInit
       return (slaveId, outs)
       where
@@ -425,24 +383,6 @@ updateSlaves maxBatchSize slaves context inputMap = do
                   return (USRespRemoveStates requestingSlaveId removedStates)
                 SRespUpdate outputs_ -> return (USRespUpdate outputs_)
               go outputs resp'
-
-        {-
-            _ -> go incomingChan outputs =<< atomically (readTChan incomingChan)
-
-        receiveLoop incomingChan = forever $ do
-          resp0 <- scRead (slaveConnection slave)
-          $logDebug ("Received slave response from slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayResp resp0)
-          resp' <- case resp0 of
-            SRespResetState -> throwIO (UnexpectedResponse (displayResp resp0))
-            SRespGetStates _ -> throwIO (UnexpectedResponse (displayResp resp0))
-            SRespQuit -> throwIO (UnexpectedResponse (displayResp resp0))
-            SRespError err -> throwIO (ExceptionFromSlave err)
-            SRespAddStates addedStates -> return (USRespAddStates addedStates)
-            SRespRemoveStates requestingSlaveId removedStates ->
-              return (USRespRemoveStates requestingSlaveId removedStates)
-            SRespUpdate outputs -> return (USRespUpdate outputs)
-          atomically (writeTChan incomingChan resp')
-        -}
 
 -- | Send an update request to all the slaves. This will cause each of
 -- the slaves to apply 'saUpdate' to each of its states. The outputs of
