@@ -351,18 +351,43 @@ updateSlaves :: forall state context input output m.
   -- ^ Inputs to the computation
   -> m [(SlaveId, HMS.HashMap StateId (HMS.HashMap StateId output))]
 updateSlaves maxBatchSize slaves context inputMap = do
-  lockedConns :: HMS.HashMap SlaveId (MVar (SlaveConn m state context input output)) <-
-    forM slaves (\slave -> newMVar (slaveConnection slave))
+  outgoingChans :: HMS.HashMap SlaveId (SlaveConn m state context input output, TChan (Maybe (UpdateSlaveReq input))) <-
+    forM slaves $ \slave -> do
+      chan <- liftIO newTChanIO
+      return (slaveConnection slave, chan)
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
         , _ssRemainingStates = HMS.keys (slaveStates slave)
         , _ssWaitingForStates = False
         }
   statusVar <- newMVar (slaveStatus0 <$> slaves)
-  Async.mapConcurrently (slaveLoop lockedConns statusVar) (HMS.toList slaves)
+  fmap snd $ Async.concurrently
+    (Async.mapConcurrently (uncurry sendLoop) (HMS.toList outgoingChans))
+    (finally
+      (Async.mapConcurrently (slaveLoop (snd <$> outgoingChans) statusVar) (HMS.toList slaves))
+      (forM_ (snd <$> outgoingChans) (\chan -> atomically (writeTChan chan Nothing))))
   where
+    sendLoop ::
+         SlaveId
+      -> (SlaveConn m state context input output, TChan (Maybe (UpdateSlaveReq input)))
+      -> m ()
+    sendLoop slaveId (conn, chan) = go
+      where
+        go = do
+          mbReq <- atomically (readTChan chan)
+          case mbReq of
+            Nothing -> return ()
+            Just req0 -> do
+                let req = case req0 of
+                      USReqUpdate inputs -> SReqUpdate context inputs
+                      USReqRemoveStates x y -> SReqRemoveStates x y
+                      USReqAddStates y -> SReqAddStates y
+                $logDebug ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req)
+                scWrite conn req
+                go
+
     slaveLoop ::
-         HMS.HashMap SlaveId (MVar (SlaveConn m state context input output))
+         HMS.HashMap SlaveId (TChan (Maybe (UpdateSlaveReq input)))
       -> MVar SlavesStatus
       -> (SlaveId, Slave m state context input output)
       -> m (SlaveId, HMS.HashMap StateId (HMS.HashMap StateId output))
@@ -380,13 +405,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
             UpdateSlaveStep{..} <- updateSlavesStep maxBatchSize inputMap slaveId resp status
             return (ussSlavesStatus, (ussSlavesStatus, ussReqs, ussOutputs))
           forM_ requests $ \(slaveId_, req0) -> do
-            let req = case req0 of
-                  USReqUpdate inputs -> SReqUpdate context inputs
-                  USReqRemoveStates x y -> SReqRemoveStates x y
-                  USReqAddStates y -> SReqAddStates y
-            withMVar (outgoingChans HMS.! slaveId_) $ \conn -> do
-              $logDebug ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req)
-              scWrite conn req
+            atomically (writeTChan (outgoingChans HMS.! slaveId_) (Just req0))
           let outputs = outputs1 <> outputs0
           let status = statuses HMS.! slaveId
           if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
