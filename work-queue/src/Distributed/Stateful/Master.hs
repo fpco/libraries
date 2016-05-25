@@ -29,7 +29,7 @@ module Distributed.Stateful.Master
 
 import           ClassyPrelude
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import           Control.Monad.Logger (MonadLogger, logError, logWarn)
+import           Control.Monad.Logger (MonadLogger, logError, logWarn, logInfo, logDebug)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -251,7 +251,7 @@ instance NFData input => NFData (UpdateSlaveStep input)
 
 {-# INLINE updateSlavesStep #-}
 updateSlavesStep :: forall m input output.
-     (MonadThrow m)
+     (MonadThrow m, MonadLogger m)
   => Int -- ^ Max batch size
   -> Maybe Int -- ^ Maybe min batch size
   -> SlaveId
@@ -322,9 +322,11 @@ updateSlavesStep maxBatchSize mbMinBatchSize respSlaveId resp statuses = case re
               let mbStolen = stealSlavesFromSomebody slaveId uss
               case mbStolen of
                 Nothing -> do -- Not done yet, but nothing to do for this resp
+                  $logInfo ("Tried to get something to do for slave " ++ tshow (unSlaveId slaveId) ++ ", but couldn't find anything")
                   return (uss, USSNotDone Nothing)
-                Just (uss', stolenFrom, stolenSlaves) -> do -- Request stolen slaves
-                  return (uss', USSNotDone (Just (stolenFrom, USReqRemoveStates slaveId stolenSlaves)))
+                Just (uss', stolenFrom, stolenStates) -> do -- Request stolen slaves
+                  $logInfo ("Stealing " ++ tshow (HS.size stolenStates) ++ " states from slave " ++ tshow (unSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId slaveId))
+                  return (uss', USSNotDone (Just (stolenFrom, USReqRemoveStates slaveId stolenStates)))
         else do -- Send update command
           let (toUpdate0, remaining) = splitAt maxBatchSize (_ssRemaining ss)
           let toUpdateInputs = HMS.fromList
@@ -462,6 +464,7 @@ updateSlaves maxBatchSize mbMinBatchSize slaves context inputMap = do
               return True
       when continue $ do
         resp0 <- scRead cwnmConn
+        $logDebug ("Received slave response from slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayResp resp0)
         resp <- case resp0 of
           SRespResetState -> throwIO (UnexpectedResponse (displayResp resp0))
           SRespGetStates _ -> throwIO (UnexpectedResponse (displayResp resp0))
@@ -483,6 +486,7 @@ updateSlaves maxBatchSize mbMinBatchSize slaves context inputMap = do
                 USReqUpdate inputs -> SReqUpdate context inputs
                 USReqRemoveStates x y -> SReqRemoveStates x y
                 USReqAddStates y -> SReqAddStates y
+          $logDebug ("Sending slave request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req)
           scWrite (slaveConnection (slaves HMS.! slaveId)) req
           sendLoop outgoingChan
 
@@ -527,6 +531,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
       let mh' = mh{ mhSlaves = NoSlavesYet states' }
       return (mh', outputs)
     Slaves slaves -> do
+      $logInfo ("Executing update with " ++ tshow (HMS.size slaves) ++ " slaves")
       -- Update the slave states.
       slaveIdsAndInputs <- either throwAndLog return $
         assignInputsToSlaves (slaveStates <$> slaves) inputMap
