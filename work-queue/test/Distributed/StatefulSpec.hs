@@ -90,7 +90,7 @@ performSimpleTest initialStates mh = do
     testUpdate mh inputs
 
 testMasterArgs :: forall m. (MonadConnect m) => Int -> MasterArgs m State () Input Output
-testMasterArgs n = MasterArgs{maMaxBatchSize = Just n, maMinBatchSize = Nothing, maUpdate = f}
+testMasterArgs n = MasterArgs{maMaxBatchSize = Just n, maUpdate = f}
   where
     f :: () -> Input -> State -> m (State, Output)
     f _ input (State inputs) = do

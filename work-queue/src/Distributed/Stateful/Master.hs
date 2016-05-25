@@ -50,10 +50,6 @@ data MasterArgs m state context input output = MasterArgs
   { maMaxBatchSize :: !(Maybe Int)
     -- ^ The maximum amount of states that will be transferred at once. If 'Nothing', they
     -- will be all transferred at once, and no "rebalancing" will ever happen.
-    -- Moreover, if 'Nothing', 'maMinBatchSize' will be ignored.
-  , maMinBatchSize :: !(Maybe Int)
-    -- ^ The minimum amount of states that will be transferred at once. 'Nothing' is equivalent to
-    -- @'Just' 0@.
   , maUpdate :: !(context -> input -> state -> m (state, output))
     -- ^ This argument will be used if 'update' is invoked when no slaves have
     -- been added yet.
@@ -98,15 +94,10 @@ initMaster ::
   -> m (MasterHandle m state context input output)
 initMaster ma@MasterArgs{..} = do
   let throwME = throwAndLog . MasterException . pack
-  case (maMinBatchSize, maMaxBatchSize) of
-    (_, Just maxBatchSize) | maxBatchSize < 1 ->
+  case maMaxBatchSize of
+    Just maxBatchSize | maxBatchSize < 1 ->
       throwME (printf "Distribute.master: maMaxBatchSize must be > 0 (got %d)" maxBatchSize)
-    (Just minBatchSize, _) | minBatchSize < 0 ->
-      throwME (printf "Distribute.master: maMinBatchSize must be >= 0 (got %d)" minBatchSize)
-    (Just minBatchSize, Just maxBatchSize) | minBatchSize > maxBatchSize ->
-      throwME (printf "Distribute.master: maMinBatchSize can't be greater then maMaxBatchSize (got %d and %d)" minBatchSize maxBatchSize)
-    _ ->
-      return ()
+    _ -> return ()
   slaveIdSupply <- newSupply (SlaveId 0) (\(SlaveId n) -> SlaveId (n + 1))
   stateIdSupply <- newSupply (StateId 0) (\(StateId n) -> StateId (n + 1))
   let mh = MasterHandle_
@@ -237,7 +228,7 @@ instance (NFData input) => NFData (UpdateSlaveReq input)
 
 data UpdateSlavesStatus input output = UpdateSlavesStatus
   { _ussSlaves :: !(HMS.HashMap SlaveId SlaveStatus)
-  , _ussInputs :: !(HMS.HashMap StateId [(StateId, input)])
+  , _ussInputs :: !(HMS.HashMap StateId (HMS.HashMap StateId input))
   , _ussOutputs :: !(HMS.HashMap SlaveId (HMS.HashMap StateId (HMS.HashMap StateId output)))
   } deriving (Generic)
 makeLenses ''UpdateSlavesStatus
@@ -253,12 +244,11 @@ instance NFData input => NFData (UpdateSlaveStep input)
 updateSlavesStep :: forall m input output.
      (MonadThrow m, MonadLogger m)
   => Int -- ^ Max batch size
-  -> Maybe Int -- ^ Maybe min batch size
   -> SlaveId
   -> UpdateSlaveResp output
   -> UpdateSlavesStatus input output
   -> m (UpdateSlavesStatus input output, UpdateSlaveStep input)
-updateSlavesStep maxBatchSize mbMinBatchSize respSlaveId resp statuses = case resp of
+updateSlavesStep maxBatchSize respSlaveId resp statuses = case resp of
   USRespInit -> do
     findSomethingToUpdate respSlaveId statuses
   USRespUpdate outputs -> do
@@ -313,7 +303,8 @@ updateSlavesStep maxBatchSize mbMinBatchSize respSlaveId resp statuses = case re
       -- If we have some states in ssRemaining, just update those. Otherwise,
       -- try to steal from another slave.
       let ss = _ussSlaves uss HMS.! slaveId
-      if null (_ssRemaining ss)
+      let (toUpdateInputs, remaining) = takeEnoughStatesToUpdate (_ussInputs uss) (_ssRemaining ss)
+      if null toUpdateInputs
         then do
           -- We might be done, check
           if areWeDone uss
@@ -328,19 +319,31 @@ updateSlavesStep maxBatchSize mbMinBatchSize respSlaveId resp statuses = case re
                   $logInfo ("Stealing " ++ tshow (HS.size stolenStates) ++ " states from slave " ++ tshow (unSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId slaveId))
                   return (uss', USSNotDone (Just (stolenFrom, USReqRemoveStates slaveId stolenStates)))
         else do -- Send update command
-          let (toUpdate0, remaining) = splitAt maxBatchSize (_ssRemaining ss)
-          let toUpdateInputs = HMS.fromList
-                [(k, HMS.fromList (_ussInputs uss HMS.! k)) | k <- toUpdate0]
-          remainingInputs <- strictMapDifference "findSomethingToUpdate"
-            (_ussInputs uss) (HMS.fromList (zip toUpdate0 (repeat ())))
+          let toUpdateInputsMap = HMS.fromList toUpdateInputs
+          remainingInputs <- strictMapDifference "findSomethingToUpdate" (_ussInputs uss) toUpdateInputsMap
           let moveToUpdating = \case
                 Nothing -> throw (MasterException (pack (printf "findSomethingToUpdate: Couldn't find slave %d" slaveId)))
                 Just ss_ -> if HS.null (_ssUpdating ss_)
-                  then Just ss_{_ssRemaining = remaining, _ssUpdating = HS.fromList toUpdate0}
+                  then Just ss_{_ssRemaining = remaining, _ssUpdating = HS.fromList (map fst toUpdateInputs)}
                   else throw (MasterException (pack (printf "findSomethingToUpdate: ssUpdating wasn't null (%s)" slaveId (show (_ssUpdating ss)))))
           let uss' = over (ussSlaves . at slaveId) moveToUpdating $
                      set ussInputs remainingInputs uss
-          return (uss', USSNotDone (Just (slaveId, USReqUpdate toUpdateInputs)))
+          return (uss', USSNotDone (Just (slaveId, USReqUpdate toUpdateInputsMap)))
+
+    {-# INLINE takeEnoughStatesToUpdate #-}
+    takeEnoughStatesToUpdate ::
+         HMS.HashMap StateId (HMS.HashMap StateId input)
+      -> [StateId]
+      -> ([(StateId, HMS.HashMap StateId input)], [StateId])
+    takeEnoughStatesToUpdate inputs remaining00 = go remaining00 0
+      where
+        go remaining0 grabbed = if grabbed >= maxBatchSize
+          then ([], remaining0)
+          else case remaining0 of
+            [] -> ([], remaining0)
+            stateId : remaining -> let
+              inps = inputs HMS.! stateId
+              in first ((stateId, inps) :) (go remaining (grabbed + HMS.size inps))
 
     {-# INLINE stealSlavesFromSomebody #-}
     stealSlavesFromSomebody ::
@@ -350,16 +353,15 @@ updateSlavesStep maxBatchSize mbMinBatchSize respSlaveId resp statuses = case re
     stealSlavesFromSomebody requestingSlaveId uss = do
       let goodCandidate (slaveId, ss) = do
             guard (slaveId /= requestingSlaveId)
-            let numRemaining = length (_ssRemaining ss)
-            guard (numRemaining > 0)
-            guard (max numRemaining maxBatchSize >= fromMaybe 0 mbMinBatchSize)
-            return (slaveId, numRemaining, _ssRemaining ss)
-      let candidates :: [(SlaveId, Int, [StateId])]
+            guard (not (null (_ssRemaining ss)))
+            let (toTransfer, remaining) = takeEnoughStatesToUpdate (_ussInputs uss) (_ssRemaining ss)
+            return (slaveId, map fst toTransfer, sum (map (HMS.size . snd) toTransfer), remaining)
+      let candidates :: [(SlaveId, [StateId], Int, [StateId])]
           candidates = catMaybes (map goodCandidate (HMS.toList (_ussSlaves uss)))
       guard (not (null candidates))
       -- Pick candidate with highest number of states to steal states from
-      let (candidateSlaveId, numCandidateStates, candidateStates) = maximumByEx (comparing (\(_, x, _) -> x)) candidates
-      let (statesToBeTransferred, remainingStates) = splitAt (max maxBatchSize numCandidateStates) candidateStates
+      let (candidateSlaveId, statesToBeTransferred, _, remainingStates) =
+            maximumByEx (comparing (\(_, _, x, _) -> x)) candidates
       -- Bookkeep the remaining states
       let moveStatesToRemoving =
             set ssRemaining remainingStates .
@@ -378,15 +380,14 @@ data ConnWithNumMessages m state context input output = ConnWithNumMessages
 updateSlaves :: forall state context input output m.
      (MonadConnect m, NFData input, NFData output)
   => Int -- ^ Max batch size
-  -> Maybe Int -- ^ Maybe min batch size
   -> HMS.HashMap SlaveId (Slave m state context input output)
   -- ^ Slaves connections
   -> context
   -- ^ Context to the computation
-  -> HMS.HashMap StateId [(StateId, input)]
+  -> HMS.HashMap StateId (HMS.HashMap StateId input)
   -- ^ Inputs to the computation
   -> m [(SlaveId, HMS.HashMap StateId (HMS.HashMap StateId output))]
-updateSlaves maxBatchSize mbMinBatchSize slaves context inputMap = do
+updateSlaves maxBatchSize slaves context inputMap = do
   incomingChan :: TChan (SlaveId, UpdateSlaveResp output) <- liftIO newTChanIO
   outgoingChan :: TChan (Maybe (SlaveId, UpdateSlaveReq input)) <- liftIO newTChanIO
   -- Write one init message per slave
@@ -421,22 +422,12 @@ updateSlaves maxBatchSize mbMinBatchSize slaves context inputMap = do
   return (HMS.toList (_ussOutputs status'))
   where
     go incomingChan outgoingChan connsWithMessages status = do
-      {-
-      when (inFlight0 <= 0) $
-        throwIO (MasterException "Will never receive a response")
-      -}
       (slaveId, resp) <- atomically (readTChan incomingChan)
-      -- let inFlight = inFlight0 - 1
-      (status', res) <-
-        updateSlavesStep maxBatchSize mbMinBatchSize slaveId resp status
+      (status', res) <- updateSlavesStep maxBatchSize slaveId resp status
       -- This is to force exceptions ASAP
       void (evaluate (force (status', res)))
       case res of
         USSDone -> do
-          {-
-          unless (inFlight == 0) $
-            throwIO (MasterException ("Done, but we still have " ++ tshow inFlight ++ " in-flight messages"))
-          -}
           atomically (writeTChan outgoingChan Nothing)
           return status'
         USSNotDone reqs -> do
@@ -546,8 +537,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
               liftM (slaveId,) $ readExpect (slaveConnection (slaves HMS.! slaveId)) $ \case
                 SRespUpdate outputs -> Just outputs
                 _ -> Nothing
-          Just maxBatchSize ->
-            updateSlaves maxBatchSize (maMinBatchSize (mhArgs mh)) slaves context inputMap
+          Just maxBatchSize -> updateSlaves maxBatchSize slaves context (HMS.fromList <$> inputMap)
       let mh' = mh
             { mhSlaves = Slaves $
                 integrateNewStates slaves (second (fmap (const ()) . mconcat . HMS.elems) <$> outputs)
