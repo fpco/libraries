@@ -145,27 +145,16 @@ test-suite wq-test
                      , cryptohash
                      , text
 
--- executable hpc-example-stateful-client
---   main-is:             StatefulClient.hs
---   hs-source-dirs:      examples/stateful
---   default-language:    Haskell2010
---   build-depends:       base
---                      , redis-fp
---                      , work-queue
---                      , stm
---                      , bytestring
---                      , monad-logger
---                      , time
---   ghc-options:         -Wall -threaded
--- 
--- executable hpc-example-stateful-worker
---   main-is:             StatefulWorker.hs
---   hs-source-dirs:      examples/stateful
---   default-language:    Haskell2010
---   build-depends:       base
---                      , redis-fp
---                      , work-queue
---                      , bytestring
---                      , monad-logger
---                      , unordered-containers
---   ghc-options:         -Wall -threaded
+executable hpc-example-stateful
+  main-is:             Main.hs
+  hs-source-dirs:      examples/stateful
+  default-language:    Haskell2010
+  build-depends:       base
+                     , redis-fp
+                     , work-queue
+                     , stm
+                     , bytestring
+                     , monad-logger
+                     , time
+                     , transformers
+  ghc-options:         -Wall -threaded
