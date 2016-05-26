@@ -89,26 +89,26 @@ performSimpleTest initialStates mh = do
         return (Input count)
     testUpdate mh inputs
 
-testMasterArgs :: forall m. (MonadConnect m) => Int -> MasterArgs m State () Input Output
-testMasterArgs n = MasterArgs{maMaxBatchSize = Just n, maUpdate = f}
+testMasterArgs :: forall m. (MonadConnect m) => Maybe (Int, Int) -> Int -> MasterArgs m State () Input Output
+testMasterArgs mbDelay n = MasterArgs{maMaxBatchSize = Just n, maUpdate = f}
   where
     f :: () -> Input -> State -> m (State, Output)
     f _ input (State inputs) = do
-      liftIO (threadDelay =<< randomRIO (100, 500))
+      liftIO $ case mbDelay of
+        Nothing -> return ()
+        Just x -> threadDelay =<< randomRIO x
       return (State (input : inputs), Output (input : inputs))
 
 genericSpec :: (forall m. (MonadConnect m) => Runner m) -> Spec
 genericSpec runner = do
   loggingIt "Passes simple comparison with pure implementation (no slaves)" $
-    runner (testMasterArgs 2) 0 (performSimpleTest 10)
+    runner (testMasterArgs (Just (10, 500)) 2) 0 (performSimpleTest 10)
   loggingIt "Passes simple comparison with pure implementation (one slave)" $
-    runner (testMasterArgs 2) 1 (performSimpleTest 10)
+    runner (testMasterArgs (Just (10, 500)) 2) 1 (performSimpleTest 10)
   loggingIt "Passes simple comparison with pure implementation (10 slaves)" $
-    runner (testMasterArgs 3) 10 (performSimpleTest 100)
+    runner (testMasterArgs (Just (10, 500)) 3) 10 (performSimpleTest 100)
   loggingIt "Passes simple comparison with pure implementation (50 slaves)" $
-    runner (testMasterArgs 5) 50 (performSimpleTest 1000)
-  -- loggingIt "Passes simple comparison with pure implementation (large)" $
-  --   runSimpleTest 500 5 5000 5
+    runner (testMasterArgs (Just (10, 500)) 5) 50 (performSimpleTest 1000)
 
 spec :: Spec
 spec = do
@@ -125,7 +125,7 @@ spec = do
             }
       let worker :: forall void m. (MonadConnect m) => m void
           worker =
-            runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs 5) nmsma $
+            runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs (Just (10, 500)) 5) nmsma $
               \mh _reqId () -> do
                 liftIO (threadDelay (1000 * 1000))
                 DontReenqueue <$> getNumSlaves mh
@@ -152,23 +152,23 @@ spec = do
       numSlavesAtShutdownRef :: IORef (HMS.HashMap RequestId Int) <- newIORef mempty
       let worker :: forall void m. (MonadConnect m) => m void
           worker =
-            runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs 5) nmsma $
+            runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing 5) nmsma $
               \mh reqId () -> do
                 numSlaves <- getNumSlaves mh
                 atomicModifyIORef' numSlavesAtStartupRef (\sl -> (HMS.insert reqId numSlaves sl, ()))
-                performSimpleTest 100 mh
+                performSimpleTest 10 mh
                 numSlaves' <- getNumSlaves mh
                 atomicModifyIORef' numSlavesAtShutdownRef (\sl -> (HMS.insert reqId numSlaves' sl, ()))
                 return (DontReenqueue ())
-          requestLoop :: (MonadConnect m) => m ()
-          requestLoop = withJobClient jqc $ \(jc :: JobClient ()) -> replicateM_ 10 $ do
+          requestLoop :: (MonadConnect m) => Int -> m ()
+          requestLoop _n = withJobClient jqc $ \(jc :: JobClient ()) -> forM_ [1..3] $ \(_m :: Int) -> do
             rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
             submitRequest jc rid ()
             Just () <- waitForResponse_ jc rid
             return ()
       fmap (either absurd id) $ Async.race
-        (NE.head <$> Async.mapConcurrently (\_ -> worker) (NE.fromList [(1::Int)..30]))
-        (void (Async.mapConcurrently (\_ -> requestLoop) [(1::Int)..10]))
+        (NE.head <$> Async.mapConcurrently (\_ -> worker) (NE.fromList [(1::Int)..300]))
+        (void (Async.mapConcurrently requestLoop [(1::Int)..50]))
       -- Check that we sometimes gained slaves while executing
       numSlavesAtStartup <- readIORef numSlavesAtStartupRef
       numSlavesAtShutdown <- readIORef numSlavesAtShutdownRef

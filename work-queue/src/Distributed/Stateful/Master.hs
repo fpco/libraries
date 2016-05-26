@@ -124,8 +124,8 @@ closeMaster (MasterHandle mhv) =
               _ -> Nothing
           case mbErr of
             Left err -> do
-              $logError $ pack $ printf
-                "Error while quitting slave %d: %s" slaveId (show err)
+              $logWarn $ pack $ printf
+                "Error while quitting slave %d (this can happen when the master is closed because of an error): %s" slaveId (show err)
             Right () -> return ()
 
 {-# INLINE readExpect #-}

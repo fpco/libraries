@@ -183,6 +183,23 @@ spec = do
     -- Type mismatch
     -- Submitting the same req twice computes once
     -- Waiting on non-existant response gets you nothing
+    {-
+    redisIt_ "Fullfills all requests" $ do
+        let requestsPerClient :: Int = 10
+        let clients :: Int = 1000
+        let workers :: Int = 100
+        let client :: (MonadConnect m) => Int -> m ()
+            client n = withTestJobClient $ \jc -> forM_ [1..requestsPerClient] $ \m -> do
+                $logError (tshow n ++ "-" ++ tshow m)
+                let resp = Response (BSC8.pack (show n ++ "-" ++ show m))
+                let req = Request{requestDelay = 10, requestResponse = DontReenqueue resp}
+                rid <- submitTestRequest jc req
+                resp' <- waitForResponse_ jc rid
+                resp' `shouldBe` Just resp
+        fmap (either absurd id) $ Async.race
+            (NE.head <$> Async.mapConcurrently (\_ -> testJobWorker) (NE.fromList [1..workers]))
+            (void (Async.mapConcurrently client [1..clients]))
+    -}
     redisIt_ "Withstands chaos" chaosTest
 
 chaosTest :: forall m. (MonadConnect m) => m ()

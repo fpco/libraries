@@ -93,17 +93,19 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
     mbRidbs <- run r (rpoplpush (requestsKey r) (activeKey r wid))
     forM_ mbRidbs $ \ridBs -> do
         let rid = RequestId ridBs
-        $logInfo ("Receiving request " ++ tshow rid)
+        $logInfo (workerMsg ("Receiving request " ++ tshow rid))
         mbReqBs <- receiveRequest r wid rid
         case mbReqBs of
             Nothing -> do
-                $logWarn ("Failed getting the content of request " ++ tshow rid ++ ". This can happen if the requset is cancelled.")
+                $logWarn (workerMsg ("Failed getting the content of request " ++ tshow rid ++ ". This can happen if the requset is cancelled."))
+                -- In this case the best we can do is try to re-enqueue: we need to clear the current active key anyway.
+                reenqueueRequest r wid rid
             Just reqBs -> do
-                $logInfo ("Got contents of request " ++ tshow rid)
+                $logInfo (workerMsg ("Got contents of request " ++ tshow rid))
                 mbResp :: WorkerResult response <- case checkRequest (Proxy :: Proxy response) rid reqBs of
                     Left err -> return (GotResponse (Left err))
                     Right req -> do
-                        $logDebug ("Starting to work on request " ++ tshow ridBs)
+                        $logDebug (workerMsg ("Starting to work on request " ++ tshow ridBs))
                         cancelledOrResp :: Either () (Either SomeException (Reenqueue response)) <-
                             Async.race (watchForCancel r rid jqcCancelCheckIvl) (tryAny (f rid req))
                         case cancelledOrResp of
@@ -111,7 +113,7 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
                             Right (Left err) -> return (GotResponse (Left (wrapException err)))
                             Right (Right Reenqueue) -> return RequestShouldBeReenqueued
                             Right (Right (DontReenqueue res)) -> return (GotResponse (Right res))
-                let gotX msg = "Request " ++ tshow rid ++ " got " ++ msg
+                let gotX msg = workerMsg ("Request " ++ tshow rid ++ " got " ++ msg)
                 case mbResp of
                     RequestGotCancelled -> $logInfo (gotX "cancel")
                     RequestShouldBeReenqueued -> do
@@ -128,9 +130,11 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
     -- -- the notifications only tell us about _new_ requests, nothing about how many
     -- there might be backed up in the queue.
     unless (isJust mbRidbs) $ do
-        $logDebug "Waiting for request notification"
+        $logDebug (workerMsg "Waiting for request notification")
         waitForNewRequest
-        $logDebug "Got notified of an available request"
+        $logDebug (workerMsg "Got notified of an available request")
+  where
+    workerMsg msg = tshow (unWorkerId wid) ++ ": " ++ msg
 
 --TODO: decouple protocol checking concern from job-queue
 
