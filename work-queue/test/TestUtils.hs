@@ -54,8 +54,7 @@ testJobQueueConfig = (defaultJobQueueConfig "test:")
 
 clearRedisKeys :: (MonadConnect m) => Redis -> m ()
 clearRedisKeys redis = do
-    matches <- run redis (keys "test:*")
-    mapM_ (run_ redis . del) (NE.nonEmpty matches)
+    run redis flushall
 
 minimumLogLevel :: LogLevel -> Bool
 minimumLogLevel ll = ll >= LevelError

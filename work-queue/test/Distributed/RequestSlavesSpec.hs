@@ -147,6 +147,3 @@ spec = do
         fmap (either (absurd . NE.head) id) $ Async.race
             (Async.mapConcurrently (\x -> killRandomly_ (runEchoSlave r (SlaveId x) 500)) (NE.fromList [1..numSlaves]))
             (mapConcurrently_ (\mid -> killRandomly_ (runMasterCollectResults r (MasterId mid) numSlaves)) [1..numMasters])
-
-
-
