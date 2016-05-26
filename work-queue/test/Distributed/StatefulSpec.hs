@@ -115,7 +115,7 @@ spec = do
   describe "Pure" (genericSpec runSimplePureStateful)
   describe "NetworkMessage" (genericSpec (runSimpleNMStateful "127.0.0.1"))
   describe "JobQueue" $ do
-    redisIt_ "gets all slaves available" $ do
+    redisIt_ "gets all slaves available (short)" $ do
       let jqc = testJobQueueConfig
       let ss = CN.serverSettings 0 "*"
       let nmsma = NMStatefulMasterArgs
@@ -140,44 +140,50 @@ spec = do
       fmap (either absurd id) $ Async.race
         (NE.head <$> Async.mapConcurrently (\_ -> worker) (NE.fromList [(1::Int)..workersToSpawn]))
         client
-    redisIt_ "fullfills all requests" $ do
-      let jqc = testJobQueueConfig
-      let ss = CN.serverSettings 0 "*"
-      let nmsma = NMStatefulMasterArgs
-            { nmsmaMinimumSlaves = Nothing
-            , nmsmaMaximumSlaves = Just 7
-            , nmsmaSlavesWaitingTime = 1000 * 1000
-            }
-      numSlavesAtStartupRef :: IORef (HMS.HashMap RequestId Int) <- newIORef mempty
-      numSlavesAtShutdownRef :: IORef (HMS.HashMap RequestId Int) <- newIORef mempty
-      let worker :: forall void m. (MonadConnect m) => m void
-          worker =
-            runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing 5) nmsma $
-              \mh reqId () -> do
-                numSlaves <- getNumSlaves mh
-                atomicModifyIORef' numSlavesAtStartupRef (\sl -> (HMS.insert reqId numSlaves sl, ()))
-                performSimpleTest 10 mh
-                numSlaves' <- getNumSlaves mh
-                atomicModifyIORef' numSlavesAtShutdownRef (\sl -> (HMS.insert reqId numSlaves' sl, ()))
-                return (DontReenqueue ())
-          requestLoop :: (MonadConnect m) => Int -> m ()
-          requestLoop _n = withJobClient jqc $ \(jc :: JobClient ()) -> forM_ [1..3] $ \(_m :: Int) -> do
-            rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
-            submitRequest jc rid ()
-            Just () <- waitForResponse_ jc rid
-            return ()
-      fmap (either absurd id) $ Async.race
-        (NE.head <$> Async.mapConcurrently (\_ -> worker) (NE.fromList [(1::Int)..300]))
-        (void (Async.mapConcurrently requestLoop [(1::Int)..50]))
-      -- Check that we sometimes gained slaves while executing
-      numSlavesAtStartup <- readIORef numSlavesAtStartupRef
-      numSlavesAtShutdown <- readIORef numSlavesAtShutdownRef
+    redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
+    redisIt_ "fullfills all requests (long, few)" $ do
+      (numSlavesAtStartup, numSlavesAtShutdown) <- fullfillsAllRequests (Just (10, 500)) 10 10 30
       let increased = flip execState (0 :: Int) $
             forM_ (HMS.toList numSlavesAtStartup) $ \(reqId, startup) -> do
               let shutdown = numSlavesAtShutdown HMS.! reqId
               when (shutdown > startup) (modify (+1))
       unless (increased > 10) $
         fail "Didn't get many increases in slaves!"
+
+fullfillsAllRequests :: (MonadConnect m) => Maybe (Int, Int) -> Int -> Int -> Int -> m (HMS.HashMap RequestId Int, HMS.HashMap RequestId Int)
+fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do
+  let jqc = testJobQueueConfig
+  let ss = CN.serverSettings 0 "*"
+  let nmsma = NMStatefulMasterArgs
+        { nmsmaMinimumSlaves = Nothing
+        , nmsmaMaximumSlaves = Just 7
+        , nmsmaSlavesWaitingTime = 1000 * 1000
+        }
+  numSlavesAtStartupRef :: IORef (HMS.HashMap RequestId Int) <- newIORef mempty
+  numSlavesAtShutdownRef :: IORef (HMS.HashMap RequestId Int) <- newIORef mempty
+  let worker :: forall void m. (MonadConnect m) => m void
+      worker =
+        runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs mbDelay 5) nmsma $
+          \mh reqId () -> do
+            numSlaves <- getNumSlaves mh
+            atomicModifyIORef' numSlavesAtStartupRef (\sl -> (HMS.insert reqId numSlaves sl, ()))
+            performSimpleTest 10 mh
+            numSlaves' <- getNumSlaves mh
+            atomicModifyIORef' numSlavesAtShutdownRef (\sl -> (HMS.insert reqId numSlaves' sl, ()))
+            return (DontReenqueue ())
+      requestLoop :: (MonadConnect m) => Int -> m ()
+      requestLoop _n = withJobClient jqc $ \(jc :: JobClient ()) -> forM_ [1..requestsPerClient] $ \(_m :: Int) -> do
+        rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
+        submitRequest jc rid ()
+        Just () <- waitForResponse_ jc rid
+        return ()
+  fmap (either absurd id) $ Async.race
+    (NE.head <$> Async.mapConcurrently (\_ -> worker) (NE.fromList [(1::Int)..numWorkers]))
+    (void (Async.mapConcurrently requestLoop [(1::Int)..numClients]))
+  -- Check that we sometimes gained slaves while executing
+  numSlavesAtStartup <- readIORef numSlavesAtStartupRef
+  numSlavesAtShutdown <- readIORef numSlavesAtShutdownRef
+  return (numSlavesAtStartup, numSlavesAtShutdown)
 
 {-
   it "Passes quickcheck comparison with the pure implementation" $
