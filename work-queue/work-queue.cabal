@@ -24,6 +24,7 @@ library
                        Distributed.JobQueue.Worker
                        Distributed.JobQueue.MasterOrSlave
                        Distributed.JobQueue.Status
+                       Distributed.JobQueue.Internal
                        Distributed.Redis
                        Distributed.Heartbeat
                        Distributed.RequestSlaves
@@ -33,8 +34,7 @@ library
                        Distributed.Stateful
                        Distributed.Stateful.Internal
                        Data.WorkQueue
-  other-modules:       Distributed.JobQueue.Internal
-                       Data.SimpleSupply
+  other-modules:       Data.SimpleSupply
   build-depends:       base
                      , stm-chans
                      , lens
@@ -95,6 +95,7 @@ test-suite wq-test
                      , Distributed.HeartbeatSpec
                      , Distributed.RequestSlavesSpec
                      , Distributed.StatefulSpec
+                     , Distributed.StatusSpec
                      , Data.Streaming.NetworkMessageSpec
                      , Data.WorkQueueSpec
   ghc-options:         -Wall

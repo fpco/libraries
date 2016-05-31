@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RecordWildCards #-}
 module Distributed.HeartbeatSpec (spec) where
 
 import           ClassyPrelude hiding (keys)
@@ -15,6 +16,8 @@ import           Data.List.NonEmpty (NonEmpty)
 import           Test.Hspec (Spec)
 
 import           Distributed.Heartbeat
+import           Distributed.JobQueue.Status
+import           Distributed.JobQueue.Internal (setRedisSchemaVersion)
 import           Distributed.Types
 import           Distributed.Redis
 import           TestUtils
@@ -54,6 +57,21 @@ checkDeadWorker r wid = do
     unless (bodies == [wid]) $
         fail "Expected a dead worker, found none."
 
+checkNoWorkersStatus :: MonadConnect m => Redis -> m ()
+checkNoWorkersStatus r = do
+    JobQueueStatus{..} <- getJobQueueStatus r
+    unless (null jqsWorkers)$
+        fail ("Expected no workers in status, but found" ++ show jqsWorkers)
+
+checkDeadWorkerStatus :: MonadConnect m => Redis -> WorkerId -> m ()
+checkDeadWorkerStatus r wid = do
+    JobQueueStatus{..} <- getJobQueueStatus r
+    case find ((==wid) . snd) jqsHeartbeatFailures of
+        Nothing -> fail "Expected Heartbeat failure in status, but did not find it."
+        Just _ -> return ()
+
+
+
 -- Tests
 -----------------------------------------------------------------------
 
@@ -71,6 +89,9 @@ detectDeadWorker redis dieAfter = do
             (takeMVar stopChecking)
     checkNoWorkers redis
     checkDeadWorker redis wid
+    setRedisSchemaVersion redis -- we don't have a client that sets the scheme
+    checkNoWorkersStatus redis
+    checkDeadWorkerStatus redis wid
 
 spec :: Spec
 spec = do
@@ -98,3 +119,5 @@ spec = do
                 calls <- readTVar handleCalls
                 unless (calls == 4) STM.retry)
         checkNoWorkers redis
+        setRedisSchemaVersion redis
+        checkNoWorkersStatus redis

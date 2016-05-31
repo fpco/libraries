@@ -8,6 +8,7 @@ import qualified Distributed.RequestSlavesSpec
 import qualified Distributed.JobQueueSpec
 import qualified Data.Streaming.NetworkMessageSpec
 import qualified Distributed.StatefulSpec
+import qualified Distributed.StatusSpec
 import qualified Data.WorkQueueSpec
 
 main :: IO ()
@@ -20,5 +21,6 @@ main = do
     describe "Distributed.RequestSlaves" Distributed.RequestSlavesSpec.spec
     describe "Distributed.JobQueue" Distributed.JobQueueSpec.spec
     describe "Distributed.StatefulSpec" Distributed.StatefulSpec.spec
+    describe "Distributed.StatusSpec" Distributed.StatusSpec.spec
     describe "Data.Streaming.NetworkMessage" Data.Streaming.NetworkMessageSpec.spec
     describe "Data.WorkQueue" Data.WorkQueueSpec.spec
