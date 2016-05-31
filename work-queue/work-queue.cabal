@@ -23,7 +23,7 @@ library
                        Distributed.JobQueue.Client
                        Distributed.JobQueue.Worker
                        Distributed.JobQueue.MasterOrSlave
-                       -- Distributed.JobQueue.Status
+                       Distributed.JobQueue.Status
                        Distributed.Redis
                        Distributed.Heartbeat
                        Distributed.RequestSlaves
