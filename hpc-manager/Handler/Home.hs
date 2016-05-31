@@ -94,17 +94,16 @@ getStatusR = do
         jqs <- getJobQueueStatus r
         workers <- forM (jqsWorkers jqs) $ \ws ->
             (decodeUtf8 (unWorkerId (wsWorker ws)), ) <$>
-            case wsRequests ws of
-                [k] -> Left <$> getAndRenderRequest start r k
-                _ | wsHeartbeatFailure ws -> return $ Right "worker failed its heartbeat check and its work was re-enqueued"
-                  | otherwise -> return $ Right ("either idle or slave of another worker" :: Text)
+            case wsRequest ws of
+                Just k -> Left <$> getAndRenderRequest start r k
+                Nothing -> return $ Right ("either idle or slave of another worker" :: Text)
         pending <- forM (jqsPending jqs) (getAndRenderRequest start r)
         return (jqs, sortBy (comparing snd) workers, sort pending)
     defaultLayout $ do
         setTitle "Compute Tier Status"
         $(widgetFile "status")
 
-getAndRenderRequest :: (MonadIO m, MonadBaseControl IO m) =>
+getAndRenderRequest :: MonadConnect m =>
     UTCTime -> Redis -> RequestId -> m (Text, Text, Text)
 getAndRenderRequest start r k = do
     mrs <- getRequestStats r k
@@ -112,7 +111,7 @@ getAndRenderRequest start r k = do
     case mrs of
         Nothing -> return ("?", "?", shownId)
         Just rs -> return
-            ( fromMaybe "Missing?!?" (fmap (tshow . (start `diffUTCTime`)) (rsEnqueueTime rs))
+            ( maybe "Missing?!?" (tshow . (start `diffUTCTime`)) (rsEnqueueTime rs)
             , tshow (rsReenqueueCount rs)
             , shownId
             )
@@ -131,25 +130,15 @@ postStatusR = do
     when (not (null others')) $ invalidArgs (map fst others')
     case map fst cmds of
         ["cancel"] -> do
-            (successes, failures) <- fmap (partition snd) $
-                withRedis' config $ \redis ->
+            withRedis' config $ \redis ->
                 forM reqs $ \(rid, mwid) -> do
-                    success <- cancelRequest (Seconds 60) redis rid mwid
+                    success <- cancelRequest (Seconds 60) (error "TODO: get JobClient from redis and mwid in order to cancel a request") rid  -- cancelRequest (Seconds 60) redis rid mwid -- TODO! 
                     return (rid, success)
             let takesAWhile :: Text
                 takesAWhile = "NOTE: it may take a while for computations to cancel, so they will likely still appear as active work items"
-                failuresList = pack (show (map (unRequestId . fst) failures))
-            setMessageI $ case (null successes, null failures) of
-                (True, True) -> "No cancellations selected."
-                (False, True) -> "Cancellation request applied.  " <> takesAWhile
-                (True, False) ->
-                    "Failed to cancel any requests, couldn't find the following: " <>
-                    failuresList <> "\n" <> takesAWhile
-                (False, False) ->
-                    "Some cancellations applied, couldn't find the following: " <>
-                    failuresList <> "\n" <> takesAWhile
+            setMessageI $ "Cancellation request applied.  " <> takesAWhile
         ["clear-heartbeats"] -> withRedis' config $ \redis ->
-            mapM_ (clearHeartbeatFailure redis) =<< getActiveWorkers redis
+            clearHeartbeatFailures redis
         _ -> invalidArgs (map fst cmds)
     redirectUltDest HomeR
 
@@ -169,14 +158,14 @@ getRequestsR = do
 --------------------------------------------------------------------------------
 -- Utilities
 
-withRedis' :: (MonadIO m, MonadCatch m, MonadBaseControl IO m)
+withRedis' :: (MonadCatch m, MonadCommand m, MonadMask m)
            => Config -> (Redis -> LoggingT m a) -> m a
 withRedis' config =
     handleMismatchedSchema . runStdoutLoggingT . withRedis rc
   where
-    rc = RedisConfig
-        { rcConnectInfo = (connectInfo (redisHost config)) { connectPort = redisPort config }
-        , rcKeyPrefix = redisPrefix config
+    rc = (defaultRedisConfig (redisPrefix config))
+        { rcHost = redisHost config
+        , rcPort = redisPort config
         }
 
 handleMismatchedSchema :: (MonadIO m, MonadCatch m, MonadBaseControl IO m) => m a -> m a
