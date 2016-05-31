@@ -16,40 +16,38 @@ module Distributed.JobQueue.Status
     , getRequestStats
     , getAllRequestStats
     , getAllRequests
-    , getActiveWorkers
-    -- * Utilities for hpc-manager
-    , clearHeartbeatFailure
     -- * Re-exports from Shared
     , RequestEvent(..)
     , getRequestEvents
     ) where
 
-import ClassyPrelude hiding (keys)
-import Data.List.NonEmpty (NonEmpty((:|)))
-import Data.Time
-import Data.Time.Clock.POSIX
-import Distributed.Heartbeat
-import Distributed.JobQueue.Internal
-import Distributed.Redis
-import Distributed.Types
-import FP.Redis
+import           ClassyPrelude hiding (keys)
+import qualified Data.Text as T
+import           Data.Time
+import           Data.Time.Clock.POSIX
+import           Distributed.Heartbeat
+import           Distributed.JobQueue.Internal
+import           Distributed.Redis
+import           Distributed.Types
+import           FP.Redis
 
 data JobQueueStatus = JobQueueStatus
     { jqsLastHeartbeat :: !(Maybe UTCTime)
     -- REVIEW: This is the last time a Client checked an heartbeat from a worker.
     , jqsPending :: ![RequestId]
     , jqsWorkers :: ![WorkerStatus]
+    -- ^ All workers that have passed their last heartbeat check
+    -- (those performing work, and those that are idle).
+    , jqsHeartbeatFailures :: ![(UTCTime, WorkerId)]
+    -- ^ Chronological list of hearbeat failures
     } deriving Show
 
 data WorkerStatus = WorkerStatus
     { wsWorker :: !WorkerId
     , wsLastHeartbeat :: !(Maybe UTCTime)
-    , wsHeartbeatFailure :: !Bool
-    -- REVIEW: This is the last heartbeat _sent_ by the worker (it might have not been
+    -- ^ REVIEW: This is the last heartbeat _sent_ by the worker (it might have not been
     -- received by anyone).
-    , wsRequests :: ![RequestId]
-    -- REVIEW: Note that this currently should never be one (e.g. 'Maybe' 'RequestId')
-    -- but as an artifact of the redis data structures used we have it as a list.
+    , wsRequest :: !(Maybe RequestId)
     } deriving Show
 
 data RequestStatus = RequestStatus
@@ -58,57 +56,48 @@ data RequestStatus = RequestStatus
     } deriving Show
 
 getJobQueueStatus :: MonadConnect m => Redis -> m JobQueueStatus
-getJobQueueStatus = error "TODO"
-{-
 getJobQueueStatus r = do
     checkRedisSchemaVersion r
     mLastTime <- lastHeartbeatCheck r
     pending <- run r $ lrange (requestsKey r) 0 (-1)
-    wids <- getActiveWorkers r
+    wids <- activeOrUnhandledWorkers r
+    inactiveWids <- deadWorkers r
+    -- We could instead use zrange with WITHSCORES, to retrieve the
+    -- scores together with the items (and parse the resulting
+    -- 'ByteString's.
+    heartbeatFailures <- liftM catMaybes $ mapM
+        (\ wid -> do
+                mfailure <- lastHeartbeatFailureForWorker r wid
+                case mfailure of
+                    Just t -> return (Just (t, wid))
+                    Nothing -> return Nothing
+        ) inactiveWids
     workers <- forM wids $ \wid -> do
         mtime <- lastHeartbeatForWorker r wid
-        erequests <- try $ run r $ lrange (activeKey r wid) 0 (-1)
-        case erequests of
-            -- Indicates heartbeat failure
-            Left (CommandException (isPrefixOf "WRONGTYPE" -> True)) ->
-                return WorkerStatus
-                    { wsWorker = wid
-                    , wsHeartbeatFailure = True
-                    , wsLastHeartbeat = mtime
-                    , wsRequests = []
-                    }
-            Left ex -> liftIO $ throwIO ex
-            Right requests -> do
-                return WorkerStatus
-                    { wsWorker = wid
-                    , wsHeartbeatFailure = False
-                    , wsLastHeartbeat = mtime
-                    , wsRequests = map RequestId requests
-                    }
+        request <- getWorkerRequest r wid
+        return WorkerStatus
+            { wsWorker = wid
+            , wsLastHeartbeat = mtime
+            , wsRequest = request
+            }
     return JobQueueStatus
         { jqsLastHeartbeat = mLastTime
         , jqsPending = map RequestId pending
         , jqsWorkers = workers
+        , jqsHeartbeatFailures = heartbeatFailures
         }
--}
 
-{-
-clearHeartbeatFailure :: MonadCommand m => Redis -> WorkerId -> m ()
-clearHeartbeatFailure r wid = do
-     let k = activeKey r wid
-     eres <- try $ run r $ get (VKey k)
-     case eres of
-         Left CommandException{}  -> return ()
-         Left ex -> liftIO $ throwIO ex
-         -- Indicates heartbeat failure
-         Right _ -> void $ run r $ del (k :| [])
--}
-
-getActiveWorkers :: MonadConnect m => Redis -> m [WorkerId]
-getActiveWorkers r = do
-    let activePrefix = redisKeyPrefix r <> "active:"
-    activeKeys <- run r $ keys (activePrefix <> "*")
-    return $ mapMaybe (fmap WorkerId . stripPrefix activePrefix . unKey) activeKeys
+getWorkerRequest :: MonadConnect m => Redis -> WorkerId -> m (Maybe RequestId)
+getWorkerRequest r wid = do
+    erequest <- try . run r $ lrange (activeKey r wid) 0 (-1)
+    case erequest of
+        Right [] -> return Nothing
+        Right [request] -> return (Just (RequestId request))
+        Right requests -> liftIO . throwIO . InternalJobQueueException $
+            T.intercalate " " ["Illegal requests list:"
+                              , T.pack . show $ requests
+                              , "-- a request list should have zero or one element."]
+        Left (ex :: SomeException) -> liftIO . throwIO $ ex
 
 data RequestStats = RequestStats
     { rsEnqueueTime :: Maybe UTCTime

@@ -10,11 +10,11 @@ module Distributed.Heartbeat
     , withCheckHeartbeats
     , withHeartbeats
     , deadWorkers
-
-    -- * Testing/debugging
+    , clearHeartbeatFailures
     , activeOrUnhandledWorkers
     , lastHeartbeatCheck
     , lastHeartbeatForWorker
+    , lastHeartbeatFailureForWorker
     ) where
 
 import ClassyPrelude
@@ -64,8 +64,7 @@ heartbeatLastCheckKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:last-check
 heartbeatDeadKey :: Redis -> ZKey
 heartbeatDeadKey r = ZKey $ Key $ redisKeyPrefix r <> "heartbeat:dead"
 
--- | Returns all the heartbeats currently in redis. Should only be useful
--- for testing/debugging
+-- | Returns all the heartbeats currently in redis.
 activeOrUnhandledWorkers :: (MonadConnect m) => Redis -> m [WorkerId]
 activeOrUnhandledWorkers r =
     map WorkerId <$> run r (zrange (heartbeatActiveKey r) 0 (-1) False)
@@ -83,6 +82,18 @@ lastHeartbeatForWorker :: (MonadConnect m) => Redis -> WorkerId -> m (Maybe UTCT
 lastHeartbeatForWorker r wid =
     fmap (posixSecondsToUTCTime . realToFrac) <$>
     run r (zscore (heartbeatActiveKey r) (unWorkerId wid))
+
+lastHeartbeatFailureForWorker :: MonadConnect m => Redis -> WorkerId -> m (Maybe UTCTime)
+lastHeartbeatFailureForWorker r wid =
+    fmap (posixSecondsToUTCTime . realToFrac) <$>
+    run r (zscore (heartbeatDeadKey r) (unWorkerId wid))
+
+clearHeartbeatFailures :: MonadConnect m => Redis -> m ()
+clearHeartbeatFailures r = do
+    items <- run r $ zrange (heartbeatDeadKey r) 0 (-1) False
+    case items of
+        [] -> return ()
+        x:xs -> void $ run r $ zrem (heartbeatDeadKey r) (x :| xs)
 
 -- | Periodically check worker heartbeats. See #78 for a description of
 -- how this works.
