@@ -4,7 +4,6 @@ extra-deps:
   - th-lift-instances-0.1.7
   - th-utilities-0.1.1.0
   - hybrid-vectors-0.2
-  - binary-orphans-0.1.2.0
 packages:
   - ./redis-fp
   - ./thread-file-logger
