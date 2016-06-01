@@ -307,8 +307,7 @@ runRequestingStatefulMaster r ss0 host mbPort ma nmsma cont = do
             port <- liftIO getPort
             $logDebug ("Master starting on " ++ tshow (CN.serverHost ss, port))
             let wci = WorkerConnectInfo host (fromMaybe port mbPort)
-            wid <- getWorkerId
-            requestSlaves r wid wci $ \wsc -> do
+            requestSlaves r wci $ \wsc -> do
                 putMVar whenSlaveConnectsVar wsc
                 takeMVar keepRequestingSlaves
     let stopRequestingSlaves = tryPutMVar keepRequestingSlaves ()
@@ -323,10 +322,6 @@ runRequestingStatefulMaster r ss0 host mbPort ma nmsma cont = do
               case contOrMaxSlaves of
                 Left x -> return x
                 Right _ -> Async.wait contAsync)
-
-getWorkerId :: (MonadIO m) => m WorkerId
-getWorkerId = do
-    liftIO (WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom)
 
 -- * JobQueue
 -----------------------------------------------------------------------

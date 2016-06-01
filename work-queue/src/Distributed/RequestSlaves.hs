@@ -17,6 +17,8 @@ module Distributed.RequestSlaves
     , connectToMaster
     , connectToAMaster
     , acceptSlaveConnections
+      -- * Testing/debugging
+    , getWorkerRequests
     ) where
 
 import ClassyPrelude
@@ -82,26 +84,35 @@ instance Serialize WorkerConnectInfoWithWorkerId
 requestSlaves
     :: (MonadConnect m)
     => Redis
-    -> WorkerId
     -> WorkerConnectInfo
     -> (m () -> m a)
-    -- ^ The action must be called when a slave successfully connects.
     -> m a
-requestSlaves r wid wci0 cont = do
+requestSlaves r wci0 cont = do
+    wid <- getWorkerId
     let wci = WorkerConnectInfoWithWorkerId wid wci0
     let encoded = encode wci
-    let add = run_ r (zincrby (workerRequestsKey r) 1 encoded)
+    stoppedVar :: MVar Bool <- newMVar False
+    let add = withMVar stoppedVar $ \stopped ->
+            if stopped
+                then $logInfo ("Trying to increase the slave count when worker " ++ tshow wid ++ " has already been removed, ignoring")
+                else run_ r (zincrby (workerRequestsKey r) 1 encoded)
     -- REVIEW TODO There is a slight chance that this fails, in which case
     -- a stray WorkerConnectInfo remains in the workerRequestsKey forever.
     -- Is this a big problem? Can we mitigate against this?
-    let remove = do
-            removed <- run r (zrem (workerRequestsKey r) (encoded :| []))
-            if  | removed == 0 ->
-                    throwIO (InternalConnectRequestException ("Got no removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests."))
-                | removed == 1 ->
-                    return ()
-                | True ->
-                    throwIO (InternalConnectRequestException ("Got multiple removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests."))
+    let remove = modifyMVar_ stoppedVar $ \stopped -> do
+            if stopped
+                then do
+                    $logInfo ("Trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests, but it is already removed")
+                    return stopped
+                else do
+                    removed <- run r (zrem (workerRequestsKey r) (encoded :| []))
+                    if  | removed == 0 ->
+                            throwIO (InternalConnectRequestException ("Got no removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests. This can happen if the removal function is called twice"))
+                        | removed == 1 ->
+                            return ()
+                        | True -> do
+                            throwIO (InternalConnectRequestException ("Got multiple removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests."))
+                    return True
     bracket
         (run_ r (zadd (workerRequestsKey r) ((0, encoded) :| [])))
         (\() -> remove)
@@ -223,7 +234,6 @@ acceptSlaveConnections :: forall m masterSends slaveSends a.
     -> m a
 acceptSlaveConnections r ss0 host mbPort contSlaveConnect cont = do
     nmSettings <- defaultNMSettings
-    wid <- getWorkerId
     (ss, getPort) <- liftIO (getPortAfterBind ss0)
     whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
     let acceptConns =
@@ -253,7 +263,7 @@ acceptSlaveConnections r ss0 host mbPort contSlaveConnect cont = do
             port <- liftIO getPort
             $logDebug ("Master starting on " ++ tshow (CN.serverHost ss, port))
             let wci = WorkerConnectInfo host (fromMaybe port mbPort)
-            requestSlaves r wid wci $ \wsc -> do
+            requestSlaves r wci $ \wsc -> do
                 putMVar whenSlaveConnectsVar wsc
                 cont
     fmap (either absurd id) (Async.race acceptConns runMaster)

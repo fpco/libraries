@@ -40,6 +40,7 @@ import Control.Monad.State (modify, execState)
 import TestUtils
 import Distributed.Stateful
 import Distributed.Stateful.Master
+import Distributed.RequestSlaves
 
 shouldBe :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
 shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
@@ -115,7 +116,7 @@ spec = do
   describe "Pure" (genericSpec runSimplePureStateful)
   describe "NetworkMessage" (genericSpec (runSimpleNMStateful "127.0.0.1"))
   describe "JobQueue" $ do
-    redisIt_ "gets all slaves available (short)" $ do
+    redisIt "gets all slaves available (short)" $ \r -> do
       let jqc = testJobQueueConfig
       let ss = CN.serverSettings 0 "*"
       let nmsma = NMStatefulMasterArgs
@@ -139,8 +140,12 @@ spec = do
               fail ("Expecting " ++ show (workersToSpawn - 1) ++ ", but got " ++ show slaves)
       fmap (either absurd id) $ Async.race
         (NE.head <$> Async.mapConcurrently (\_ -> worker) (NE.fromList [(1::Int)..workersToSpawn]))
-        client
-    redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
+        (do
+          client
+          -- Check that there are no masters anymore
+          wcis <- getWorkerRequests r
+          wcis `shouldBe` [])
+    -- redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
     redisIt_ "fullfills all requests (long, few)" $ do
       (numSlavesAtStartup, numSlavesAtShutdown) <- fullfillsAllRequests (Just (10, 500)) 10 10 30
       let increased = flip execState (0 :: Int) $
