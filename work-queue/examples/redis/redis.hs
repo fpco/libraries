@@ -1,4 +1,5 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -11,14 +12,14 @@ import Control.Concurrent (threadDelay)
 import Data.Bits (xor, zeroBits)
 import Data.List.NonEmpty (nonEmpty)
 import Data.List.Split (chunksOf)
-import Data.TypeFingerprint (mkManyHasTypeFingerprint)
+import Data.Store.TypeHash (mkManyHasTypeHash)
 import Distributed.JobQueue
 import Distributed.RedisQueue (withRedis)
 import Distributed.WorkQueue (mapQueue)
 import FP.Redis
 import FP.ThreadFileLogger
 
-$(mkManyHasTypeFingerprint
+$(mkManyHasTypeHash
     [ [t| Int |]
     , [t| [Int] |]
     , [t| Vector [Int] |]

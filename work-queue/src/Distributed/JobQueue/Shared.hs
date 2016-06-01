@@ -54,7 +54,7 @@ import           Data.List.NonEmpty
 import           Data.Store (Store)
 import qualified Data.Store as S
 import           Data.Streaming.NetworkMessage (NetworkMessageException)
-import           Data.TypeFingerprint
+import           Data.Store.TypeHash
 import           Data.Typeable (typeOf)
 import           Distributed.RedisQueue
 import           Distributed.RedisQueue.Internal
@@ -64,7 +64,7 @@ import           FP.ThreadFileLogger
 -- * Requests
 
 data JobRequest = JobRequest
-    { jrRequestTypeFingerprint, jrResponseTypeFingerprint :: TypeFingerprint
+    { jrRequestTypeHash, jrResponseTypeHash :: TypeHash
     , jrSchema :: ByteString
     , jrBody :: ByteString
     } deriving (Generic, Show, Typeable)
@@ -285,10 +285,10 @@ data DistributedJobQueueException
     -- body. This means that the response body expired in redis
     -- (alternatively, it could indicate a bug in this library).
     | TypeMismatch
-        { expectedRequestTypeFingerprint :: TypeFingerprint
-        , actualRequestTypeFingerprint :: TypeFingerprint
-        , expectedResponseTypeFingerprint :: TypeFingerprint
-        , actualResponseTypeFingerprint :: TypeFingerprint
+        { expectedRequestTypeHash :: TypeHash
+        , actualRequestTypeHash :: TypeHash
+        , expectedResponseTypeHash :: TypeHash
+        , actualResponseTypeHash :: TypeHash
         }
     -- ^ Thrown when the client makes a request with the wrong request
     -- / response types.
@@ -342,10 +342,10 @@ instance Show DistributedJobQueueException where
         ") {- This likely means that the response body expired in redis. -}"
     show (TypeMismatch {..}) =
         "TypeMismatch " ++
-        "{ expectedResponseTypeFingerprint = " ++ show expectedResponseTypeFingerprint ++
-        ", actualResponseTypeFingerprint = " ++ show actualResponseTypeFingerprint ++
-        ", expectedRequestTypeFingerprint = " ++ show expectedRequestTypeFingerprint ++
-        ", actualRequestTypeFingerprint = " ++ show actualRequestTypeFingerprint ++
+        "{ expectedResponseTypeHash = " ++ show expectedResponseTypeHash ++
+        ", actualResponseTypeHash = " ++ show actualResponseTypeHash ++
+        ", expectedRequestTypeHash = " ++ show expectedRequestTypeHash ++
+        ", actualRequestTypeHash = " ++ show actualRequestTypeHash ++
         "}"
     show (RequestCanceledException rid) =
         "RequestCanceledException (" ++

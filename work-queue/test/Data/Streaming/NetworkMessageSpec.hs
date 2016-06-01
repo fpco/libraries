@@ -15,7 +15,7 @@ import           Data.Maybe (isNothing)
 import           Data.Store (encode)
 import           Data.Streaming.Network
 import           Data.Streaming.NetworkMessage
-import           Data.TypeFingerprintSpec ()
+import           Data.TypeHashSpec ()
 import           System.IO.Unsafe (unsafePerformIO)
 import           System.Timeout (timeout)
 import           Test.Hspec

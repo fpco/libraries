@@ -37,7 +37,8 @@ import Data.Function (fix)
 import Data.Store (Store)
 import Data.Streaming.Network
 import Data.Streaming.NetworkMessage
-import Data.TypeFingerprint
+import Data.Store.TypeHash
+import Data.Store.TypeHash.Orphans ()
 import Data.WorkQueue
 import FP.ThreadFileLogger (logIODebugS, logExceptions)
 import Options.Applicative
@@ -50,8 +51,8 @@ data ToSlave initialData payload
     deriving (Generic, Typeable)
 instance (Store a, Store b) => Store (ToSlave a b)
 
-instance (HasTypeFingerprint initialData, HasTypeFingerprint payload) => HasTypeFingerprint (ToSlave initialData payload) where
-    typeFingerprint _ = typeFingerprint (Proxy :: Proxy (initialData, payload))
+instance (HasTypeHash initialData, HasTypeHash payload) => HasTypeHash (ToSlave initialData payload) where
+    typeHash _ = typeHash (Proxy :: Proxy (initialData, payload))
 
 data RunMode
     = DevMode

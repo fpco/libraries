@@ -10,7 +10,6 @@ packages:
   - ./work-queue
   - ./hpc-manager
   - ./th-relative-paths
-  - ./th-type-hash
   - location:
       git: git@github.com:fpco/store
       commit: 7b56b372fb1fbc189cec9ff6ce26d334625e4aee

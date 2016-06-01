@@ -41,7 +41,7 @@ import           Control.Monad.Trans.Control (liftBaseWith, restoreM)
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import qualified Data.Store as S
 import           Data.Streaming.NetworkMessage (Sendable)
-import           Data.TypeFingerprint
+import           Data.Store.TypeHash
 import           Data.Typeable (Proxy(..))
 import           Data.Void (absurd, Void)
 import           Distributed.JobQueue.Heartbeat (checkHeartbeats)
@@ -307,8 +307,8 @@ encodeRequest
     -> ByteString
 encodeRequest request _ =
     S.encode JobRequest
-        { jrRequestTypeFingerprint = typeFingerprint (Proxy :: Proxy request)
-        , jrResponseTypeFingerprint = typeFingerprint (Proxy :: Proxy response)
+        { jrRequestTypeHash = typeHash (Proxy :: Proxy request)
+        , jrResponseTypeHash = typeHash (Proxy :: Proxy response)
         , jrSchema = redisSchemaVersion
         , jrBody = S.encode request
         }

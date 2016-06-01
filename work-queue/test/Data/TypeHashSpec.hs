@@ -2,19 +2,20 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE FlexibleInstances #-}
-
-module Data.TypeFingerprintSpec where
+{-# LANGUAGE DataKinds #-}
+module Data.TypeHashSpec where
 
 import           ClassyPrelude
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
-import           Data.TypeFingerprint
+import           Data.Store.TypeHash
+import           Data.Store.TypeHash.Orphans ()
 import           Test.Hspec (Spec)
 
 spec :: Spec
 spec = return ()
 
-$(mkManyHasTypeFingerprint
+$(mkManyHasTypeHash
     [ [t| Bool |]
     , [t| Maybe Bool |]
     , [t| LBS.ByteString |]

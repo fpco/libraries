@@ -1,4 +1,5 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -18,9 +19,9 @@ import           Data.WorkQueue
 import           Prelude hiding (round)
 import           System.Random.MWC
 import           Distributed.WorkQueue
-import           Data.TypeFingerprint (mkManyHasTypeFingerprint)
+import           Data.Store.TypeHash (mkManyHasTypeHash)
 
-$(mkManyHasTypeFingerprint
+$(mkManyHasTypeHash
     [ [t| Int |]
     , [t| Deck |]
     , [t| Vector Deck |]

@@ -24,8 +24,8 @@ Flag long-tests
 library
   exposed-modules:     Data.WorkQueue
                        Data.SimpleSupply
+                       Data.Store.TypeHash.Orphans
                        Data.Streaming.NetworkMessage
-                       Data.TypeFingerprint
                        Distributed.JobQueue
                        Distributed.JobQueue.Client
                        Distributed.JobQueue.Client.NewApi
@@ -74,7 +74,6 @@ library
                      , streaming-commons
                      , text
                      , template-haskell
-                     , th-type-hash
                      , thread-file-logger
                      , time
                      , transformers
@@ -97,6 +96,7 @@ executable hpc-example-factorial
   build-depends:       base
                      , stm
                      , work-queue
+                     , store
   ghc-options:         -Wall -threaded
 
 executable hpc-example-war
@@ -134,6 +134,7 @@ executable hpc-example-redis
                      , unix
                      , semigroups
                      , thread-file-logger
+                     , store
   ghc-options:         -Wall -threaded
 
 executable hpc-example-stateful
@@ -148,6 +149,7 @@ executable hpc-example-stateful
                      , monad-logger
                      , time
                      , unordered-containers
+                     , store
   ghc-options:         -Wall -threaded
 
 test-suite wq-test
@@ -157,6 +159,7 @@ test-suite wq-test
   other-modules:       Control.Concurrent.ThreadPoolSpec
                        Control.Exception.MaskSpec
                        Data.Streaming.NetworkMessageSpec
+                       Data.TypeHashSpec
                        Data.WorkQueueSpec
                        Distributed.JobQueueSpec
                        Distributed.StatefulSpec
