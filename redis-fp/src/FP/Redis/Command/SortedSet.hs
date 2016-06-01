@@ -11,7 +11,8 @@ module FP.Redis.Command.SortedSet
     , zrange
     , zrangebyscore
     , zscore
-    , zincrby )
+    , zincrby
+    , zcount )
     where
 
 import ClassyPrelude.Conduit hiding (member)
@@ -64,3 +65,7 @@ zincrby ::
     -- ^ New score
 zincrby key incr member =
     makeCommand "ZINCRBY" [encodeArg key, encodeArg incr, encodeArg member]
+
+zcount :: ZKey -> Double -> Double -> CommandRequest Int64
+zcount key start stop =
+  makeCommand "ZCOUNT" ([encodeArg key, encodeArg start, encodeArg stop])
