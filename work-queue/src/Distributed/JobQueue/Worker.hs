@@ -41,7 +41,7 @@ import Data.Bits (xor)
 import qualified Data.Store as S
 import Data.Streaming.Network (ServerSettings, clientSettingsTCP, runTCPServer, serverSettingsTCP)
 import Data.Streaming.NetworkMessage
-import Data.TypeFingerprint
+import Data.Store.TypeHash
 import Data.Typeable (Proxy(..))
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
@@ -388,16 +388,16 @@ becomeMaster params@WorkerParams{..} k req master = do
     $logInfoS "JobQueue" (tshow wpId ++ " becoming master, for " ++ tshow k)
     eres <- tryAny $ do
         addRequestEvent wpRedis k (RequestWorkStarted wpId)
-        let requestTypeFingerprint = typeFingerprint (Proxy :: Proxy request)
-            responseTypeFingerprint = typeFingerprint (Proxy :: Proxy response)
+        let requestTypeHash = typeHash (Proxy :: Proxy request)
+            responseTypeHash = typeHash (Proxy :: Proxy response)
         JobRequest{..} <- decodeOrThrow "jobQueueWorker" req
-        when (jrRequestTypeFingerprint /= requestTypeFingerprint ||
-              jrResponseTypeFingerprint /= responseTypeFingerprint) $ do
+        when (jrRequestTypeHash /= requestTypeHash ||
+              jrResponseTypeHash /= responseTypeHash) $ do
             liftIO $ throwIO TypeMismatch
-                { expectedResponseTypeFingerprint = responseTypeFingerprint
-                , actualResponseTypeFingerprint = jrResponseTypeFingerprint
-                , expectedRequestTypeFingerprint = requestTypeFingerprint
-                , actualRequestTypeFingerprint = jrRequestTypeFingerprint
+                { expectedResponseTypeHash = responseTypeHash
+                , actualResponseTypeHash = jrResponseTypeHash
+                , expectedRequestTypeHash = requestTypeHash
+                , actualRequestTypeHash = jrRequestTypeHash
                 }
         when (jrSchema /= redisSchemaVersion) $ do
             liftIO $ throwIO MismatchedRequestRedisSchemaVersion

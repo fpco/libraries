@@ -11,7 +11,8 @@ import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
-import           Data.TypeFingerprint
+import           Data.Store.TypeHash
+import           Data.Store.TypeHash.Orphans ()
 import           Text.Printf (PrintfArg(..))
 import           Data.Proxy (Proxy(..))
 import           Distributed.RedisQueue
@@ -47,8 +48,8 @@ data SlaveReq state context input
   | SReqGetStates
   deriving (Generic, Eq, Show, NFData, Store)
 
-instance (HasTypeFingerprint state, HasTypeFingerprint context, HasTypeFingerprint input) => HasTypeFingerprint (SlaveReq state context input) where
-    typeFingerprint _ = typeFingerprint (Proxy :: Proxy (state, context, input))
+instance (HasTypeHash state, HasTypeHash context, HasTypeHash input) => HasTypeHash (SlaveReq state context input) where
+    typeHash _ = typeHash (Proxy :: Proxy (state, context, input))
 
 data SlaveResp state output
   = SRespInit
@@ -62,8 +63,8 @@ data SlaveResp state output
   | SRespError Text
   deriving (Generic, Eq, Show, NFData, Store)
 
-instance (HasTypeFingerprint state, HasTypeFingerprint output) => HasTypeFingerprint (SlaveResp state output) where
-    typeFingerprint _ = typeFingerprint (Proxy :: Proxy (state, output))
+instance (HasTypeHash state, HasTypeHash output) => HasTypeHash (SlaveResp state output) where
+    typeHash _ = typeHash (Proxy :: Proxy (state, output))
 
 displayReq :: SlaveReq state context input -> Text
 displayReq (SReqInit reqId slaveId) = "SReqInit (" <> pack (show reqId) <> " " <> pack (show slaveId) <> ")"

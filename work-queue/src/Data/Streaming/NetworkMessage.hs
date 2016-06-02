@@ -17,7 +17,7 @@
 -- sides of the connection intend to send the same type of data.
 --
 -- Note that if the two sides of your connection are compiled against different
--- versions of libraries, it's entirely possible that 'Typeable' and 'Serialize'
+-- versions of libraries, it's entirely possible that 'Typeable' and 'Store'
 -- instances may be incompatible, in which cases guarantees provided by the
 -- handshake will not be accurate.
 module Data.Streaming.NetworkMessage
@@ -53,7 +53,7 @@ import           Data.Store (Store, PeekException (..))
 import qualified Data.Store.Streaming as S
 import           Data.Streaming.Network (AppData, appRead, appWrite)
 import           Data.Streaming.Network (ServerSettings, setAfterBind)
-import           Data.TypeFingerprint
+import           Data.Store.TypeHash
 import           Data.Typeable (Proxy(..))
 import           Data.Void (absurd)
 import           GHC.IO.Exception (IOException(ioe_type), IOErrorType(ResourceVanished))
@@ -87,7 +87,7 @@ type NMApp iSend youSend m a = NMAppData iSend youSend -> m a
 
 -- | Constraint synonym for the constraints required to send data from
 -- / to an 'NMApp'.
-type Sendable a = (Store a, HasTypeFingerprint a)
+type Sendable a = (Store a, HasTypeHash a)
 
 -- | Provides an 'NMApp' with a means of communicating with the other side of a
 -- connection. See other functions provided by this module.
@@ -128,8 +128,8 @@ nmReadSelect nm select = liftIO $ do
         Left err -> throwIO err
 
 data Handshake = Handshake
-    { hsISend     :: TypeFingerprint
-    , hsYouSend   :: TypeFingerprint
+    { hsISend     :: TypeHash
+    , hsYouSend   :: TypeHash
     , hsHeartbeat :: Int
     , hsExeHash   :: Maybe ByteString
     }
@@ -137,11 +137,11 @@ data Handshake = Handshake
 instance Store Handshake
 
 mkHandshake
-    :: forall iSend youSend m a. (HasTypeFingerprint iSend, HasTypeFingerprint youSend)
+    :: forall iSend youSend m a. (HasTypeHash iSend, HasTypeHash youSend)
     => NMApp iSend youSend m a -> Int -> Maybe ByteString -> Handshake
 mkHandshake _ hb eh = Handshake
-    { hsISend = typeFingerprint (Proxy :: Proxy iSend)
-    , hsYouSend = typeFingerprint (Proxy :: Proxy youSend)
+    { hsISend = typeHash (Proxy :: Proxy iSend)
+    , hsYouSend = typeHash (Proxy :: Proxy youSend)
     , hsHeartbeat = hb
     , hsExeHash = eh
     }

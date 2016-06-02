@@ -2,6 +2,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE DataKinds #-}
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Logger
@@ -9,7 +10,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Char8 (pack)
 import Data.Maybe
 import Data.Time
-import Data.TypeFingerprint (mkHasTypeFingerprint)
+import Data.Store.TypeHash (mkHasTypeHash)
 import Distributed.JobQueue.Client.NewApi
 import           Control.Exception (assert)
 import           Data.Foldable (fold)
@@ -21,7 +22,7 @@ import           Distributed.Stateful
 import           FP.Redis (connectInfo, Seconds(..))
 import           System.Environment (getArgs)
 
-$(mkHasTypeFingerprint =<< [t| ByteString |])
+$(mkHasTypeHash =<< [t| ByteString |])
 
 type Request = ByteString
 type Response = ByteString

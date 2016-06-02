@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ParallelListComp #-}
@@ -30,8 +31,8 @@ import qualified Data.HashSet as HS
 import           Data.Store (Store)
 import           Data.Streaming.NetworkMessage
 import qualified Data.Streaming.NetworkMessage as NM
-import           Data.TypeFingerprint (mkManyHasTypeFingerprint)
-import           Data.TypeFingerprintSpec ()
+import           Data.Store.TypeHash (mkManyHasTypeHash)
+import           Data.TypeHashSpec ()
 import           Distributed.JobQueue.Client.NewApi
 import           Distributed.RedisQueue (RedisInfo)
 import           Distributed.Stateful
@@ -53,7 +54,7 @@ newtype Input = Input Int deriving (CoArbitrary, Arbitrary, Show, Store, Eq)
 newtype State = State Int deriving (CoArbitrary, Arbitrary, Show, Store, Eq, NFData)
 newtype Output = Output Int deriving (CoArbitrary, Arbitrary, Show, Store, Eq, NFData)
 
-$(mkManyHasTypeFingerprint
+$(mkManyHasTypeHash
     [ [t| Context |]
     , [t| Input |]
     , [t| State |]
