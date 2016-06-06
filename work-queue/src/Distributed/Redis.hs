@@ -38,14 +38,14 @@ import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.MVar.Lifted
 import           Control.Exception.Lifted (throwIO)
-import           Control.Monad (forever, void, guard)
+import           Control.Monad (forever, void)
 import           Control.Monad.IO.Class
 import           Control.Retry
 import           Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
 import           Data.List.NonEmpty (NonEmpty((:|)))
-import           Data.Serialize (Serialize)
-import qualified Data.Serialize as C
+import           Data.Store (Store)
+import qualified Data.Store as S
 import qualified Data.Text as T
 import           Data.Time.Clock.POSIX
 import           FP.Redis
@@ -174,17 +174,17 @@ sendNotify redis (NotifyChannel chan) = run_ redis (publish chan "")
 
 -- * Serialize utilities
 
-decodeOrErr :: forall a. (Serialize a)
+decodeOrErr :: forall a. (Store a)
             => String -> ByteString -> Either DistributedException a
 decodeOrErr src lbs =
-    case C.runGet (C.get <* (guard =<< C.isEmpty)) lbs of
-        Left err -> Left (DecodeError (T.pack src) (T.pack err))
+    case S.decode lbs of
+        Left exc -> Left (DecodeError (T.pack src) (T.pack (show exc)))
         Right x -> return x
 
 -- | Attempt to decode the given 'ByteString'.  If this fails, then
 -- throw a 'DecodeError' tagged with a 'String' indicating the source
 -- of the decode error.
-decodeOrThrow :: forall m a. (MonadIO m, Serialize a)
+decodeOrThrow :: forall m a. (MonadIO m, Store a)
               => String -> ByteString -> m a
 decodeOrThrow src lbs = either (liftIO . throwIO) return (decodeOrErr src lbs)
 

@@ -1,13 +1,14 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DataKinds #-}
 
 import Control.Monad.Logger
 import Control.Monad.IO.Class
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 (pack)
 import Data.Time
-import Data.TypeFingerprint (mkHasTypeFingerprint)
+import Data.Store.TypeHash (mkHasTypeHash)
 import Distributed.JobQueue.Client
 import Distributed.Types
 import Distributed.Redis
@@ -16,7 +17,7 @@ import           System.Environment (getArgs)
 import Control.Concurrent (threadDelay)
 import Data.Monoid
 
-$(mkHasTypeFingerprint =<< [t| ByteString |])
+$(mkHasTypeHash =<< [t| ByteString |])
 
 type Request = ByteString
 type Response = ByteString
@@ -43,6 +44,7 @@ workerFunc _ _ request = do
 jqc :: JobQueueConfig
 jqc = defaultJobQueueConfig "stateful-demo:"
 
+main :: IO ()
 main = do
   [mode] <- getArgs
   case mode of

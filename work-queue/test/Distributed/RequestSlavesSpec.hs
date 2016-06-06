@@ -11,13 +11,14 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DataKinds #-}
 module Distributed.RequestSlavesSpec (spec) where
 
 import           ClassyPrelude
 import           Test.Hspec
-import           Data.TypeFingerprint
+import           Data.Store.TypeHash
 import           FP.Redis
-import           Data.Serialize (Serialize)
+import           Data.Store (Store)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Data.Void (absurd)
 import qualified Data.Map.Strict as Map
@@ -37,16 +38,16 @@ import           TestUtils
 -----------------------------------------------------------------------
 
 newtype MasterId = MasterId {_unMasterId :: Int}
-    deriving (Eq, Ord, Typeable, Serialize)
+    deriving (Eq, Ord, Typeable, Store)
 
 instance Show MasterId where
     show (MasterId mid) = "S" ++ show mid
 
 newtype MasterSends = MasterSends MasterId
-    deriving (Eq, Show, Typeable, Serialize)
+    deriving (Eq, Show, Typeable, Store)
 
 newtype SlaveId = SlaveId {_unSlaveId :: Int}
-    deriving (Eq, Ord, Typeable, Serialize)
+    deriving (Eq, Ord, Typeable, Store)
 
 instance Show SlaveId where
     show (SlaveId sid) = "S" ++ show sid
@@ -55,9 +56,9 @@ data SlaveSends = SlaveSends
     { _slaveId :: !SlaveId
     , _slaveMasterId :: !MasterId
     } deriving (Eq, Show, Typeable, Generic)
-instance Serialize SlaveSends
+instance Store SlaveSends
 
-mkManyHasTypeFingerprint [[t|MasterSends|], [t|SlaveSends|]]
+mkManyHasTypeHash [[t|MasterSends|], [t|SlaveSends|]]
 
 masterLog :: MasterId -> Text -> Text
 masterLog (MasterId mid) msg = "(M" ++ tshow mid ++ ") " ++ msg

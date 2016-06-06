@@ -18,8 +18,8 @@ Flag coverage
     Default:           False
 
 library
-  exposed-modules:     Data.TypeFingerprint
-                       Distributed.Types
+  exposed-modules:     Distributed.Types
+                       Data.Store.TypeHash.Orphans
                        Distributed.JobQueue.Client
                        Distributed.JobQueue.Worker
                        Distributed.JobQueue.MasterOrSlave
@@ -34,6 +34,8 @@ library
                        Distributed.Stateful
                        Distributed.Stateful.Internal
                        Data.WorkQueue
+                       Control.Concurrent.ThreadPool
+                       Control.Exception.Mask
   other-modules:       Data.SimpleSupply
   build-depends:       base
                      , stm-chans
@@ -41,7 +43,6 @@ library
                      , aeson
                      , async
                      , base64-bytestring
-                     , fpco-cereal
                      , bytestring
                      , classy-prelude
                      , conduit-extra
@@ -65,10 +66,10 @@ library
                      , split
                      , stm
                      , stm-containers
+                     , store
                      , streaming-commons
                      , text
                      , template-haskell
-                     , th-type-hash
                      , thread-file-logger
                      , time
                      , transformers
@@ -87,6 +88,54 @@ library
   if flag(coverage)
       ghc-options:     -fhpc
 
+-- executable hpc-example-factorial
+--   main-is:             factorial.hs
+--   hs-source-dirs:      examples/factorial
+--   default-language:    Haskell2010
+--   build-depends:       base
+--                      , stm
+--                      , work-queue
+--                      , store
+--   ghc-options:         -Wall -threaded
+-- 
+-- executable hpc-example-war
+--   main-is:             best-deck.hs
+--   other-modules:       Data.War
+--   hs-source-dirs:      examples/war
+--   default-language:    Haskell2010
+--   build-depends:       base
+--                      , containers
+--                      , hybrid-vectors
+--                      , mwc-random
+--                      , primitive
+--                      , stm
+--                      , vector
+--                      , vector-algorithms
+--                      , work-queue
+--                      , mutable-containers
+--                      , store
+--   ghc-options:         -Wall -threaded
+-- 
+-- executable hpc-example-redis
+--   main-is:             redis.hs
+--   hs-source-dirs:      examples/redis
+--   default-language:    Haskell2010
+--   build-depends:       base
+--                      , redis-fp
+--                      , work-queue
+--                      , split
+--                      , stm
+--                      , bytestring
+--                      , classy-prelude
+--                      , monad-logger
+--                      , transformers
+--                      , lifted-base
+--                      , unix
+--                      , semigroups
+--                      , thread-file-logger
+--                      , store
+--   ghc-options:         -Wall -threaded
+
 test-suite wq-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
@@ -98,6 +147,8 @@ test-suite wq-test
                      , Distributed.StatusSpec
                      , Data.Streaming.NetworkMessageSpec
                      , Data.WorkQueueSpec
+                     , Control.Concurrent.ThreadPoolSpec
+                     , Control.Exception.MaskSpec
   ghc-options:         -Wall
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   build-depends:       base
@@ -108,7 +159,6 @@ test-suite wq-test
                      , lifted-async
                      , QuickCheck
                      , async
-                     , fpco-cereal
                      , bytestring
                      , classy-prelude
                      , conduit-extra
@@ -133,6 +183,7 @@ test-suite wq-test
                      , silently
                      , split
                      , stm
+                     , store
                      , streaming-commons
                      , thread-file-logger
                      , time
@@ -141,6 +192,7 @@ test-suite wq-test
                      , unix
                      , unordered-containers
                      , vector
+                     , uuid
                      , work-queue
                      , uuid
                      , cryptohash
@@ -155,7 +207,25 @@ executable hpc-example-stateful
                      , work-queue
                      , stm
                      , bytestring
+                     , network
+                     , enclosed-exceptions
+                     , unix
+                     , split
+                     , classy-prelude
+                     , system-fileio
+                     , executable-path
+                     , process
+                     , silently
                      , monad-logger
-                     , time
+                     , redis-fp
+                     , lifted-base
+                     , semigroups
+                     , store
+                     , monad-control
+                     , resourcet
+                     , criterion
+                     , thread-file-logger
+                     , directory
                      , transformers
+                     , time
   ghc-options:         -Wall -threaded

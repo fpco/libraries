@@ -1,25 +1,29 @@
 resolver: lts-3.0
 extra-deps:
+  - fail-4.9.0.0
+  - th-lift-instances-0.1.7
+  - th-orphans-0.13.1
+  - th-reify-many-0.1.6
+  - th-utilities-0.1.1.0
   - hybrid-vectors-0.2
-  - binary-orphans-0.1.2.0
   - hspec-expectations-lifted-0.5.0
 packages:
-  - ./json-conduit
   - ./redis-fp
   - ./thread-file-logger
   - ./work-queue
   - ./hpc-manager
   - ./th-relative-paths
-  - ./th-type-hash
   - location:
-      git: https://github.com/fpco/fpco-cereal.git
-      commit: 9193b056f2c401ade30908200beb410e5ffec187
+      git: git@github.com:fpco/store
+      commit: 96224c6d64ef1c17de25aaea3113413e347301ab
+    extra-dep: true
   - location:
       git: https://github.com/kazu-yamamoto/logger.git
       commit: d2afcf87eae9c599761a04423fb43a891e21b68b
     subdirs:
       - fast-logger
       - wai-logger
+    extra-dep: true
 
 image:
   container:

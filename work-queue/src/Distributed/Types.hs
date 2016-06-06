@@ -10,11 +10,11 @@ module Distributed.Types where
 import           ClassyPrelude hiding ((<>))
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Char8 as BS8
-import           Data.Serialize (Serialize)
-import           Data.Serialize.Orphans ()
+import           Data.Store (Store)
 import           Data.Streaming.NetworkMessage (NetworkMessageException)
 import qualified Data.Text as T
-import           Data.TypeFingerprint
+import           Data.Store.TypeHash (TypeHash)
+import           Control.DeepSeq (NFData)
 
 -- * IDs used in Redis
 
@@ -24,7 +24,7 @@ import           Data.TypeFingerprint
 --
 -- REVIEW: This is used only for job queue, not work queue.
 newtype WorkerId = WorkerId { unWorkerId :: ByteString }
-    deriving (Eq, Ord, Show, Serialize, IsString, Typeable, Hashable)
+    deriving (Eq, Ord, Show, Store, IsString, Typeable, Hashable)
 
 instance Aeson.ToJSON WorkerId where
     toJSON = Aeson.String . T.pack . BS8.unpack . unWorkerId
@@ -35,7 +35,7 @@ instance Aeson.ToJSON WorkerId where
 --
 -- REVIEW: This is used only for job queue, not work queue.
 newtype RequestId = RequestId { unRequestId :: ByteString }
-    deriving (Eq, Ord, Show, Serialize, Hashable, Typeable)
+    deriving (Eq, Ord, Show, Store, Hashable, Typeable, NFData)
 
 instance Aeson.ToJSON RequestId where
     toJSON = Aeson.String . T.pack . BS8.unpack . unRequestId
@@ -57,10 +57,10 @@ data DistributedException
     -- body. This means that the response body expired in redis
     -- (alternatively, it could indicate a bug in this library).
     | TypeMismatch
-        { expectedRequestTypeFingerprint :: !TypeFingerprint
-        , actualRequestTypeFingerprint :: !TypeFingerprint
-        , expectedResponseTypeFingerprint :: !TypeFingerprint
-        , actualResponseTypeFingerprint :: !TypeFingerprint
+        { expectedRequestTypeHash :: !TypeHash
+        , actualRequestTypeHash :: !TypeHash
+        , expectedResponseTypeHash :: !TypeHash
+        , actualResponseTypeHash :: !TypeHash
         }
     -- ^ Thrown when the client makes a request with the wrong request
     -- / response types.
@@ -107,7 +107,7 @@ data DistributedException
     deriving (Eq, Typeable, Generic)
 
 instance Exception DistributedException
-instance Serialize DistributedException
+instance Store DistributedException
 
 instance Show DistributedException where
     show (WorkStillInProgress wid) =
@@ -124,10 +124,10 @@ instance Show DistributedException where
         ") {- This likely means that the response body expired in redis. -}"
     show (TypeMismatch {..}) =
         "TypeMismatch " ++
-        "{ expectedResponseTypeFingerprint = " ++ show expectedResponseTypeFingerprint ++
-        ", actualResponseTypeFingerprint = " ++ show actualResponseTypeFingerprint ++
-        ", expectedRequestTypeFingerprint = " ++ show expectedRequestTypeFingerprint ++
-        ", actualRequestTypeFingerprint = " ++ show actualRequestTypeFingerprint ++
+        "{ expectedResponseTypeHash = " ++ show expectedResponseTypeHash ++
+        ", actualResponseTypeHash = " ++ show actualResponseTypeHash ++
+        ", expectedRequestTypeHash = " ++ show expectedRequestTypeHash ++
+        ", actualRequestTypeHash = " ++ show actualRequestTypeHash ++
         "}"
     show (NoRequestForCallbackRegistration rid) =
         "NoRequestForCallbackRegistration (" ++

@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE NoImplicitPrelude          #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
@@ -17,7 +18,7 @@
 -- sides of the connection intend to send the same type of data.
 --
 -- Note that if the two sides of your connection are compiled against different
--- versions of libraries, it's entirely possible that 'Typeable' and 'Serialize'
+-- versions of libraries, it's entirely possible that 'Typeable' and 'Store'
 -- instances may be incompatible, in which cases guarantees provided by the
 -- handshake will not be accurate.
 module Data.Streaming.NetworkMessage
@@ -39,17 +40,18 @@ module Data.Streaming.NetworkMessage
     ) where
 
 import           ClassyPrelude
-import qualified Data.Serialize as B
+import           Data.Store (Store, PeekException (..))
+import qualified Data.Store.Streaming as S
 import           Control.Exception (BlockedIndefinitelyOnMVar(..))
+import           System.IO.ByteBuffer (ByteBuffer)
+import qualified System.IO.ByteBuffer as BB
 import           Data.Streaming.Network (AppData, appRead, appWrite)
 import           Data.Streaming.Network (ServerSettings, setAfterBind)
-import           Data.TypeFingerprint
+import           Data.Store.TypeHash
 import           Data.Typeable (Proxy(..))
 import           Network.Socket (socketPort)
 import           System.Executable.Hash (executableHash)
 import           FP.Redis (MonadConnect)
-import           Control.Monad.Logger (logDebug)
-import qualified Data.Text as T
 
 data NetworkMessageException
     -- | This is thrown by 'runNMApp', during the initial handshake,
@@ -63,7 +65,7 @@ data NetworkMessageException
     | NMDecodeFailure String
     deriving (Show, Typeable, Eq, Generic)
 instance Exception NetworkMessageException
-instance B.Serialize NetworkMessageException
+instance Store NetworkMessageException
 
 -- | A network message application.
 --
@@ -73,7 +75,7 @@ instance B.Serialize NetworkMessageException
 -- application (@a@). Restrictions on these types:
 --
 -- * @iSend@ and @youSend@ must both be instances of 'Sendable'.  In
--- other words, they must both implement 'Typeable' and 'Serialize'.
+-- other words, they must both implement 'Typeable' and 'Store'.
 --
 -- * @m@ must be an instance of 'MonadBaseControl' 'IO'.
 --
@@ -90,54 +92,55 @@ type NMApp iSend youSend m a = NMAppData iSend youSend -> m a
 
 -- | Constraint synonym for the constraints required to send data from
 -- / to an 'NMApp'.
-type Sendable a = (B.Serialize a, HasTypeFingerprint a)
+type Sendable a = (Store a, HasTypeHash a)
 
 -- | Provides an 'NMApp' with a means of communicating with the other side of a
 -- connection. See other functions provided by this module.
 data NMAppData iSend youSend = NMAppData
     { nmAppData :: !AppData
-    , nmLeftover :: !(IORef ByteString)
+    , nmByteBuffer :: !ByteBuffer
     } deriving (Typeable)
 
 -- | Send a message to the other side of the connection.
-nmWrite :: (MonadIO m, B.Serialize iSend) => NMAppData iSend youSend -> iSend -> m ()
-nmWrite nm iSend = liftIO (appWrite (nmAppData nm) (B.encode iSend))
+nmWrite :: (MonadIO m, Store iSend) => NMAppData iSend youSend -> iSend -> m ()
+nmWrite nm iSend = liftIO (appWrite (nmAppData nm) (encode iSend))
 
-nmRead  :: (MonadConnect m, B.Serialize youSend) => NMAppData iSend youSend -> m youSend
-nmRead NMAppData{..} = do
-    (res, leftover) <- appGet "nmRead" nmAppData =<< readIORef nmLeftover
-    writeIORef nmLeftover leftover
-    return res
+nmRead  :: (MonadConnect m, Store youSend) => NMAppData iSend youSend -> m youSend
+nmRead NMAppData{..} = liftIO (appGet "nmRead" nmByteBuffer nmAppData)
 
--- | Receive a message from the other side of the connection. Blocks until data
--- is available.
-appGet :: (MonadConnect m, B.Serialize youSend) => String -> AppData -> ByteString -> m (youSend, ByteString)
-appGet loc ad leftover0 = go (B.runGetPartial B.get leftover0)
+-- | Streaming decode function.  If the function to get more bytes
+-- yields "", then it's assumed to be the end of the input, and
+-- 'Nothing' is returned.
+appGet :: (Store a)
+       => String
+       -> ByteBuffer    -- ^ 'ByteBuffer' for streaming
+       -> AppData
+       -> IO a  -- ^ result
+appGet loc bb ad =
+    ((S.peekMessage bb) >>= loop)
+    `catch` (\ ex@(PeekException _ _) -> throwIO . NMDecodeFailure . ((loc ++ " ") ++) . show $ ex)
   where
-    go (B.Fail str _) =
-        liftIO (throwIO (NMDecodeFailure (loc ++ " Couldn't decode: " ++ str)))
-    go (B.Partial f) = do
-        $logDebug (T.pack loc ++ " appGet reading")
-        bs <- liftIO (appRead ad)
+    loop (S.NeedMoreInput cont) = do
+        bs <- appRead ad
         if null bs
-            then liftIO (throwIO (NMDecodeFailure (loc ++ " Couldn't decode: no data")))
-            else go (f bs)
-    go (B.Done res bs) = do
-        return (res, bs)
+            then throwIO (NMDecodeFailure (loc ++ " Couldn't decode: no data"))
+            else cont bs >>= loop
+    loop (S.Done (S.Message x)) = return x
 
 data Handshake = Handshake
-    { hsISend :: TypeFingerprint
-    , hsYouSend :: TypeFingerprint
-    , hsExeHash :: Maybe ByteString
-    } deriving (Generic, Show, Eq, Typeable)
-instance B.Serialize Handshake
+    { hsISend     :: TypeHash
+    , hsYouSend   :: TypeHash
+    , hsExeHash   :: Maybe ByteString
+    }
+    deriving (Generic, Show, Eq, Typeable)
+instance Store Handshake
 
 mkHandshake
-    :: forall iSend youSend m a. (HasTypeFingerprint iSend, HasTypeFingerprint youSend)
+    :: forall iSend youSend m a. (HasTypeHash iSend, HasTypeHash youSend)
     => NMApp iSend youSend m a -> Maybe ByteString -> Handshake
 mkHandshake _ eh = Handshake
-    { hsISend = typeFingerprint (Proxy :: Proxy iSend)
-    , hsYouSend = typeFingerprint (Proxy :: Proxy youSend)
+    { hsISend = typeHash (Proxy :: Proxy iSend)
+    , hsYouSend = typeHash (Proxy :: Proxy youSend)
     , hsExeHash = eh
     }
 
@@ -148,19 +151,16 @@ runNMApp :: forall iSend youSend m a.
     -> NMApp iSend youSend m a
     -> AppData
     -> m a
-runNMApp (NMSettings exeHash) nmApp ad = do
+runNMApp (NMSettings exeHash) nmApp ad = BB.with Nothing $ \buffer -> do
     -- Handshake
     let myHS = mkHandshake nmApp exeHash
-    forM_ (toChunks $ B.encodeLazy myHS) (liftIO . appWrite ad)
-    (yourHS, leftover) <- appGet "handshake" ad ""
+    liftIO (appWrite ad (encode myHS))
+    yourHS <- liftIO (appGet "handshake" buffer ad)
     when (hsISend myHS /= hsYouSend yourHS ||
           hsYouSend myHS /= hsISend yourHS ||
           hsExeHash myHS /= hsExeHash yourHS) $ do
         throwIO (NMMismatchedHandshakes myHS yourHS)
-
-    -- Continue
-    leftoverVar <- newIORef leftover
-    nmApp NMAppData{nmAppData = ad, nmLeftover = leftoverVar}
+    nmApp NMAppData{nmAppData = ad, nmByteBuffer = buffer}
 
 -- | Settings to be used by 'runNMApp'. Use 'defaultNMSettings' and modify with
 -- setter functions.
@@ -193,3 +193,6 @@ getPortAfterBind ss = do
         , readMVar boundPortVar `catch` \BlockedIndefinitelyOnMVar ->
             error "Port will never get bound, thread got blocked indefinitely."
         )
+
+encode :: Store a => a -> ByteString
+encode = S.encodeMessage . S.Message

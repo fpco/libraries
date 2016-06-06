@@ -3,11 +3,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE DataKinds #-}
 module Distributed.StatusSpec (spec) where
 
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Control.Monad.Logger
-import           Data.TypeFingerprint (mkHasTypeFingerprint)
+import           Data.Store.TypeHash (mkManyHasTypeHash)
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Client
 import           Distributed.JobQueue.Status
@@ -26,7 +27,7 @@ import           Control.Concurrent.MVar
 import           Test.Hspec (Spec, it, runIO)
 import           Data.Maybe
 
-$(mkHasTypeFingerprint =<< [t| ByteString |])
+$(mkManyHasTypeHash [[t| ByteString |]])
 
 type Request = ByteString
 type Response = ByteString

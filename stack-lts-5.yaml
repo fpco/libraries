@@ -1,17 +1,25 @@
 resolver: lts-5.0
 extra-deps:
   - retry-0.6
+<<<<<<< HEAD
   - hspec-expectations-lifted-0.5.0
+=======
+  - fail-4.9.0.0
+  - th-lift-instances-0.1.7
+  - th-orphans-0.13.1
+  - th-reify-many-0.1.6
+  - th-utilities-0.1.1.0
+>>>>>>> origin/master
 packages:
-  - ./json-conduit
   - ./redis-fp
   - ./thread-file-logger
   - ./work-queue
   - ./hpc-manager
   - ./th-relative-paths
   - location:
-      git: https://github.com/fpco/fpco-cereal.git
-      commit: 0b9059f3d1ff5e286b36bc21d654af30d4218ea6
+      git: git@github.com:fpco/store
+      commit: 96224c6d64ef1c17de25aaea3113413e347301ab
+    extra-dep: true
 
 image:
   container:

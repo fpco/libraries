@@ -22,7 +22,7 @@ import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
-import qualified Data.Serialize as C
+import qualified Data.Store as S
 
 -- | Arguments for 'runSlave'.
 data SlaveArgs m state context input output = SlaveArgs
@@ -44,7 +44,7 @@ instance Exception SlaveException
 -- | Runs a stateful slave. Returns then the master sends the "quit" command.
 {-# INLINE runSlave #-}
 runSlave :: forall state context input output m.
-     (MonadConnect m, NFData state, NFData output, C.Serialize state)
+     (MonadConnect m, NFData state, NFData output, S.Store state)
   => SlaveArgs m state context input output
   -> m ()
 runSlave SlaveArgs{..} = do
@@ -67,8 +67,8 @@ runSlave SlaveArgs{..} = do
           SReqResetState states' -> return (SRespResetState, (Just states'))
           SReqGetStates -> return (SRespGetStates states, (Just states))
           SReqAddStates newStates0 -> do
-            let decodeOrThrow bs = case C.decodeEof bs of
-                  Left err -> throw (DecodeStateError err)
+            let decodeOrThrow bs = case S.decode bs of
+                  Left err -> throw (DecodeStateError (show err))
                   Right x -> return x
             newStates <- mapM decodeOrThrow newStates0
             let aliased = HMS.keys (HMS.intersection newStates states)
@@ -82,7 +82,7 @@ runSlave SlaveArgs{..} = do
             let (missing, toSend) = partitionEithers $ map eitherLookup $ HS.toList stateIdsToDelete
             unless (null missing) $ throw (MissingStatesToRemove missing)
             let states' = foldl' (flip HMS.delete) states stateIdsToDelete
-            return (SRespRemoveStates requesting (C.encode <$> HMS.fromList toSend), Just states')
+            return (SRespRemoveStates requesting (S.encode <$> HMS.fromList toSend), Just states')
           SReqUpdate context inputs -> do
             (states', outputs) <- statefulUpdate saUpdate states context inputs
             return (SRespUpdate outputs, Just states')

@@ -24,9 +24,9 @@ import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.STM (retry, orElse)
 import           Control.Monad.Logger
 import           Data.List.NonEmpty (NonEmpty((:|)))
-import           Data.Serialize (encode)
+import qualified Data.Store as S
 import           Data.Streaming.NetworkMessage (Sendable)
-import           Data.TypeFingerprint
+import           Data.Store.TypeHash
 import           Data.Typeable (Proxy(..))
 import           Distributed.Heartbeat (checkHeartbeats)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
@@ -119,11 +119,11 @@ submitRequest :: forall request response m.
     -> request
     -> m ()
 submitRequest JobClient{..} rid request = do
-    let encoded = encode JobRequest
-            { jrRequestTypeFingerprint = typeFingerprint (Proxy :: Proxy request)
-            , jrResponseTypeFingerprint = typeFingerprint (Proxy :: Proxy response)
+    let encoded = S.encode JobRequest
+            { jrRequestTypeHash = typeHash (Proxy :: Proxy request)
+            , jrResponseTypeHash = typeHash (Proxy :: Proxy response)
             , jrSchema = redisSchemaVersion
-            , jrBody = encode request
+            , jrBody = S.encode request
             }
     $logDebugS "sendRequest" $ "Pushing request " <> tshow rid
     added <- run jcRedis (set (requestDataKey jcRedis rid) encoded [EX (jqcRequestExpiry jcConfig), NX])

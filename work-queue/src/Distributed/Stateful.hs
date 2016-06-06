@@ -26,13 +26,12 @@ module Distributed.Stateful
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
-import           Data.Serialize.Orphans ()
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Distributed.Stateful.Slave
 import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
-import           Data.Serialize (Serialize)
+import           Data.Store (Store)
 import           Control.Concurrent.STM.TMChan
 import           Data.Streaming.NetworkMessage
 import           Control.Monad.Logger (logError, logWarn, logDebug)
@@ -41,12 +40,10 @@ import qualified Control.Concurrent.STM as STM
 import qualified Data.Conduit.Network as CN
 import           Control.Monad.Trans.Control (control)
 import           Data.Void (absurd)
-import           Data.TypeFingerprint (HasTypeFingerprint)
+import           Data.Store.TypeHash (HasTypeHash)
 import           Distributed.Redis (Redis)
 import           Distributed.RequestSlaves
 import qualified Data.Streaming.Network.Internal as CN
-import qualified Data.UUID as UUID
-import qualified Data.UUID.V4 as UUID
 import           Distributed.JobQueue.Worker
 import           Distributed.Types
 import           Distributed.JobQueue.MasterOrSlave
@@ -60,7 +57,7 @@ import           FP.Redis (Milliseconds)
 -- This means that you'll have to run a stateful master from inside the
 -- continuation (see runSimplePureStateful)
 runPureStatefulSlave :: forall m context input state output a.
-       (MonadConnect m, NFData state, NFData output, Serialize state)
+       (MonadConnect m, NFData state, NFData output, Store state)
     => (context -> input -> state -> m (state, output))
     -> (SlaveConn m state context input output -> m a)
     -> m a
@@ -100,7 +97,7 @@ runPureStatefulSlave update_ cont = do
         }
 
 runSimplePureStateful :: forall m context input state output a.
-       (MonadConnect m, NFData state, NFData output, Serialize state)
+       (MonadConnect m, NFData state, NFData output, Store state)
     => MasterArgs m state context input output 
     -> Int -- ^ Desired slaves. Must be >= 0
     -> (MasterHandle m state context input output -> m a)
@@ -120,14 +117,14 @@ runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
 -- * JobQueue based version
 -----------------------------------------------------------------------
 
-nmStatefulConn :: (MonadConnect m, Serialize a, Serialize b) => NMAppData a b -> StatefulConn m a b
+nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> StatefulConn m a b
 nmStatefulConn ad = StatefulConn
     { scWrite = nmWrite ad
     , scRead = nmRead ad
     }
 
 runNMStatefulSlave ::
-       (MonadConnect m, NFData state, Serialize state, NFData output, Serialize output, Serialize context, Serialize input)
+       (MonadConnect m, NFData state, Store state, NFData output, Store output, Store context, Store input)
     => (context -> input -> state -> m (state, output))
     -> NMApp (SlaveResp state output) (SlaveReq state context input) m ()
 runNMStatefulSlave update_ ad = runSlave SlaveArgs
@@ -147,7 +144,7 @@ data NMStatefulMasterArgs = NMStatefulMasterArgs
     }
 
 runNMStatefulMaster :: forall m state output input context b.
-       (MonadConnect m, NFData state, Serialize state, NFData output, Serialize output, Serialize context, Serialize input)
+       (MonadConnect m, NFData state, Store state, NFData output, Store output, Store context, Store input)
     => MasterArgs m state context input output
     -> NMStatefulMasterArgs
     -> (forall void. NMApp (SlaveReq state context input) (SlaveResp state output) m () -> m void)
@@ -216,8 +213,8 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
 runSimpleNMStateful :: forall m state input output context a.
        ( MonadConnect m
        , NFData state, NFData output
-       , Serialize state, Serialize output, Serialize context, Serialize input
-       , HasTypeFingerprint state, HasTypeFingerprint input, HasTypeFingerprint output, HasTypeFingerprint context
+       , Store state, Store output, Store context, Store input
+       , HasTypeHash state, HasTypeHash input, HasTypeHash output, HasTypeHash context
        )
     => ByteString -- ^ Desired host for the master
     -> MasterArgs m state context input output

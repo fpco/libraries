@@ -10,11 +10,12 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE DataKinds #-}
 
 module Distributed.JobQueueSpec (spec) where
 
 import ClassyPrelude
-import Data.Serialize (Serialize)
+import Data.Store (Store)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Test.Hspec hiding (shouldBe)
 import qualified Test.Hspec
@@ -28,7 +29,7 @@ import qualified Data.ByteString.Char8 as BSC8
 import qualified Data.HashSet as HS
 import qualified Control.Concurrent.STM as STM
 
-import Data.TypeFingerprint (mkManyHasTypeFingerprint)
+import Data.Store.TypeHash (mkManyHasTypeHash)
 import Distributed.JobQueue.Client
 import Distributed.JobQueue.Worker
 import TestUtils
@@ -42,14 +43,14 @@ data Request = Request
     { requestDelay :: !Int
     , requestResponse :: !(Reenqueue Response)
     } deriving (Eq, Show, Generic, Typeable)
-instance Serialize Request
+instance Store Request
 
 newtype Response = Response
     { _responseEcho :: ByteString
     } deriving (Eq, Ord, Show, Generic, Typeable)
-instance Serialize Response
+instance Store Response
 
-$(mkManyHasTypeFingerprint [[t|Request|], [t|Response|]])
+$(mkManyHasTypeHash [[t|Request|], [t|Response|]])
 
 jobWorker_ :: (MonadConnect m) => (Request -> m (Reenqueue Response)) -> m void
 jobWorker_ work = jobWorker testJobQueueConfig (\_r _rid -> work)

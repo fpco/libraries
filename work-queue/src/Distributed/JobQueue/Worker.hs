@@ -24,10 +24,9 @@ import Control.Concurrent (threadDelay)
 import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Proxy
-import Data.Streaming.NetworkMessage (Sendable)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Data.TypeFingerprint (typeFingerprint)
-import Data.Typeable (typeOf)
+import Data.Streaming.NetworkMessage
+import Data.Store.TypeHash
 import Data.UUID as UUID
 import Data.UUID.V4 as UUID
 import Distributed.Heartbeat
@@ -37,7 +36,8 @@ import Distributed.Types
 import FP.Redis
 import FP.ThreadFileLogger
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import Data.Serialize (encode, Serialize)
+import Data.Store (encode, Store)
+import Data.Typeable (typeOf)
 
 -- | Implements a compute node which responds to requests and never
 -- returns.
@@ -73,7 +73,7 @@ data Reenqueue a
     = DontReenqueue !a
     | Reenqueue
     deriving (Eq, Show, Generic, Typeable, Functor, Foldable, Traversable)
-instance (Serialize a) => Serialize (Reenqueue a)
+instance (Store a) => Store (Reenqueue a)
 
 data WorkerResult response
     = RequestGotCancelled
@@ -153,16 +153,16 @@ checkRequest :: forall request response.
      (Sendable request, Sendable response)
   => Proxy response -> RequestId -> ByteString -> Either DistributedException request
 checkRequest _proxy rid req = do
-    let requestTypeFingerprint = typeFingerprint (Proxy :: Proxy request)
-        responseTypeFingerprint = typeFingerprint (Proxy :: Proxy response)
+    let requestTypeHash = typeHash (Proxy :: Proxy request)
+        responseTypeHash = typeHash (Proxy :: Proxy response)
     JobRequest{..} <- decodeOrErr "jobWorker" req
-    when (jrRequestTypeFingerprint /= requestTypeFingerprint ||
-          jrResponseTypeFingerprint /= responseTypeFingerprint) $ do
+    when (jrRequestTypeHash /= requestTypeHash ||
+          jrResponseTypeHash /= responseTypeHash) $ do
         Left TypeMismatch
-            { expectedResponseTypeFingerprint = responseTypeFingerprint
-            , actualResponseTypeFingerprint = jrResponseTypeFingerprint
-            , expectedRequestTypeFingerprint = requestTypeFingerprint
-            , actualRequestTypeFingerprint = jrRequestTypeFingerprint
+            { expectedResponseTypeHash = responseTypeHash
+            , actualResponseTypeHash = jrResponseTypeHash
+            , expectedRequestTypeHash = requestTypeHash
+            , actualRequestTypeHash = jrRequestTypeHash
             }
     when (jrSchema /= redisSchemaVersion) $ do
         Left MismatchedRequestRedisSchemaVersion

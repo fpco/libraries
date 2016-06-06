@@ -9,12 +9,12 @@ import ClassyPrelude
 import Control.Monad.Logger (logWarn, logInfo)
 import qualified Data.Aeson as Aeson
 import Data.List.NonEmpty
-import Data.Serialize (Serialize, encode)
+import Data.Store (Store, encode)
 import Distributed.Redis
 import Distributed.Types
 import Distributed.Heartbeat
 import FP.Redis
-import Data.TypeFingerprint (TypeFingerprint)
+import Data.Store.TypeHash (TypeHash)
 
 -- * Redis keys
 
@@ -104,7 +104,7 @@ data RequestEvent
     | RequestResponseRead
     deriving (Generic, Show, Typeable)
 
-instance Serialize RequestEvent
+instance Store RequestEvent
 instance Aeson.ToJSON RequestEvent
 
 data EventLogMessage
@@ -210,11 +210,11 @@ defaultJobQueueConfig prefix = JobQueueConfig
     }
 
 data JobRequest = JobRequest
-    { jrRequestTypeFingerprint, jrResponseTypeFingerprint :: !TypeFingerprint
+    { jrRequestTypeHash, jrResponseTypeHash :: !TypeHash
     , jrSchema :: !ByteString
     -- REVIEW: This is a tag to detect if the deployment is compatible with the current
     -- code.
     , jrBody :: !ByteString
     } deriving (Generic, Show, Typeable)
 
-instance Serialize JobRequest
+instance Store JobRequest

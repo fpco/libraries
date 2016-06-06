@@ -24,11 +24,11 @@ module Distributed.RequestSlaves
 import ClassyPrelude
 import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty(..))
-import Data.Serialize (encode)
+import Data.Store (encode)
 import Distributed.Redis
 import Distributed.Types (WorkerId(..), DistributedException(..))
 import FP.Redis
-import Data.Serialize (Serialize)
+import Data.Store (Store)
 import qualified Data.List.NonEmpty as NE
 import Data.Streaming.NetworkMessage
 import qualified Data.Conduit.Network as CN
@@ -46,13 +46,13 @@ data WorkerConnectInfo = WorkerConnectInfo
     { wciHost :: !ByteString
     , wciPort :: !Int
     } deriving (Eq, Show, Ord, Generic, Typeable)
-instance Serialize WorkerConnectInfo
+instance Store WorkerConnectInfo
 
 data WorkerConnectInfoWithWorkerId = WorkerConnectInfoWithWorkerId
     { wciwwiWorkerId :: !WorkerId
     , wciwwiWci :: !WorkerConnectInfo
     } deriving (Eq, Show, Ord, Generic, Typeable)
-instance Serialize WorkerConnectInfoWithWorkerId
+instance Store WorkerConnectInfoWithWorkerId
 
 -- | This command is used by a worker to request that another worker
 -- connects to it.

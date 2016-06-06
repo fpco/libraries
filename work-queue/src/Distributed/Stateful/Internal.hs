@@ -13,9 +13,9 @@ import           Control.Monad.Logger
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Data.Proxy (Proxy(..))
-import qualified Data.Serialize as B
-import           Data.Serialize.Orphans ()
-import           Data.TypeFingerprint
+import           Data.Store (Store)
+import           Data.Store.TypeHash
+import           Data.Store.TypeHash.Orphans ()
 import           Text.Printf (PrintfArg(..))
 
 data StatefulConn m req resp = StatefulConn
@@ -24,13 +24,13 @@ data StatefulConn m req resp = StatefulConn
   }
 
 newtype SlaveId = SlaveId {unSlaveId :: Int}
-  deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Serialize)
+  deriving (Generic, Eq, Ord, Show, Hashable, NFData, Store)
 instance PrintfArg SlaveId where
   formatArg = formatArg . unSlaveId
   parseFormat = parseFormat . unSlaveId
 
 newtype StateId = StateId {unStateId :: Int}
-  deriving (Generic, Eq, Ord, Show, Hashable, NFData, B.Serialize)
+  deriving (Generic, Eq, Ord, Show, Hashable, NFData, Store)
 instance PrintfArg StateId where
   formatArg = formatArg . unStateId
   parseFormat = parseFormat . unStateId
@@ -53,15 +53,10 @@ data SlaveReq state context input
       -- provided to 'saUpdate'.
   | SReqGetStates
   | SReqQuit
-  deriving (Generic, Eq, Show, NFData, B.Serialize)
+  deriving (Generic, Eq, Show, NFData, Store)
 
-instance (HasTypeFingerprint state, HasTypeFingerprint context, HasTypeFingerprint input) => HasTypeFingerprint (SlaveReq state context input) where
-    typeFingerprint _ = combineTypeFingerprints
-        [ typeFingerprint (Proxy :: Proxy state)
-        , typeFingerprint (Proxy :: Proxy context)
-        , typeFingerprint (Proxy :: Proxy input)
-        ]
-    showType _ = "SlaveReq (" ++ showType (Proxy :: Proxy state) ++ ") (" ++ showType (Proxy :: Proxy context) ++ ") (" ++ showType (Proxy :: Proxy input) ++ ")"
+instance (HasTypeHash state, HasTypeHash context, HasTypeHash input) => HasTypeHash (SlaveReq state context input) where
+    typeHash _ = typeHash (Proxy :: Proxy (state, context, input))
 
 data SlaveResp state output
   = SRespResetState
@@ -76,14 +71,10 @@ data SlaveResp state output
   | SRespGetStates !(HMS.HashMap StateId state)
   | SRespError Text
   | SRespQuit
-  deriving (Generic, Eq, Show, NFData, B.Serialize)
+  deriving (Generic, Eq, Show, NFData, Store)
 
-instance (HasTypeFingerprint state, HasTypeFingerprint output) => HasTypeFingerprint (SlaveResp state output) where
-    typeFingerprint _ = combineTypeFingerprints
-        [ typeFingerprint (Proxy :: Proxy state)
-        , typeFingerprint (Proxy :: Proxy output)
-        ]
-    showType _ = "SlaveResp (" ++ showType (Proxy :: Proxy state) ++ ") (" ++ showType (Proxy :: Proxy output) ++ ")"
+instance (HasTypeHash state, HasTypeHash output) => HasTypeHash (SlaveResp state output) where
+    typeHash _ = typeHash (Proxy :: Proxy (state, output))
 
 displayReq :: SlaveReq state context input -> Text
 displayReq (SReqResetState mp) = "SReqResetState (" <> pack (show (HMS.keys mp)) <> ")"

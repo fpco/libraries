@@ -30,7 +30,7 @@ module Distributed.Stateful.Master
 
 import           ClassyPrelude
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import           Control.Monad.Logger (MonadLogger, logError, logWarn, logInfo, logDebug)
+import           Control.Monad.Logger (MonadLogger, logWarn, logInfo, logDebug)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS

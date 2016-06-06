@@ -1,5 +1,10 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ParallelListComp #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -12,11 +17,12 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE DataKinds #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Distributed.StatefulSpec (spec) where
 
 import ClassyPrelude
-import Data.Serialize (Serialize)
+import Data.Store (Store)
 import Test.Hspec hiding (shouldBe)
 import qualified Test.Hspec
 import FP.Redis (MonadConnect)
@@ -25,7 +31,7 @@ import qualified Test.QuickCheck as QC
 import Control.DeepSeq (NFData)
 import qualified Data.HashMap.Strict as HMS
 import System.Random (randomRIO)
-import Data.TypeFingerprint (mkManyHasTypeFingerprint)
+import Data.Store.TypeHash (mkManyHasTypeHash)
 import Distributed.JobQueue.Worker
 import Distributed.JobQueue.Client
 import qualified Data.Conduit.Network as CN
@@ -46,13 +52,13 @@ shouldBe :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
 shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
 
 newtype State = State [Input] -- All the inputs up to now
-  deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq, Ord, NFData)
+  deriving (QC.CoArbitrary, QC.Arbitrary, Show, Store, Eq, Ord, NFData)
 newtype Input = Input Int
-  deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq, Ord, NFData)
+  deriving (QC.CoArbitrary, QC.Arbitrary, Show, Store, Eq, Ord, NFData)
 newtype Output = Output [Input] -- All the inputs up to now
-  deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq, Ord, NFData)
+  deriving (QC.CoArbitrary, QC.Arbitrary, Show, Store, Eq, Ord, NFData)
 
-mkManyHasTypeFingerprint [[t|State|], [t|Input|], [t|Output|], [t|Int|]]
+mkManyHasTypeHash [[t|State|], [t|Input|], [t|Output|], [t|Int|]]
 
 testUpdate ::
      (MonadConnect m)
@@ -189,76 +195,3 @@ fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do
   numSlavesAtStartup <- readIORef numSlavesAtStartupRef
   numSlavesAtShutdown <- readIORef numSlavesAtShutdownRef
   return (numSlavesAtStartup, numSlavesAtShutdown)
-
-{-
-  it "Passes quickcheck comparison with the pure implementation" $
-    QC.property $ QC.forAll QC.arbitrary $
-    \( QC.Blind (function :: Context -> Input -> State -> (State, Output))
-     , initialStates :: [State]
-     , updates :: [(Context, [[Input]])]
-     , numSlaves :: Int
-     ) -> (QC.==>) (numSlaves > 2) $ loggingProperty $ do
-      runSimplePure (MasterArgs (Just 5) Nothing) numSlaves (\a b c -> return (function a b c)) $ \mh -> do
-        let go :: PureState State -> (Context, [[Input]]) -> LoggingT IO (PureState State)
-            go ps (ctx, inputs) = do
-              let sids' = sort (HMS.keys (pureStates ps))
-              let inputMap = HMS.fromList (zip sids' (inputs ++ repeat []))
-              let (ps', outputs') = pureUpdate function ctx inputMap ps
-              -- putStrLn "===="
-              -- print ctx
-              -- print ("inputs", inputMap)
-              -- print ("outputs", outputs')
-              -- print ("before", ps)
-              -- print ("after", ps')
-              sids <- getStateIds mh
-              sort (HS.toList sids) `shouldBe` sids'
-              curStates <- getStates mh
-              curStates `shouldBe` pureStates ps
-              outputs <- update mh ctx inputMap
-              -- print outputs
-              -- print outputs'
-              outputs `shouldBe` outputs'
-              return ps'
-        void $ foldM go (initialPureState initialStates) (take 4 updates)
-        return True
-
-newtype Context = Context Int deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq)
-newtype Input = Input Int deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq)
-newtype State = State Int deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq, NFData)
-newtype Output = Output Int deriving (QC.CoArbitrary, QC.Arbitrary, Show, Serialize, Eq, NFData)
-
-data PureState state = PureState
-    { pureStates :: HMS.HashMap StateId state
-    , pureIdCounter :: Int
-    } deriving (Show)
-
-initialPureState :: [state] -> PureState state
-initialPureState states = PureState
-    { pureStates = HMS.fromList $ zip (map StateId [0..]) states
-    , pureIdCounter = length states
-    }
-
-pureUpdate :: forall state context input output.
-              (context -> input -> state -> (state, output))
-           -> context
-           -> HMS.HashMap StateId [input]
-           -> PureState state
-           -> (PureState state, HMS.HashMap StateId (HMS.HashMap StateId output))
-pureUpdate f context inputs ps = (ps', outputs)
-  where
-    sortedInputs :: [(StateId, [input])]
-    sortedInputs = sortBy (comparing fst) (HMS.toList inputs)
-    labeledInputs :: [(StateId, StateId, input)]
-    labeledInputs =
-      zipWith (\sid' (sid, inp) -> (sid, StateId sid', inp))
-              [pureIdCounter ps ..]
-              (concatMap (\(sid, inps) -> map (sid, ) inps) sortedInputs)
-    ps' = PureState
-      { pureStates = HMS.fromList (map (\(_, sid, (state, _)) -> (sid, state)) results)
-      , pureIdCounter = pureIdCounter ps + length labeledInputs
-      }
-    results :: [(StateId, StateId, (state, output))]
-    results = map (\(sid, sid', input) -> (sid, sid', f context input (pureStates ps HMS.! sid))) labeledInputs
-    outputs :: HMS.HashMap StateId (HMS.HashMap StateId output)
-    outputs = HMS.fromListWith (<>) (map (\(sid, sid', (_, output)) -> (sid, HMS.singleton sid' output)) results)
--}
