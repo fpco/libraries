@@ -6,9 +6,16 @@
 {-# LANGUAGE DataKinds #-}
 module Distributed.StatusSpec (spec) where
 
+import           Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import           Control.Concurrent.MVar
+import           Control.Monad
+import           Control.Monad.IO.Class
 import           Control.Monad.Logger
 import           Data.Store.TypeHash (mkManyHasTypeHash)
+import           Data.ByteString (ByteString)
+import           Data.ByteString.Char8 (pack)
+import           Data.Maybe
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Client
 import           Distributed.JobQueue.Status
@@ -16,16 +23,9 @@ import           Distributed.JobQueue.Worker
 import           Distributed.Redis
 import           Distributed.Types
 import           FP.Redis (MonadConnect, Seconds (..))
-import           Control.Concurrent (threadDelay)
-import           TestUtils
-import           Data.ByteString.Char8 (pack)
-import           Data.ByteString (ByteString)
-import           Control.Monad.IO.Class
-import           Control.Monad
+import           Test.Hspec (Spec)
 import           Test.Hspec.Expectations.Lifted
-import           Control.Concurrent.MVar
-import           Test.Hspec (Spec, it, runIO)
-import           Data.Maybe
+import           TestUtils
 
 $(mkManyHasTypeHash [[t| ByteString |]])
 
@@ -50,16 +50,18 @@ runWithoutLogs :: LoggingT IO a -> IO a
 runWithoutLogs = runStdoutLoggingT . filterLogger (\_ _ -> False)
 
 
+waitForHeartbeat :: IO ()
 waitForHeartbeat = threadDelay $
     3 * 1000 * 1000 * (fromIntegral . unSeconds $ testHeartbeatCheckIvl)
 
+waitShortInterval :: IO ()
 waitShortInterval = threadDelay $ 500 * 1000
 
     
 queueRequests :: MonadConnect m => Redis -> m ()
 queueRequests redis = do
     -- send requests
-    cid <- liftIO $ mapM startClient reqs
+    _ <- liftIO $ mapM startClient reqs
     liftIO waitShortInterval
     -- check that both getAllRequests and the list of pending requests match the submitted jobs
     jqs <- getJobQueueStatus redis
