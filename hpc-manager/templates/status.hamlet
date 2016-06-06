@@ -73,3 +73,15 @@
         <td>#{start}
         <td>#{rid}
         <td>#{reenq}
+
+  <h2>Heartbeat Failures
+
+  <table .table .table-hover>
+    <tr>
+      <th>worker id
+      <th>time of heartbeat failure
+
+    $forall (time, wid) <- jqsHeartbeatFailures jqs
+      <tr>
+        <td>#{decodeUtf8 (unWorkerId wid)}
+        <td>#{show time}
