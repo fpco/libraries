@@ -22,7 +22,6 @@ module TestUtils
 import           ClassyPrelude hiding (keys)
 import           Test.Hspec (Spec, it)
 import           FP.Redis
-import qualified Data.List.NonEmpty as NE
 import           Control.Monad.Logger
 import qualified Data.Text as T
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
