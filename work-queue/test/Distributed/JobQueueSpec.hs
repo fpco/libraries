@@ -174,7 +174,7 @@ spec = do
             (do resp' :: Maybe Response <- withTestJobClient $ \jc -> do
                     rid <- submitTestRequest jc req
                     liftIO (threadDelay (1 * 1000 * 1000))
-                    cancelRequest (Seconds 50) jc rid
+                    cancelRequest (Seconds 50) (jcRedis jc) rid
                     waitForResponse_ jc rid
                 resp' `shouldBe` Nothing
                 workStarted <- readIORef workStartedRef
