@@ -5,6 +5,7 @@ module Handler.Home where
 import Control.Monad.Logger
 import Data.Either
 import Data.Time.Clock
+import           Distributed.Heartbeat (clearHeartbeatFailures)
 import Distributed.JobQueue.Client (cancelRequest)
 import Distributed.Types
 import Distributed.JobQueue.Status
