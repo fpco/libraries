@@ -9,7 +9,7 @@
 module Distributed.JobQueue.Client
     ( JobQueueConfig(..)
     , defaultJobQueueConfig
-    , JobClient
+    , JobClient(..)
     , withJobClient
     , submitRequest
     , waitForResponse
@@ -253,13 +253,13 @@ uniqueRequestId = liftIO (RequestId . UUID.toASCIIBytes <$> UUID.V4.nextRandom)
 --
 -- Note that work might not stop immediately, but it guaranteed to eventually
 -- stop (by default the delay can be up to 10 seconds).
-cancelRequest :: MonadConnect m => Seconds -> JobClient response -> RequestId -> m ()
-cancelRequest expiry JobClient{..} k = do
+cancelRequest :: MonadConnect m => Seconds -> Redis -> RequestId -> m ()
+cancelRequest expiry redis k = do
     $logInfo ("Cancelling request " ++ tshow k)
-    run_ jcRedis (set (cancelKey jcRedis k) cancelValue [EX expiry])
-    run_ jcRedis (del (unVKey (requestDataKey jcRedis k) :| []))
-    run_ jcRedis (del (unVKey (responseDataKey jcRedis k) :| []))
-    run_ jcRedis (lrem (requestsKey jcRedis) 1 (unRequestId k))
+    run_ redis (set (cancelKey redis k) cancelValue [EX expiry])
+    run_ redis (del (unVKey (requestDataKey redis k) :| []))
+    run_ redis (del (unVKey (responseDataKey redis k) :| []))
+    run_ redis (lrem (requestsKey redis) 1 (unRequestId k))
 
 handleWorkerFailure :: (MonadConnect m) => Redis -> WorkerId -> m Bool
 handleWorkerFailure r wid = do

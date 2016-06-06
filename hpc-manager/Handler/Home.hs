@@ -133,8 +133,7 @@ postStatusR = do
         ["cancel"] -> do
             withRedis' config $ \redis ->
                 forM reqs $ \(rid, mwid) -> do
-                    success <- cancelRequest (Seconds 60) (error "TODO: get JobClient from redis and mwid in order to cancel a request") rid  -- cancelRequest (Seconds 60) redis rid mwid -- TODO! 
-                    return (rid, success)
+                    cancelRequest (Seconds 60) redis rid
             let takesAWhile :: Text
                 takesAWhile = "NOTE: it may take a while for computations to cancel, so they will likely still appear as active work items"
             setMessageI $ "Cancellation request applied.  " <> takesAWhile
