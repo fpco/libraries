@@ -5,6 +5,7 @@ module Handler.Home where
 import Control.Monad.Logger
 import Data.Either
 import Data.Time.Clock
+import           Distributed.Heartbeat (clearHeartbeatFailures)
 import Distributed.JobQueue.Client (cancelRequest)
 import Distributed.Types
 import Distributed.JobQueue.Status
@@ -127,13 +128,12 @@ postStatusR = do
                 (, (WorkerId . encodeUtf8 <$> stripPrefix "wid:" v))
                 <$> (RequestId . encodeUtf8 <$> stripPrefix "jqr:" k))
             reqs'
-    when (not (null others')) $ invalidArgs (map fst others')
+    unless (null others') $ invalidArgs (map fst others')
     case map fst cmds of
         ["cancel"] -> do
             withRedis' config $ \redis ->
-                forM reqs $ \(rid, mwid) -> do
-                    success <- cancelRequest (Seconds 60) (error "TODO: get JobClient from redis and mwid in order to cancel a request") rid  -- cancelRequest (Seconds 60) redis rid mwid -- TODO! 
-                    return (rid, success)
+                forM reqs $ \(rid, mwid) ->
+                    cancelRequest (Seconds 60) redis rid
             let takesAWhile :: Text
                 takesAWhile = "NOTE: it may take a while for computations to cancel, so they will likely still appear as active work items"
             setMessageI $ "Cancellation request applied.  " <> takesAWhile
