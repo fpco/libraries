@@ -81,8 +81,8 @@ instance Store WorkerConnectInfoWithWorkerId
 --
 -- These caveats are not necessitated by any aspect of the overall
 -- design, and may be resolved in the future.
-requestSlaves
-    :: (MonadConnect m)
+requestSlaves ::
+       (MonadConnect m)
     => Redis
     -> WorkerConnectInfo
     -> (m () -> m a)
@@ -119,7 +119,7 @@ requestSlaves r wci0 cont = do
         (\() -> sendNotify r (workerRequestsNotify r) >> cont add)
 
 withSlaveRequests ::
-       MonadConnect m
+       (MonadConnect m)
     => Redis
     -> Milliseconds
     -> (NonEmpty WorkerConnectInfo -> m ())

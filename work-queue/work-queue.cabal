@@ -13,10 +13,6 @@ build-type:          Custom
 extra-source-files:  README.md
 cabal-version:       >= 1.10
 
-Flag coverage
-    Description:       Run tests with code coverage.
-    Default:           False
-
 library
   exposed-modules:     Distributed.Types
                        Data.Store.TypeHash.Orphans
@@ -85,56 +81,6 @@ library
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall
-  if flag(coverage)
-      ghc-options:     -fhpc
-
--- executable hpc-example-factorial
---   main-is:             factorial.hs
---   hs-source-dirs:      examples/factorial
---   default-language:    Haskell2010
---   build-depends:       base
---                      , stm
---                      , work-queue
---                      , store
---   ghc-options:         -Wall -threaded
--- 
--- executable hpc-example-war
---   main-is:             best-deck.hs
---   other-modules:       Data.War
---   hs-source-dirs:      examples/war
---   default-language:    Haskell2010
---   build-depends:       base
---                      , containers
---                      , hybrid-vectors
---                      , mwc-random
---                      , primitive
---                      , stm
---                      , vector
---                      , vector-algorithms
---                      , work-queue
---                      , mutable-containers
---                      , store
---   ghc-options:         -Wall -threaded
--- 
--- executable hpc-example-redis
---   main-is:             redis.hs
---   hs-source-dirs:      examples/redis
---   default-language:    Haskell2010
---   build-depends:       base
---                      , redis-fp
---                      , work-queue
---                      , split
---                      , stm
---                      , bytestring
---                      , classy-prelude
---                      , monad-logger
---                      , transformers
---                      , lifted-base
---                      , unix
---                      , semigroups
---                      , thread-file-logger
---                      , store
---   ghc-options:         -Wall -threaded
 
 test-suite wq-test
   type:                exitcode-stdio-1.0

@@ -253,6 +253,9 @@ uniqueRequestId = liftIO (RequestId . UUID.toASCIIBytes <$> UUID.V4.nextRandom)
 --
 -- Note that work might not stop immediately, but it guaranteed to eventually
 -- stop (by default the delay can be up to 10 seconds).
+--
+-- In this window, the worker might be able to complete the request, in which
+-- case the request response might be available.
 cancelRequest :: MonadConnect m => Seconds -> Redis -> RequestId -> m ()
 cancelRequest expiry redis k = do
     $logInfo ("Cancelling request " ++ tshow k)

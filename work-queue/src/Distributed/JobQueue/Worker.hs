@@ -97,7 +97,7 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
         mbReqBs <- receiveRequest r wid rid
         case mbReqBs of
             Nothing -> do
-                $logWarn (workerMsg ("Failed getting the content of request " ++ tshow rid ++ ". This can happen if the requset is cancelled."))
+                $logWarn (workerMsg ("Failed getting the content of request " ++ tshow rid ++ ". This can happen if the request is cancelled."))
                 -- In this case the best we can do is try to re-enqueue: we need to clear the current active key anyway.
                 reenqueueRequest r wid rid
             Just reqBs -> do
@@ -263,10 +263,4 @@ wrapException ex =
 
 getWorkerId :: IO WorkerId
 getWorkerId = do
-    -- REVIEW TODO: Why do we do this process id?
-    {-
-    pid <- getProcessID
-    (w1, w2, w3, w4) <- toWords <$> UUID.nextRandom
-    let w1' = w1 `xor` fromIntegral pid
-    -}
     WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom
