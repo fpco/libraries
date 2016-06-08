@@ -30,8 +30,8 @@ import System.Environment (lookupEnv)
 
 main :: IO ()
 main = hspec $ do
-  it "passes test using incr and get commands (light)" (fuzzTest 5 100 100)
-  stressfulTest $ it "passes test using incr and get commands (heavy)" (fuzzTest 50 1000 1000)
+  flakyTest $ it "passes test using incr and get commands (light)" (fuzzTest 5 100 100)
+  stressfulTest $ flakyTest $ it "passes test using incr and get commands (heavy)" (fuzzTest 50 1000 1000)
 
 fuzzTest :: Int -> Int -> Int -> IO ()
 fuzzTest maxConns threads runs = runFuzzM maxConns $ do
@@ -156,6 +156,14 @@ clearRedisKeys = do
 stressfulTest :: SpecM a () -> SpecM a ()
 stressfulTest m = do
     mbS <- runIO (lookupEnv "NO_STRESSFUL")
+    case mbS of
+        Just "1" -> return ()
+        _ -> m
+
+-- | Does not run the test if we have NO_FLAKY=1 in the env
+flakyTest :: SpecM a () -> SpecM a ()
+flakyTest m = do
+    mbS <- runIO (lookupEnv "NO_FLAKY")
     case mbS of
         Just "1" -> return ()
         _ -> m

@@ -117,8 +117,8 @@ redisIt' msg cont = loggingIt msg $
 
 spec :: Spec
 spec = do
-    redisIt "reports queued requests" queueRequests
-    redisIt' "reports added worker and enqueued job" addWorker
-    redisIt' "reports heartbeat failure" heartbeatFailure
-    redisIt' "reports completed jobs" completeJob
-    redisIt' "clearing the list of heartbeat failures works" clearFailures
+    flakyTest $ redisIt "reports queued requests" queueRequests
+    flakyTest $ redisIt' "reports added worker and enqueued job" addWorker
+    flakyTest $ redisIt' "reports heartbeat failure" heartbeatFailure
+    flakyTest $ redisIt' "reports completed jobs" completeJob
+    flakyTest $ redisIt' "clearing the list of heartbeat failures works" clearFailures
