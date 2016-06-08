@@ -7,6 +7,23 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE MultiWayIf #-}
+{-|
+Module: Distributed.RequestSlaves
+Description: Facilities to connect worker nodes as slaves and masters.
+
+The basic mechanism is as follows:
+
+- Prospective masters broadcast that they accept connections via 'requestSlaves'.
+- The requests can be acted upon by prospective slaves via 'withSlaveRequests'.
+
+These functions are only converned with bringing masters and slaves
+together, not with the actual communication between the nodes.
+
+On top of that, 'acceptSlaveConnections' and 'connectToMaster' are
+used to connect masters and slaves, and initiate communication between
+them in the form of an 'NMApp'.  Slaves are distributed fairly between
+the masters.
+-}
 
 module Distributed.RequestSlaves
     ( -- * Basic machinery
@@ -17,7 +34,7 @@ module Distributed.RequestSlaves
     , connectToMaster
     , connectToAMaster
     , acceptSlaveConnections
-      -- * Testing/debugging
+      -- * Exported for Testing/debugging
     , getWorkerRequests
     ) where
 
@@ -40,8 +57,7 @@ import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import Control.Exception (BlockedIndefinitelyOnMVar)
 
--- * Information for connecting to a worker
-
+-- | Information for connecting to a worker
 data WorkerConnectInfo = WorkerConnectInfo
     { wciHost :: !ByteString
     , wciPort :: !Int
@@ -54,38 +70,15 @@ data WorkerConnectInfoWithWorkerId = WorkerConnectInfoWithWorkerId
     } deriving (Eq, Show, Ord, Generic, Typeable)
 instance Store WorkerConnectInfoWithWorkerId
 
--- | This command is used by a worker to request that another worker
--- connects to it.
---
--- This currently has the following caveats:
---
---   (1) The worker request is not guaranteed to be fulfilled, for
---   multiple reasons:
---
---       - All workers may be busy doing other work.
---
---       - The queue of worker requests might already be long.
---
---       - A worker might pop the worker request and then shut down
---       before establishing a connection.
---
---   (2) A node may get workers connecting to it that it didn't
---   request.  Here's why:
---
---       - When a worker stops being a master, it does not remove its
---       pending worker requests from the list.  This means they can
---       still be popped by workers.  Usually this means that the
---       worker will attempt to connect, fail, and find something else
---       to do.  However, in the case that the server becomes a master
---       again, it's possible that a worker will pop its request.
---
--- These caveats are not necessitated by any aspect of the overall
--- design, and may be resolved in the future.
-requestSlaves ::
-       (MonadConnect m)
+-- | This allows a worker to become a master, and broadcast that it
+-- wants slaves to connect to itself.
+requestSlaves
+    :: (MonadConnect m)
     => Redis
     -> WorkerConnectInfo
+    -- ^ This worker's connection information.
     -> (m () -> m a)
+    -- ^ When a slave connects, this continuation will be called.  As soon as it terminates, the master will stop accepting slaves.
     -> m a
 requestSlaves r wci0 cont = do
     wid <- getWorkerId
@@ -118,15 +111,21 @@ requestSlaves r wci0 cont = do
         (\() -> remove)
         (\() -> sendNotify r (workerRequestsNotify r) >> cont add)
 
+-- | React to requests for slaves.
 withSlaveRequests ::
        (MonadConnect m)
     => Redis
     -> Milliseconds
+    -- ^ Timeout.  'withSlaveRequests' will wait for a notification
+    -- that slaves are requested.  Since notifications are not
+    -- failsafe, it will run after this timeout if no notification was
+    -- received.
     -> (NonEmpty WorkerConnectInfo -> m ())
-    -- A list of masters to connect to, sorted by preference. Note that
-    -- it might be the case that masters are already down. The intended
-    -- use of this list is that you keep traversing it in order until you
-    -- find a master to connect to.
+    -- ^ This function will be applied to the list of the masters that
+    -- accept slaves (sorted by priority, so that the master with the
+    -- fewest connected slaves comes first). Since it is not
+    -- guaranteed that all the masters are still running, the list
+    -- should be traversed until a running master is found.
     -> m void
 withSlaveRequests redis failsafeTimeout f = do
     withSubscribedNotifyChannel (managedConnectInfo (redisConnection redis)) failsafeTimeout (workerRequestsNotify redis) $
@@ -145,6 +144,12 @@ withSlaveRequests redis failsafeTimeout f = do
                             $logWarn ("withSlaveRequests: got error " ++ tshow err ++ ", continuing")
                         Right () -> return ()
 
+-- | Get the list of all 'WorkerConnectInfo' of the masters that accept slave connections.
+--
+-- This list will be ordered, so that masters with fewer slaves are
+-- listed first (to be precise, the number of times a slave connected
+-- to a master are counted, and it is assumed that clients stay
+-- connected to the master as long as the master runs, see issue #134).
 getWorkerRequests :: (MonadConnect m) => Redis -> m [WorkerConnectInfo]
 getWorkerRequests r = do
     resps <- run r (zrangebyscore (workerRequestsKey r) (-1/0) (1/0) False)
@@ -161,6 +166,7 @@ workerRequestsKey r = ZKey $ Key $ redisKeyPrefix r <> "connect-requests"
 -- * Utilities to run master/slaves
 -----------------------------------------------------------------------
 
+-- | Establish a connection to a master worker.
 connectToAMaster :: forall m slaveSends masterSends.
        (MonadConnect m, Sendable slaveSends, Sendable masterSends)
     => NMApp slaveSends masterSends m ()
@@ -168,6 +174,8 @@ connectToAMaster :: forall m slaveSends masterSends.
     -- most once, but it could be not run if we couldn't connect to any
     -- master.
     -> NonEmpty WorkerConnectInfo
+    -- ^ List of masters.  The first one that currently accepts slave
+    -- connections will be used.
     -> m ()
 connectToAMaster cont0 wcis0 = do
     nmSettings <- defaultNMSettings
@@ -197,24 +205,37 @@ connectToAMaster cont0 wcis0 = do
                     else throwIO err
 
 -- | Runs a slave that runs an action when it connects to master
+--
+-- Slaves that connect via 'connectToMaster' will be distributed
+-- fairly to all masters, so that the master that had the fewest
+-- slaves connect to it so far will get the next slave.
+--
+-- Note that it is assumed that slaves stay connected to a master as
+-- long as that master is running; there is not yet a means to
+-- explicitly disconnect a client from a master and prioritize that
+-- master for new clients (see issue #134).
 connectToMaster :: forall m slaveSends masterSends void.
        (MonadConnect m, Sendable slaveSends, Sendable masterSends)
     => Redis
     -> Milliseconds
+    -- ^ Timeout as in 'withSlaveRequests'
     -> NMApp slaveSends masterSends m () -- ^ What to do when we connect
     -> m void
 connectToMaster r failsafeTimeout cont = withSlaveRequests r failsafeTimeout (connectToAMaster cont)
 
+-- | Exceptions that we anticipate when trying to connect.
 acceptableException :: SomeException -> Bool
 acceptableException err
     | Just (_ :: IOError) <- fromException err = True
     | Just (_ :: NetworkMessageException) <- fromException err = True
     | True = False
 
+-- | Create a new unique 'WorkerId'.
 getWorkerId :: (MonadIO m) => m WorkerId
 getWorkerId = do
     liftIO (WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom)
 
+-- | Run a master that listens to slaves, and request slaves to connect.
 acceptSlaveConnections :: forall m masterSends slaveSends a.
        (MonadConnect m, Sendable masterSends, Sendable slaveSends)
     => Redis
