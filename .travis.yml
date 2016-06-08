@@ -37,4 +37,4 @@ services:
   - redis-server
 
 script:
- - env NO_FLAKY=1 stack --no-terminal $ARGS test --haddock
+ - env NO_STRESSFUL=1 NO_FLAKY=1 stack --no-terminal $ARGS test --haddock
