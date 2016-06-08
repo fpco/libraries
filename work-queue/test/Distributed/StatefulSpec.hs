@@ -114,7 +114,7 @@ genericSpec runner = do
     runner (testMasterArgs (Just (10, 500)) 2) 1 (performSimpleTest 10)
   loggingIt "Passes simple comparison with pure implementation (10 slaves)" $
     runner (testMasterArgs (Just (10, 500)) 3) 10 (performSimpleTest 100)
-  loggingIt "Passes simple comparison with pure implementation (50 slaves)" $
+  stressfulTest $ loggingIt "Passes simple comparison with pure implementation (50 slaves)" $
     runner (testMasterArgs (Just (10, 500)) 5) 50 (performSimpleTest 1000)
 
 spec :: Spec
@@ -151,8 +151,9 @@ spec = do
           -- Check that there are no masters anymore
           wcis <- getWorkerRequests r
           wcis `shouldBe` [])
-    -- redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
-    redisIt_ "fullfills all requests (long, few)" $ do
+    stressfulTest $
+      redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
+    stressfulTest $ redisIt_ "fullfills all requests (long, few)" $ do
       (numSlavesAtStartup, numSlavesAtShutdown) <- fullfillsAllRequests (Just (10, 500)) 10 10 30
       let increased = flip execState (0 :: Int) $
             forM_ (HMS.toList numSlavesAtStartup) $ \(reqId, startup) -> do

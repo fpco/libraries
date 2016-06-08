@@ -37,4 +37,4 @@ before_script:
  - redis-server &
 
 script:
- - stack --no-terminal $ARGS test --no-rerun-tests --haddock
+ - env NO_FLAKY=1 stack --no-terminal $ARGS test --haddock

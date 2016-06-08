@@ -137,7 +137,7 @@ spec = do
         fmap (either (absurd . NE.head) id) $ Async.race
             (Async.mapConcurrently (\x -> runEchoSlave r (SlaveId x) 0) (NE.fromList [1..numSlaves]))
             (mapConcurrently_ (\mid -> runMasterCollectResults r (MasterId mid) numSlaves) [1..numMasters])
-    redisIt "Echo with many masters and many slaves (long)" $ \r -> do
+    stressfulTest $ redisIt "Echo with many masters and many slaves (long)" $ \r -> do
         let numSlaves :: Int = 10
         let numMasters :: Int = 5
         let killRandomly_ = killRandomly KillRandomly

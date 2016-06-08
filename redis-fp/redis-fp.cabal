@@ -114,5 +114,6 @@ test-suite fuzz-test
                      , vector
                      , classy-prelude
                      , lifted-async
+                     , hspec-core
   ghc-options:         -Wall -threaded
   default-language:    Haskell2010

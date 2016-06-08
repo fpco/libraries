@@ -17,10 +17,13 @@ module TestUtils
     , randomThreadDelay
     , KillRandomly(..)
     , killRandomly
+    , stressfulTest
+    , flakyTest
     ) where
 
 import           ClassyPrelude hiding (keys)
 import           Test.Hspec (Spec, it)
+import           Test.Hspec.Core.Spec (SpecM, runIO)
 import           FP.Redis
 import           Control.Monad.Logger
 import qualified Data.Text as T
@@ -30,6 +33,7 @@ import           Control.Concurrent (threadDelay)
 import qualified Test.QuickCheck as QC
 import           Distributed.JobQueue.Worker
 import           Distributed.Heartbeat
+import           System.Environment (lookupEnv)
 
 import           Distributed.Redis
 
@@ -107,3 +111,20 @@ killRandomly KillRandomly{..} action = if krRetries < 1
                 Left () -> go (n - 1)
                 Right x -> return x
 
+-- | Does not run the action if we have NO_STRESSFUL=1 in the env
+stressfulTest :: SpecM a () -> SpecM a ()
+stressfulTest m = do
+    mbS <- runIO (lookupEnv "NO_STRESSFUL")
+    case mbS of
+        Just "1" -> return ()
+        _ -> m
+
+-- | Does not run the test if we have NO_FLAKY=1 in the env
+flakyTest :: SpecM a ()
+flakyTest m = do
+    mbS <- runIO (lookupEnv "NO_FLAKY")
+    case mbS of
+        Just "1" -> return ()
+        _ -> m
+
+flakyTest m = 

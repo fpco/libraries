@@ -11,6 +11,7 @@ module Main where
 
 import ClassyPrelude
 import Test.Hspec (it, hspec)
+import Test.Hspec.Core.Spec (SpecM, runIO)
 import System.Random
 import FP.Redis (Connection, VKey(..), Key(..))
 import qualified Data.Map as M
@@ -25,11 +26,12 @@ import Control.Monad.Base (MonadBase)
 import Prelude (read)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Control.Monad.Reader (asks)
+import System.Environment (lookupEnv)
 
 main :: IO ()
 main = hspec $ do
   it "passes test using incr and get commands (light)" (fuzzTest 5 100 100)
-  it "passes test using incr and get commands (heavy)" (fuzzTest 50 1000 1000)
+  stressfulTest $ it "passes test using incr and get commands (heavy)" (fuzzTest 50 1000 1000)
 
 fuzzTest :: Int -> Int -> Int -> IO ()
 fuzzTest maxConns threads runs = runFuzzM maxConns $ do
@@ -149,3 +151,11 @@ clearRedisKeys = do
   withConnection $ \redis -> do
     matches <- liftIO $ R.runCommand redis $ R.keys (testPrefix <> "*")
     liftIO $ mapM_ (R.runCommand_ redis . R.del) (LNE.nonEmpty matches)
+
+-- | Does not run the action if we have NO_STRESSFUL=1 in the env
+stressfulTest :: SpecM a () -> SpecM a ()
+stressfulTest m = do
+    mbS <- runIO (lookupEnv "NO_STRESSFUL")
+    case mbS of
+        Just "1" -> return ()
+        _ -> m

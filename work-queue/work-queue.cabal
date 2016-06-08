@@ -174,4 +174,5 @@ executable hpc-example-stateful
                      , directory
                      , transformers
                      , time
+                     , hspec-core
   ghc-options:         -Wall -threaded
