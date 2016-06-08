@@ -5,6 +5,11 @@ cache:
   directories:
   - $HOME/.stack
   - ".stack-work"
+  - "redis-fp/.stack-work"
+  - "thread-file-logger/.stack-work"
+  - "work-queue/.stack-work"
+  - "hpc-manager/.stack-work"
+  - "th-relative-paths/.stack-work"
 
 matrix:
   include:
