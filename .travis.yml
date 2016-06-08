@@ -11,12 +11,12 @@ matrix:
     compiler: ": #stack lts-3"
     addons: {apt: {packages: [libgmp-dev]}}
 
-  - env: BUILD=stack ARGS="--stack-yaml=stack-lts-5.yaml"
-    compiler: ": #stack lts-5"
+  - env: BUILD=stack ARGS="--stack-yaml=stack-lts-6.yaml"
+    compiler: ": #stack lts-6"
     addons: {apt: {packages: [libgmp-dev]}}
 
   allow_failures:
-  - env: BUILD=stack ARGS="--stack-yaml=stack-lts-5.yaml"
+  - env: BUILD=stack ARGS="--stack-yaml=stack-lts-6.yaml"
 
 before_install:
  - unset CC

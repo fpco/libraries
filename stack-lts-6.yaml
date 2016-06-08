@@ -1,15 +1,12 @@
-resolver: lts-5.0
+resolver: lts-6.2
 extra-deps:
   - retry-0.6
-<<<<<<< HEAD
   - hspec-expectations-lifted-0.5.0
-=======
   - fail-4.9.0.0
   - th-lift-instances-0.1.7
   - th-orphans-0.13.1
   - th-reify-many-0.1.6
   - th-utilities-0.1.1.0
->>>>>>> origin/master
 packages:
   - ./redis-fp
   - ./thread-file-logger
