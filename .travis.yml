@@ -16,7 +16,7 @@ matrix:
   - env: BUILD=stack ARGS="--stack-yaml=stack-lts-3.yaml"
     compiler: ": #stack lts-3"
     addons: {apt: {packages: [libgmp-dev]}}
-
+#
 #  - env: BUILD=stack ARGS="--stack-yaml=stack-lts-6.yaml"
 #    compiler: ": #stack lts-6"
 #    addons: {apt: {packages: [libgmp-dev]}}
