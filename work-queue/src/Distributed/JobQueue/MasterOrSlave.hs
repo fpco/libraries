@@ -6,7 +6,10 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE MultiWayIf #-}
-
+{-|
+Module: Distributed.JobQueue.MasterOrSlave
+Description: Spawn nodes that act as masters or slaves, as needed.
+-}
 module Distributed.JobQueue.MasterOrSlave
     ( runMasterOrSlave
     ) where
@@ -28,12 +31,20 @@ data MasterOrSlave = Idle | Slave | Master
 
 -- REVIEW: To request slaves, there is a separate queue from normal requests, the
 -- reason being that we want to prioritize slave requests over normal requests.
+
+-- | Watch both requests for workers and slaves, and perform a request
+-- whenever currently idle.
+--
+-- This function will concurrently watch for requests for master and
+-- slave nodes.  It will optimistically try to perform each request
+-- sent.  If it is currently busy, it will abandon and reschedule the
+-- new request again.
 runMasterOrSlave :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
     -> (Redis -> NonEmpty WorkerConnectInfo -> m ())
     -- ^ Slave function. The slave function should try to connect to the master
-    -- with 'connectToMaster', which will do the right thing with the list of
+    -- with 'connectToAMaster', which will do the right thing with the list of
     -- candidate masters.
     -> (Redis -> RequestId -> request -> m (Reenqueue response))
     -- ^ Master function.
