@@ -154,7 +154,7 @@ data JobQueueConfig = JobQueueConfig
     { jqcRedisConfig :: !RedisConfig
     -- ^ Configuration of communication with redis.
     , jqcHeartbeatConfig :: !HeartbeatConfig
-    -- ^ Configuration for heartbeat checking.
+    -- ^ Configuration for heartbeat sending and checking.
     --
     -- REVIEW: This config is used by both the client and the worker to
     -- set up heartbeats. The documentation is elsewhere.
@@ -164,17 +164,16 @@ data JobQueueConfig = JobQueueConfig
     -- the request data, it will fail and the request will be answered
     -- with 'RequestMissingException'.
     , jqcResponseExpiry :: !Seconds
-    -- ^ How many seconds the response data should be kept in redis. The
-    -- longer it's kept in redis, the more opportunity there is to
-    -- eliminate redundant work, if identical requests are made. A
-    -- longer expiry also allows more time between sending a response
-    -- notification and the client reading its data. If the client finds
-    -- that the response is missing, 'ResponseMissingException' is
-    -- thrown.
+    -- ^ How many seconds the response data should be kept in
+    -- redis. The longer it's kept in redis, the more opportunity
+    -- there is to eliminate redundant work, if identical requests are
+    -- made (where identical means that the same request id was used
+    -- - the request body is not inspected for caching purposes).
     --
-    -- REVIEW: With "identical" here we're only talking about the request
-    -- id, so if we resubmit the request _with the same request id_, the
-    -- response will be cached. The body of the request is irrelevant.
+    -- A longer expiry also allows more time between sending a
+    -- response notification and the client reading its data. If the
+    -- client finds that the response is missing,
+    -- 'ResponseMissingException' is thrown.
     , jqcEventExpiry :: !Seconds
     -- ^ How many seconds an 'EventLogMessage' remains in redis.
     , jqcCancelCheckIvl :: !Seconds

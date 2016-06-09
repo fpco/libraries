@@ -10,6 +10,17 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveTraversable #-}
+{-|
+Module: Distributed.JobQueue.Worker
+Description: Worker that fetches and performs jobs from a job queue.
+
+The heart of this module is 'jobWorker'.  It spawns a worker that
+continouusly pulls jobs from the queue, performing a given function on
+them.
+
+Sending of heartbeats, as well as watching for job cancellation, are
+handled automatically.
+-}
 
 -- This module provides a job-queue with heartbeat checking.
 module Distributed.JobQueue.Worker
@@ -42,6 +53,19 @@ import Data.Typeable (typeOf)
 -- | Implements a compute node which responds to requests and never
 -- returns.
 --
+-- This function will continuously monitor the job queue, picking one
+-- job at a time for execution.
+--
+-- For each job it executes, it will perform the provided function,
+-- and send the result back.
+--
+-- While performing a job, it will repeatedly check if the job has
+-- been canceled, in which case it will abort the job and pick the
+-- next.
+--
+-- Heartbeats are sent periodically to signal that the worker is alive
+-- and connected to the job queue.
+--
 -- REVIEW: It uses an atomic redis operation (rpop and lpush) to get stuff from redis,
 -- it's not entirely clear who wins when there is contention.
 -- REVIEW TODO: Here there is some ambiguity on when we "save" a worker: for example
@@ -69,6 +93,10 @@ jobWorker config@JobQueueConfig {..} f = do
                     -- writeIORef everConnectedRef True
                     jobWorkerThread config r wid waitForReq (f r))
 
+-- | A specialised 'Maybe' to indicate the result of a job: If the job
+-- successfull produced a result @a@, it will yield it via
+-- @DontReenqueue a@.  If it was not successful, it returns
+-- @Reenqueue@ to signal that the job should be run again.
 data Reenqueue a
     = DontReenqueue !a
     | Reenqueue
