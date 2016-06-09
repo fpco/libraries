@@ -1,22 +1,24 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-
+{-|
+Module: Distributed.JobQueue.Status
+Description: Query the status of a job queue
+-}
 module Distributed.JobQueue.Status
-    ( JobQueueStatus(..)
+    ( -- * Status of the workqueue
+      JobQueueStatus(..)
     , WorkerStatus(..)
-    , RequestStatus(..)
     , getJobQueueStatus
-    -- * Stats
+      -- * Stats of requests
     , RequestStats(..)
     , getRequestStats
     , getAllRequestStats
     , getAllRequests
-    -- * Re-exports from Shared
+      -- * Re-exports from Shared
     , RequestEvent(..)
     , getRequestEvents
     ) where
@@ -24,35 +26,33 @@ module Distributed.JobQueue.Status
 import           ClassyPrelude hiding (keys)
 import qualified Data.Text as T
 import           Data.Time
-import           Data.Time.Clock.POSIX
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Internal
 import           Distributed.Redis
 import           Distributed.Types
 import           FP.Redis
 
+-- | Summary of the status of the job queue.
 data JobQueueStatus = JobQueueStatus
     { jqsLastHeartbeat :: !(Maybe UTCTime)
-    -- REVIEW: This is the last time a Client checked an heartbeat from a worker.
+    -- ^ This is the last time a Client checked an heartbeat from a worker.
     , jqsPending :: ![RequestId]
+    -- ^ 'RequestId's of jobs that have been submitted and are still pending.
     , jqsWorkers :: ![WorkerStatus]
     -- ^ All workers that have passed their last heartbeat check
     -- (those performing work, and those that are idle).
     , jqsHeartbeatFailures :: ![(UTCTime, WorkerId)]
-    -- ^ Chronological list of hearbeat failures
+    -- ^ Chronological list of hearbeat failures.
     } deriving Show
 
+-- | Status of an individual worker.
 data WorkerStatus = WorkerStatus
     { wsWorker :: !WorkerId
     , wsLastHeartbeat :: !(Maybe UTCTime)
-    -- ^ REVIEW: This is the last heartbeat _sent_ by the worker (it might have not been
+    -- ^ This is the last heartbeat _sent_ by the worker (it might have not been
     -- received by anyone).
     , wsRequest :: !(Maybe RequestId)
-    } deriving Show
-
-data RequestStatus = RequestStatus
-    { rsId :: !RequestId
-    , rsStart :: !(Maybe POSIXTime)
+    -- ^ 'RequestId' of the request this worker is currently handling (if any).
     } deriving Show
 
 getJobQueueStatus :: MonadConnect m => Redis -> m JobQueueStatus
@@ -99,6 +99,7 @@ getWorkerRequest r wid = do
                               , "-- a request list should have zero or one element."]
         Left (ex :: SomeException) -> liftIO . throwIO $ ex
 
+-- | Stats of an individual request.
 data RequestStats = RequestStats
     { rsEnqueueTime :: Maybe UTCTime
     , rsReenqueueCount :: Int
@@ -107,9 +108,10 @@ data RequestStats = RequestStats
     , rsComputeTime :: Maybe NominalDiffTime
     , rsTotalTime :: Maybe NominalDiffTime
     , rsFetchCount :: Int
-    -- REVIEW: This is the number of times the request has been read by the client.
+    -- ^ number of times the response has been read by clients.
     }
 
+-- | Retrieve stats for an individual request.
 getRequestStats :: MonadConnect m => Redis -> RequestId -> m (Maybe RequestStats)
 getRequestStats r k = do
     evs <- getRequestEvents r k
@@ -125,6 +127,7 @@ getRequestStats r k = do
             rsTotalTime = diffUTCTime <$> rsComputeFinishTime <*> rsEnqueueTime
             rsFetchCount = length [() | (_, RequestResponseRead) <- evs]
 
+-- | Retrieve 'RequestId's of all requests.
 getAllRequests :: MonadConnect m => Redis -> m [RequestId]
 getAllRequests r =
     fmap (mapMaybe (fmap RequestId . (stripSuffix ":events" =<<) . stripPrefix requestPrefix . unKey)) $
@@ -132,6 +135,7 @@ getAllRequests r =
   where
     requestPrefix = redisKeyPrefix r <> "request:"
 
+-- | Retrieve stats of all requests.
 getAllRequestStats :: MonadConnect m => Redis -> m [(RequestId, RequestStats)]
 getAllRequestStats r =
     fmap catMaybes . mapM (\k -> fmap (k,) <$> getRequestStats r k) =<< getAllRequests r
