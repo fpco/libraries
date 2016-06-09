@@ -6,16 +6,33 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
+{-|
+Module: Distributed.JobQueue.Client
+Description: Submit requests to a job queue, and collect their results.
+
+This module implements the client side of a job queue: submitting
+results, cancelling them, and collecting their results.
+
+The function 'withJobClient' can be used to create a 'JobClient'.  A
+'JobClient' is needed to submit requests to the job queue, and to get
+results of requests.  Additionally, a client will check the heartbeats
+of all connected worker nodes as long as it is running.
+-}
 module Distributed.JobQueue.Client
-    ( JobQueueConfig(..)
+    ( -- * Types and configuration
+      JobQueueConfig(..)
     , defaultJobQueueConfig
-    , JobClient(..)
+    , JobClient (..) -- TODO: should we hide the constructor? It's not intended to create a JobClient manually.
+      -- * Provide a 'JobClient'
     , withJobClient
+      -- * Submitting requests and retrieving results
     , submitRequest
     , waitForResponse
     , waitForResponse_
     , checkForResponse
+      -- * Cancel requests
     , cancelRequest
+      -- * Auxilliary functions
     , uniqueRequestId
     ) where
 
@@ -40,6 +57,9 @@ import           Data.Void (absurd)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID.V4
 
+-- | A 'JobClient' is needed to submit requests and retrieve results.
+--
+-- Use 'withJobClient' to provide a 'JobClient'.
 data JobClient response = JobClient
     { jcConfig :: !JobQueueConfig
     , jcResponseWatchers :: !ResponseWatchers
@@ -53,19 +73,20 @@ data ResponseWatcher = ResponseWatcher
 
 type ResponseWatchers = MVar (HMS.HashMap RequestId (TVar ResponseWatcher))
 
--- | Start a new job-queue client, which will run forever. For most
--- usecases, this should only be invoked once for the process, usually
--- on initialization.
+-- | Start a new job-queue client, and perform the continuation passed on it.
 --
--- The client does two things:
+-- As long as the client runs (i.e., until it is garbage collected), it
 --
--- 1. Listening for responses from workers.
+-- * can be used to submit new requests via 'submitRequest'
 --
--- 2. Checking for worker heartbeat responses, and handling heartbeat
---    failures.
+-- * can be used to query/wait for responses using 'waitForResponse',
+-- 'waitForResponse_', and 'checkForResponse'
 --
--- REVIEW TODO: The client is not run forever anymore. It's now garbage
--- collected. Update comment.
+-- * repeatedly checks for worker heartbeats.  When it detects a
+-- heartbeat failure, it will remove the worker from the list of
+-- connected workers, and put the request it was processing back on
+-- the queue for rescheduling.
+--
 -- REVIEW: We need a thread here for the client to check the heartbeats and
 -- to subscribe to the channel receiving incoming response notifications.
 withJobClient :: forall m response a.
@@ -115,7 +136,11 @@ jobClientThread JobClient{..} = do
 submitRequest :: forall request response m.
        (MonadConnect m, Sendable request, Sendable response)
     => JobClient response
+    -- ^ Client that will schedule the request (to generate a client,
+    -- use 'withJobClient')
     -> RequestId
+    -- ^ Unique Id that will reference this request.  Can be generated
+    -- with 'uniqueRequestId'.
     -> request
     -> m ()
 submitRequest JobClient{..} rid request = do
@@ -228,7 +253,7 @@ waitForResponse jc@JobClient{..} rid cont = do
                         else hm
                 Nothing -> throwM (InternalJobQueueException ("Could not find entry for request " <> tshow rid <> " in response watchers."))
 
--- | Returns immediately with the request, if present.
+-- | Returns immediately with the response, if present.
 checkForResponse ::
        (MonadConnect m, Sendable response)
     => JobClient response
@@ -241,6 +266,7 @@ checkForResponse JobClient{..} rid = do
         addRequestEvent jcRedis rid RequestResponseRead
         return result
 
+-- | Generate a unique (UUID-based) 'RequestId'.
 uniqueRequestId :: (MonadIO m) => m RequestId
 uniqueRequestId = liftIO (RequestId . UUID.toASCIIBytes <$> UUID.V4.nextRandom)
 
