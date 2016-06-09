@@ -190,7 +190,7 @@ data JobQueueConfig = JobQueueConfig
 --
 -- * Uses 'defaultRedisConfig'.
 --
--- * Requests, responses, and heartbeat failures expire after an hour.
+-- * Requests and responses expire after an hour.
 --
 -- * 'EventLogMessage's expire after a day.
 --
