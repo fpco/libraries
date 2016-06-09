@@ -49,7 +49,7 @@ spec = do
                 res <- nmRead app
                 res `shouldBe` True
         finished :: Either () () <- Async.race
-            (liftIO (threadDelay (1000 * 1000)))
+            (liftIO (threadDelay (5 * 1000 * 1000)))
             (runClientAndServer client server)
         when (finished == Left ()) $ fail "Client / server needed to be killed"
     loggingIt "can yield a value from the client" $ do
