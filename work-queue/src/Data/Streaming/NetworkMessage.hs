@@ -11,16 +11,26 @@
 {-# LANGUAGE ViewPatterns               #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE RecordWildCards #-}
--- | Pass well-typed messages across a network connection, including heartbeats.
---
--- Built on top of "Data.Streaming.Network". This module handles all heartbeat
--- checks and ping sending, and uses a handshake protocol to ensure that both
--- sides of the connection intend to send the same type of data.
---
--- Note that if the two sides of your connection are compiled against different
--- versions of libraries, it's entirely possible that 'Typeable' and 'Store'
--- instances may be incompatible, in which cases guarantees provided by the
--- handshake will not be accurate.
+{-|
+Module: Data.Streaming.NetworkMessage
+Description: Pass well-typed messages across a network connection.
+
+Built on top of "Data.Streaming.Network". This module uses a handshake
+protocol to ensure that both sides of the connection intend to send
+the same type of data.
+
+Valid message types must be instances of 'Store' for serialisation,
+and 'HasTypeHash' for the handshake.
+
+In addition to the types of the messages, the handshake also includes
+a hash of the executable.  Thus,
+
+* Both parties of the connection have to be implemented in the same
+  executable
+
+* It is guaranteed that there is no mismatch in the serialisation
+  formats due to different library versions.
+-}
 module Data.Streaming.NetworkMessage
     ( -- * Types
       NMApp
@@ -28,8 +38,9 @@ module Data.Streaming.NetworkMessage
     , nmAppData
     , Sendable
     , NetworkMessageException(..)
-      -- * Functions
+      -- * Running an 'NMApp'
     , runNMApp
+      -- * Functions for communication
     , nmWrite
     , nmRead
       -- * Settings
@@ -53,11 +64,12 @@ import           Network.Socket (socketPort)
 import           System.Executable.Hash (executableHash)
 import           FP.Redis (MonadConnect)
 
+-- | Exceptions specific to "Data.Streaming.NetworkMessage".
 data NetworkMessageException
-    -- | This is thrown by 'runNMApp', during the initial handshake,
-    -- when the two sides of the connection disagree about the
-    -- datatypes being sent, or when there is a mismatch in executable
-    -- hash.
+    -- | This is thrown by 'runNMApp', when the initial handshake
+    -- fails.  This either means that the two sides of the connection
+    -- disagree about the datatypes being sent, or that they are not
+    -- part of the same executable.
     = NMMismatchedHandshakes Handshake Handshake
     -- | This is thrown by 'runNMApp' when there's an error decoding
     -- data sent by the other side of the connection.  This either
@@ -75,13 +87,13 @@ instance Store NetworkMessageException
 -- application (@a@). Restrictions on these types:
 --
 -- * @iSend@ and @youSend@ must both be instances of 'Sendable'.  In
--- other words, they must both implement 'Typeable' and 'Store'.
+-- other words, they must both implement 'HasTypeHash' and 'Store'.
 --
 -- * @m@ must be an instance of 'MonadBaseControl' 'IO'.
 --
 -- * When writing a server, @a@ must be unit, @()@, otherwise no restrictions.
 --
--- Like the "Data.Streaming.Network" API, your application takes a value- in
+-- Like the "Data.Streaming.Network" API, your application takes a value -in
 -- this case of type 'NMAppData'- which is used to interact with the other side
 -- of the connection. Please see relevant functions exposed by this module to
 -- interact with that datatype.
@@ -105,6 +117,7 @@ data NMAppData iSend youSend = NMAppData
 nmWrite :: (MonadIO m, Store iSend) => NMAppData iSend youSend -> iSend -> m ()
 nmWrite nm iSend = liftIO (appWrite (nmAppData nm) (encode iSend))
 
+-- | Read a message from the other side of the connection.
 nmRead  :: (MonadConnect m, Store youSend) => NMAppData iSend youSend -> m youSend
 nmRead NMAppData{..} = liftIO (appGet "nmRead" nmByteBuffer nmAppData)
 
@@ -113,7 +126,7 @@ nmRead NMAppData{..} = liftIO (appGet "nmRead" nmByteBuffer nmAppData)
 -- 'Nothing' is returned.
 appGet :: (Store a)
        => String
-       -> ByteBuffer    -- ^ 'ByteBuffer' for streaming
+       -> ByteBuffer  -- ^ 'ByteBuffer' for streaming
        -> AppData
        -> IO a  -- ^ result
 appGet loc bb ad =
@@ -127,6 +140,7 @@ appGet loc bb ad =
             else cont bs >>= loop
     loop (S.Done (S.Message x)) = return x
 
+-- | Data compared between both parties during the initial handshake.
 data Handshake = Handshake
     { hsISend     :: TypeHash
     , hsYouSend   :: TypeHash
@@ -135,6 +149,8 @@ data Handshake = Handshake
     deriving (Generic, Show, Eq, Typeable)
 instance Store Handshake
 
+-- | Construct data for the handshake from the 'TypeHash'es of the
+-- message types, and the executable hash.
 mkHandshake
     :: forall iSend youSend m a. (HasTypeHash iSend, HasTypeHash youSend)
     => NMApp iSend youSend m a -> Maybe ByteString -> Handshake
@@ -194,5 +210,6 @@ getPortAfterBind ss = do
             error "Port will never get bound, thread got blocked indefinitely."
         )
 
+-- | Utility for encoding a value after wrapping it in a 'S.Message'.
 encode :: Store a => a -> ByteString
 encode = S.encodeMessage . S.Message
