@@ -117,8 +117,8 @@ clearFailuresTest redis = do
 
 spec :: Spec
 spec = do
-    redisIt "reports queued requests" queueRequestsTest
-    redisIt "reports added worker and enqueued job" addWorkerTest
-    redisIt "reports heartbeat failure" heartbeatFailureTest
-    redisIt "reports completed jobs" completeJobTest
-    redisIt "clearing the list of heartbeat failures works" clearFailuresTest
+    flakyTest $ redisIt "reports queued requests" queueRequestsTest
+    flakyTest $ redisIt "reports added worker and enqueued job" addWorkerTest
+    flakyTest $ redisIt "reports heartbeat failure" heartbeatFailureTest
+    flakyTest $ redisIt "reports completed jobs" completeJobTest
+    flakyTest $ redisIt "clearing the list of heartbeat failures works" clearFailuresTest
