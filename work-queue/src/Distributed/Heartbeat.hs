@@ -3,18 +3,35 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
+{-|
+Module: Distributed.Heartbeat
+Description: Keep track of failed workers by via heartbeats.
+
+Workers are supposed to use 'withHeartbeats' to periodically send a
+heartbeat to redis, wile performing some other action.
+
+The function 'withCheckHeartbeats' will periodically check the
+heartbeats of all workers that have sent at least one successful
+heartbeat.
+
+-}
+
 module Distributed.Heartbeat
-    ( HeartbeatConfig(..)
+    ( -- * Configuration
+      HeartbeatConfig(..)
     , defaultHeartbeatConfig
+      -- * Sending and checking heartbeats
     , checkHeartbeats
     , withCheckHeartbeats
     , withHeartbeats
+      -- * Query heartbeat status
     , deadWorkers
-    , clearHeartbeatFailures
     , activeOrUnhandledWorkers
     , lastHeartbeatCheck
     , lastHeartbeatForWorker
     , lastHeartbeatFailureForWorker
+      -- * Clear list of heartbeat failures
+    , clearHeartbeatFailures
     ) where
 
 import ClassyPrelude
@@ -43,51 +60,70 @@ data HeartbeatConfig = HeartbeatConfig
     -- substantially larger than 'hcSenderIvl'.
     } deriving (Eq, Show)
 
+-- | Default 'HeartbeatConfig'.
+--
+-- Heartbeats are sent every 15 seconds, checked every 30 seconds.
 defaultHeartbeatConfig :: HeartbeatConfig
 defaultHeartbeatConfig = HeartbeatConfig
     { hcSenderIvl = Seconds 15
     , hcCheckerIvl = Seconds 30
     }
 
--- | A sorted set of 'WorkerId's that are currently thought to be running. The
--- score of each is its timestamp.
+-- | Redis key used to collect the most recent heartbeat of nodes, in
+-- a sorted set with the timestamp of the last heartbeat as key.
 heartbeatActiveKey :: Redis -> ZKey
 heartbeatActiveKey r = ZKey $ Key $ redisKeyPrefix r <> "heartbeat:active"
 
--- | Timestamp for the last time the heartbeat check successfully ran.
-heartbeatLastCheckKey :: Redis -> VKey
-heartbeatLastCheckKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:last-check"
-
 -- | A sorted set of 'WorkerId's that are considered dead, i.e., they
--- failed a heartbeat check.  Score is the time of the unsuccessful
--- heartbeat check.
+-- failed their last heartbeat check.  Score is the time of the
+-- unsuccessful heartbeat check.
 heartbeatDeadKey :: Redis -> ZKey
 heartbeatDeadKey r = ZKey $ Key $ redisKeyPrefix r <> "heartbeat:dead"
 
--- | Returns all the heartbeats currently in redis.
+-- | Redis ey to store the timestamp for the last time the heartbeat check successfully ran.
+heartbeatLastCheckKey :: Redis -> VKey
+heartbeatLastCheckKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:last-check"
+
+-- | Get a list of all workers currently connected to the system (that
+-- did not fail their last heartbeat).
+--
+-- This includes workers that are currently working, and those waiting
+-- for work.
 activeOrUnhandledWorkers :: (MonadConnect m) => Redis -> m [WorkerId]
 activeOrUnhandledWorkers r =
     map WorkerId <$> run r (zrange (heartbeatActiveKey r) 0 (-1) False)
 
--- | Return all the dead workers.
+-- | Returns all the workers that failed a heartbeat check.
+--
+-- This will also list workers that continued sending heartbeats after
+-- failing one or more checks.
+--
+-- The list of heartbeat failures can be reset via 'clearHeartbeatFailures'.
 deadWorkers :: MonadConnect m => Redis -> m [WorkerId]
 deadWorkers r =
     map WorkerId <$> run r (zrange (heartbeatDeadKey r) 0 (-1) False)
 
+-- | Timestamp for the last time the heartbeat check successfully ran.
 lastHeartbeatCheck :: (MonadConnect m) => Redis -> m (Maybe UTCTime)
 lastHeartbeatCheck r =
     fmap posixSecondsToUTCTime <$> getRedisTime r (heartbeatLastCheckKey r)
 
+-- | Get the most recent time a given worker sent its hearbeat.
+--
+-- Will return nothing if the worker has not sent a heartbeat yet, or
+-- if it failed the last heartbeat check.
 lastHeartbeatForWorker :: (MonadConnect m) => Redis -> WorkerId -> m (Maybe UTCTime)
 lastHeartbeatForWorker r wid =
     fmap (posixSecondsToUTCTime . realToFrac) <$>
     run r (zscore (heartbeatActiveKey r) (unWorkerId wid))
 
+-- | Get the time of the most recent heartbeat failure for a specific worker.
 lastHeartbeatFailureForWorker :: MonadConnect m => Redis -> WorkerId -> m (Maybe UTCTime)
 lastHeartbeatFailureForWorker r wid =
     fmap (posixSecondsToUTCTime . realToFrac) <$>
     run r (zscore (heartbeatDeadKey r) (unWorkerId wid))
 
+-- | Clear all heartbeat failures from the database.
 clearHeartbeatFailures :: MonadConnect m => Redis -> m ()
 clearHeartbeatFailures r = do
     items <- run r $ zrange (heartbeatDeadKey r) 0 (-1) False
@@ -95,8 +131,16 @@ clearHeartbeatFailures r = do
         [] -> return ()
         x:xs -> void $ run r $ zrem (heartbeatDeadKey r) (x :| xs)
 
--- | Periodically check worker heartbeats. See #78 for a description of
--- how this works.
+-- | Periodically check worker heartbeats.
+--
+-- If enough time has passed since the last heartbeat check, look at
+-- the latest heartbeat from every worker.  If it is too old, we have
+-- a heartbeat failure of that worker.
+--
+-- After the heartbeat check, @handleFailures@ will be run on the list
+-- of workers that failed their heartbeat.
+--
+-- See #78 for a detailed description of the design.
 --
 -- Note that:
 --
@@ -110,7 +154,8 @@ checkHeartbeats
     :: (MonadConnect m)
     => HeartbeatConfig -> Redis
     -> (NonEmpty WorkerId -> m () -> m ())
-    -- ^ The second function is a "cleanup" function. It should be called by the
+    -- ^ @handleFailures@: what to do in case some workers failed their heartbeats.
+    -- The second argument is a "cleanup" action. It should be called by the
     -- continuation when the worker failures have been handled. If it's not called,
     -- the 'WorkerId's will show up again.
     -> m void
@@ -158,11 +203,36 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
             setTimeAndWait
         Nothing -> setTimeAndWait
 
+-- | Periodically check for heartbeats while concurrently performing
+-- another action.
+--
+-- See 'checkHeartbeats' for an explanation of how a single heartbeat
+-- check works.
+--
+-- An invocation might look like this:
+--
+-- @
+-- withCheckHeartbeats defaultHeartbeatConfig redis
+--     (\wids markHandled -> do
+--         doSomethingWithFailedWorkers wids
+--         markHandled)
+--     myAction
+-- @
+--
+-- where @doSomethingWithFailedWorkers@ is some action you want to
+-- perform for every failed worker, and @myAction@ is the action you
+-- want to perform while checking heartbeats in the background.  Note
+-- that unless you explicitly call @markHandled@ in the continuation,
+-- workers that failed their heartbeat will not be removed from the
+-- list of active workers and will still show up in the output of
+-- 'activeOrUnhandledWorkers'.
 withCheckHeartbeats
     :: (MonadConnect m)
     => HeartbeatConfig -> Redis
     -> (NonEmpty WorkerId -> m () -> m ())
+    -- ^ Cleanup function, see 'checkHeartbeats'.
     -> m a
+    -- ^ Action to perform while concurrently checking for heartbeats.
     -> m a
 withCheckHeartbeats conf redis handle' cont =
     fmap (either id absurd) (race cont (checkHeartbeats conf redis handle'))
