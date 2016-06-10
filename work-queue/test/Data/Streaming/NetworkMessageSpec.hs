@@ -70,8 +70,7 @@ spec = do
         expectMismatchedHandshakes True () () (Just True)
     loggingIt "throws MismatchedHandshakes when types mismatch, even when unqualified names match" $ do
         expectMismatchedHandshakes () LBS.empty BS.empty ()
-    {-
-    loggingIt "throws HeartbeatFailure when fed bogus data" $ do
+    loggingIt "throws NMDecodeFailure when fed bogus data" $ do
         let client :: (MonadConnect m) => NMApp Bool Int m ()
             client app = void $ nmRead app
             server app = liftIO (appWrite (nmAppData app) "bogus data")
@@ -95,8 +94,7 @@ spec = do
             l = BS.length bogusData
             server app = liftIO (appWrite (nmAppData app) $ S.encode l `BS.append` bogusData)
         res <- try $ runClientAndServer client server
-        res `shouldBe` Left (NMDecodeFailure "nmRead PeekException {peekExBytesFromEnd = 9, peekExMessage = \"Found invalid tag while peeking (ConT GHC.Types.Bool)\"}")
-    -}
+        res `shouldBe` Left (NMDecodeFailure "nmRead PeekException {peekExBytesFromEnd = 2, peekExMessage = \"Didn't consume all input.\"}")
     loggingIt "one side can terminate" $ do
         let client :: (MonadConnect m) => NMApp () () m ()
             client _ = return ()

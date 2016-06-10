@@ -16,7 +16,7 @@ packages:
   - ./th-relative-paths
   - location:
       git: git@github.com:fpco/store
-      commit: 96224c6d64ef1c17de25aaea3113413e347301ab
+      commit: 6cdffad98ad647d2f17c5b0cc751e776b8aa4ace
     extra-dep: true
   - location:
       git: https://github.com/kazu-yamamoto/logger.git
