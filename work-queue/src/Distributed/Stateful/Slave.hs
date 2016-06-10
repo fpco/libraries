@@ -1,17 +1,20 @@
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE TemplateHaskell #-}
-  module Distributed.Stateful.Slave
-  ( SlaveArgs(..)
-  , StatefulConn(..)
+{-|
+Module: Distributed.Stateful.Slave
+Description: Configure and run slaves for a distributed stateful computation.
+-}
+module Distributed.Stateful.Slave
+  ( -- * Configuration and creation of slave nodes
+    SlaveArgs(..)
   , runSlave
+    -- * Stateful Connection
+  , StatefulConn(..)
   ) where
 
 import           ClassyPrelude
@@ -26,7 +29,7 @@ import qualified Data.Store as S
 
 -- | Arguments for 'runSlave'.
 data SlaveArgs m state context input output = SlaveArgs
-  { saUpdate :: !(context -> input -> state -> m (state, output))
+  { saUpdate :: !(Update m state context input output)
     -- ^ Function run on the slave when 'update' is invoked on the
     -- master.
   , saConn :: !(StatefulConn m (SlaveResp state output) (SlaveReq state context input))
@@ -41,7 +44,7 @@ data SlaveException
 
 instance Exception SlaveException
 
--- | Runs a stateful slave. Returns then the master sends the "quit" command.
+-- | Runs a stateful slave. Returns when the master sends the "quit" command.
 {-# INLINE runSlave #-}
 runSlave :: forall state context input output m.
      (MonadConnect m, NFData state, NFData output, S.Store state)
@@ -54,7 +57,7 @@ runSlave SlaveArgs{..} = do
   where
     throw = throwAndLog
     debug msg = logDebugNS "Distributed.Stateful.Slave" msg
-    go :: 
+    go ::
          m (SlaveReq state context input)
       -> (SlaveResp state output -> m ())
       -> (HMS.HashMap StateId state)

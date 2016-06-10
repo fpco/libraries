@@ -10,13 +10,22 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE BangPatterns #-}
+{-|
+Module: Distributed.Stateful.Master
+Description: Master nodes for a distributed stateful computation.
+
+A master coordinates a diatributed stateful computation.
+
+All functions that run or act on a master need a 'MasterHandle' in
+order to do so.  'MasterHandle's are created via 'initMaster'.
+-}
+
 module Distributed.Stateful.Master
-    ( MasterArgs(..)
+    ( -- * Configuration and creation of master nodes
+      MasterArgs(..)
     , MasterHandle
-    , MasterException(..)
-    , StateId
-    , SlaveId
     , initMaster
+      -- * Operations on master nodes
     , closeMaster
     , update
     , resetStates
@@ -24,7 +33,12 @@ module Distributed.Stateful.Master
     , getStates
     , addSlaveConnection
     , getNumSlaves
+      -- * Types
     , SlaveConn
+    , MasterException(..)
+      -- those are re-exported from Internal.
+    , StateId
+    , SlaveId
     , StatefulConn(..)
     ) where
 
@@ -42,16 +56,17 @@ import           FP.Redis (MonadConnect)
 import           Control.Lens (makeLenses, set, at, _Just, over)
 import           Control.DeepSeq (NFData)
 
--- | Arguments for 'mkMasterHandle'
+-- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
   { maMaxBatchSize :: !(Maybe Int)
     -- ^ The maximum amount of states that will be transferred at once. If 'Nothing', they
     -- will be all transferred at once, and no "rebalancing" will ever happen.
-  , maUpdate :: !(context -> input -> state -> m (state, output))
+  , maUpdate :: !(Update m state context input output)
     -- ^ This argument will be used if 'update' is invoked when no slaves have
     -- been added yet.
   }
 
+-- | Handle to a master.  Can be created using 'initMaster'.
 newtype MasterHandle m state context input output =
   MasterHandle {_unMasterHandle :: MVar (MasterHandle_ m state context input output)}
 
@@ -66,6 +81,8 @@ data MasterHandle_ m state context input output = MasterHandle_
   , mhArgs :: !(MasterArgs m state context input output)
   }
 
+-- | Connection to a slave.  Requests to the slave can be written, and
+-- responses read, with this.
 type SlaveConn m state context input output =
   StatefulConn m (SlaveReq state context input) (SlaveResp state output)
 
@@ -74,6 +91,7 @@ data Slave m state context input output = Slave
   , slaveStates :: !(HMS.HashMap StateId ())
   }
 
+-- | Exceptions specific to masters.
 data MasterException
   = MasterException Text
   | InputMissingException StateId
@@ -85,6 +103,7 @@ data MasterException
 
 instance Exception MasterException
 
+-- | Create a new 'MasterHandle'.
 initMaster ::
      (MonadBaseControl IO m, MonadIO m, MonadLogger m)
   => MasterArgs m state context input output
@@ -117,7 +136,7 @@ closeMaster (MasterHandle mhv) =
       Slaves slaves ->
         -- Ignore all exceptions we might have when quitting the slaves
         forM_ (HMS.toList slaves) $ \(slaveId, slave) -> do
-          mbErr <- tryAny $ do 
+          mbErr <- tryAny $ do
             scWrite (slaveConnection slave) SReqQuit
             readExpect "closeMaster" (slaveConnection slave) $ \case
               SRespQuit -> return ()
@@ -385,15 +404,12 @@ updateSlaves maxBatchSize slaves context inputMap = do
               go outputs resp'
 
 -- | Send an update request to all the slaves. This will cause each of
--- the slaves to apply 'saUpdate' to each of its states. The outputs of
+-- the slaves to apply 'Distributed.Stateful.Slave.saUpdate' to each of its states. The outputs of
 -- these invocations are returned in a 'HashMap'.
 --
 -- It rebalances the states among the slaves during this process. This
 -- way, if some of the slaves finish early, they can help the others
 -- out, by moving their workitems elsewhere.
---
--- NOTE: it is up to the client to not run this concurrently with
--- another 'update' or 'resetStates'.
 --
 -- NOTE: if this throws an exception, then `MasterHandle` may be in an
 -- inconsistent state, and the whole computation should be aborted.
@@ -443,11 +459,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
             }
       return (mh', foldMap snd outputs)
 
--- | Adds a connection to a slave. Unlike 'update', 'resetStates', etc,
--- this can be called concurrently with the other operations.
---
--- NOTE: this being able to be called concurrently is why we need to be
--- careful about atomically updating 'mhSlaveInfoRef'.
+-- | Adds a connection to a slave.
 addSlaveConnection ::
      (MonadConnect m)
   => MasterHandle m state context input output
@@ -479,7 +491,8 @@ sendStates slavesWithStates = do
 -- | This sets the states stored in the slaves. It distributes the
 -- states among the currently connected slaves.
 --
--- If no slaves are connected, this throws an exception.
+-- If no slaves are connected, this will throw a
+-- 'NoSlavesConnectedException'.
 {-# INLINE resetStates #-}
 resetStates :: forall state context input output m.
      (MonadBaseControl IO m, MonadIO m, MonadLogger m)
@@ -512,6 +525,8 @@ resetStates (MasterHandle mhv) states0 = modifyMVar mhv $ \mh -> do
         ]
       return (mh{mhSlaves = Slaves slaves'}, HMS.fromList allStates)
 
+-- | Get all the 'StateId's of states of the computation handled by a
+-- master.
 getStateIds ::
      (MonadConnect m)
   => MasterHandle m state context input output
@@ -540,6 +555,7 @@ getStates (MasterHandle mhv) = withMVar mhv $ \mh -> do
           _ -> Nothing
       return (mconcat responses)
 
+-- | Get the number of slaves connected to a master.
 getNumSlaves ::
      (MonadConnect m)
   => MasterHandle m state context input output

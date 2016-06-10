@@ -8,20 +8,55 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE RecordWildCards #-}
+{-|
+Module: Distributed.Stateful
+Description: Distribute stateful computations.
+
+Distribute stateful computations.  Each step in a computation is of
+type 'Update', which is an alias for
+
+@
+context -> input -> state -> m (state, output)
+@
+
+Each computation has its own @state@, which is updated along
+with producing some @output@ from a given @input@.  There is also a
+@context@ which is the same for all computations.
+
+Computations with different state can be distributed to multiple
+slaves (see "Distributed.Stateful.Slave"), and are coordinated by a
+master.  There is no one-to-one correspondence between states and
+slaves; a single slave can handle multiple computations with different
+states.  If there are no slaves available, the master will perform the
+computation by itself.
+
+Masters and slaves that communicate over an abstract communication
+channel ('StatefulConn') are defined in "Distributed.Stateful.Master"
+and "Distributed.Stateful.Slave", respectively.  This module uses
+"Data.Streaming.NetworkMessage" for communication.  On top of that, it
+also provides 'runJobQueueStatefulWorker', which uses a job queue in
+order to run multiple distributed stateful computations.
+
+A reference implementation using a single process, and 'TMChan's for
+communication between the threads, is also provided.
+-}
+
+
+
 module Distributed.Stateful
-    ( -- * Pure backend
-      runPureStatefulSlave
-    , runSimplePureStateful
-      -- * NetworkMessage backend
-    , runNMStatefulSlave
+    ( -- * NetworkMessage backend
+      runNMStatefulSlave
     , runNMStatefulMaster
     , runSimpleNMStateful
       -- * NetworkMessage backend with automatic slave request
     , NMStatefulMasterArgs(..)
     , runRequestedStatefulSlave
     , runRequestingStatefulMaster
-      -- * JobQueue backend
+      -- * Use a job queue to schedule multiple stateful computations
     , runJobQueueStatefulWorker
+      -- * Reference implementation using one process
+    , runPureStatefulSlave
+    , runSimplePureStateful
     ) where
 
 import           ClassyPrelude
@@ -52,10 +87,7 @@ import           FP.Redis (Milliseconds)
 -- * Pure version, useful for testing, debugging, etc.
 -----------------------------------------------------------------------
 
--- | Waits for the slave to terminate before quitting. In other words,
--- this will crash if you don't quit the slaves correctly in the continuation.
--- This means that you'll have to run a stateful master from inside the
--- continuation (see runSimplePureStateful)
+-- | Run a slave that communicates with a master via 'TMChan's.
 runPureStatefulSlave :: forall m context input state output a.
        (MonadConnect m, NFData state, NFData output, Store state)
     => (context -> input -> state -> m (state, output))
@@ -96,9 +128,12 @@ runPureStatefulSlave update_ cont = do
                 Just x -> return x
         }
 
+-- | Run a computation, where the slaves run as separate threads
+-- within the same process, and communication id performed via
+-- 'TMChan's.
 runSimplePureStateful :: forall m context input state output a.
        (MonadConnect m, NFData state, NFData output, Store state)
-    => MasterArgs m state context input output 
+    => MasterArgs m state context input output
     -> Int -- ^ Desired slaves. Must be >= 0
     -> (MasterHandle m state context input output -> m a)
     -> m a
@@ -114,15 +149,14 @@ runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
           addSlaveConnection mh conn
           go mh (slavesNum - 1)
 
--- * JobQueue based version
------------------------------------------------------------------------
-
 nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> StatefulConn m a b
 nmStatefulConn ad = StatefulConn
     { scWrite = nmWrite ad
     , scRead = nmRead ad
     }
 
+-- | Run a slave that uses "Data.Streaming.NetworkMessage" for sending
+-- and receiving data.
 runNMStatefulSlave ::
        (MonadConnect m, NFData state, Store state, NFData output, Store output, Store context, Store input)
     => (context -> input -> state -> m (state, output))
@@ -132,6 +166,8 @@ runNMStatefulSlave update_ ad = runSlave SlaveArgs
     , saConn = nmStatefulConn ad
     }
 
+-- | Connection preferences for a master that communicates with slaves
+-- via "Data.Streaming.NetworkMessage".
 data NMStatefulMasterArgs = NMStatefulMasterArgs
     { nmsmaMinimumSlaves :: !(Maybe Int)
     -- ^ The minimum amount of slaves master needs to proceed. If present, must be
@@ -143,6 +179,8 @@ data NMStatefulMasterArgs = NMStatefulMasterArgs
     -- ^ How much to wait for slaves, in microseconds.
     }
 
+-- | Run a master that uses "Data.Streaming.NetworkMessage" for sending
+-- and receiving data.
 runNMStatefulMaster :: forall m state output input context b.
        (MonadConnect m, NFData state, Store state, NFData output, Store output, Store context, Store input)
     => MasterArgs m state context input output
@@ -184,7 +222,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
                     addSlaveConnection mh (nmStatefulConn ad)
                     atomically (writeTVar slavesConnectedVar (slaves + 1))
                 return shouldAdd
-            if added 
+            if added
                 then readMVar doneVar
                 else $logWarn "Slave tried to connect while past the number of maximum slaves"
     let server :: m (Maybe b)
@@ -210,6 +248,8 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
         closeMaster mh
         putMVar doneVar ()
 
+-- | Run a computation, spawning both a master and as many slaves as
+-- wanted.
 runSimpleNMStateful :: forall m state input output context a.
        ( MonadConnect m
        , NFData state, NFData output
@@ -251,17 +291,16 @@ runSimpleNMStateful host ma numSlaves cont = do
                 return ())
             (go cs nmSettings (numSlaves_ - 1))
 
--- * RequestSlave
------------------------------------------------------------------------
-
+-- | Spawn a slave node that will connect to a master on request.
 runRequestedStatefulSlave ::
        (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input)
     => Redis
     -> Milliseconds
-    -> (context -> input -> state -> m (state, output))
+    -> Update m state context input output
     -> m void
 runRequestedStatefulSlave r failsafeTimeout update_ = connectToMaster r failsafeTimeout (runNMStatefulSlave update_)
 
+-- | Run a master node that will automatically request existing slave nodes to join it.
 runRequestingStatefulMaster :: forall m state output context input b.
        (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input)
     => Redis
@@ -320,9 +359,12 @@ runRequestingStatefulMaster r ss0 host mbPort ma nmsma cont = do
                 Left x -> return x
                 Right _ -> Async.wait contAsync)
 
--- * JobQueue
------------------------------------------------------------------------
 
+-- | This function creates a job queue worker node to contribute to a
+-- distributed stateful computation.
+--
+-- It uses 'runMasterOrSlave' in order to act as a master or slave for
+-- a distributed computation, depending on what is currently needed.
 runJobQueueStatefulWorker ::
        (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input, Sendable request, Sendable response)
     => JobQueueConfig
