@@ -23,6 +23,7 @@ order to do so.  'MasterHandle's are created via 'initMaster'.
 module Distributed.Stateful.Master
     ( -- * Configuration and creation of master nodes
       MasterArgs(..)
+    , Update
     , MasterHandle
     , initMaster
       -- * Operations on master nodes

@@ -44,8 +44,10 @@ communication between the threads, is also provided.
 
 
 module Distributed.Stateful
-    ( -- * NetworkMessage backend
-      runNMStatefulSlave
+    ( -- * Re-exported types
+      Update
+      -- * NetworkMessage backend
+    , runNMStatefulSlave
     , runNMStatefulMaster
     , runSimpleNMStateful
       -- * NetworkMessage backend with automatic slave request

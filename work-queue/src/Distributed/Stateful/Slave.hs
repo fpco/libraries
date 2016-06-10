@@ -12,6 +12,7 @@ Description: Configure and run slaves for a distributed stateful computation.
 module Distributed.Stateful.Slave
   ( -- * Configuration and creation of slave nodes
     SlaveArgs(..)
+  , Update
   , runSlave
     -- * Stateful Connection
   , StatefulConn(..)
