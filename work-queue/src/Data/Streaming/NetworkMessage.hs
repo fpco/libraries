@@ -110,7 +110,11 @@ type Sendable a = (Store a, HasTypeHash a)
 -- connection. See other functions provided by this module.
 data NMAppData iSend youSend = NMAppData
     { nmAppData :: !AppData
+      -- ^ 'Data.Streaming.Network.AppData' used to communicate with
+      -- the other side of the connection
     , nmByteBuffer :: !ByteBuffer
+      -- ^ This 'ByteBuffer' is used to buffer incoming data, until a
+      -- complete message can be deserialized.
     } deriving (Typeable)
 
 -- | Send a message to the other side of the connection.

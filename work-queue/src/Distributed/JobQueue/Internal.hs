@@ -94,8 +94,7 @@ checkRedisSchemaVersion r = do
         , expectedRedisSchemaVersion = redisSchemaVersion
         }
 
--- * Request Events
-
+-- | Request Events
 data RequestEvent
     = RequestEnqueued
     | RequestWorkStarted !WorkerId

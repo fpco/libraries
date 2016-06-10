@@ -18,7 +18,7 @@ module Distributed.JobQueue.Status
     , getRequestStats
     , getAllRequestStats
     , getAllRequests
-      -- * Re-exports from Shared
+      -- * Re-exports from Internal
     , RequestEvent(..)
     , getRequestEvents
     ) where
@@ -55,6 +55,7 @@ data WorkerStatus = WorkerStatus
     -- ^ 'RequestId' of the request this worker is currently handling (if any).
     } deriving Show
 
+-- | Get the current status of the job queue.
 getJobQueueStatus :: MonadConnect m => Redis -> m JobQueueStatus
 getJobQueueStatus r = do
     checkRedisSchemaVersion r
