@@ -30,6 +30,7 @@ module Distributed.RequestSlaves
       WorkerConnectInfo(..)
     , requestSlaves
     , withSlaveRequests
+    , withSlaveRequestsWait
       -- * Utilities to run a master that waits for slaves, and for slaves to connect to it
     , connectToMaster
     , connectToAMaster
@@ -127,10 +128,35 @@ withSlaveRequests ::
     -- guaranteed that all the masters are still running, the list
     -- should be traversed until a running master is found.
     -> m void
-withSlaveRequests redis failsafeTimeout f = do
+withSlaveRequests redis failsafeTimeout f = withSlaveRequestsWait redis failsafeTimeout (return ()) f
+
+-- | Exactly like 'withSlaveRequests', but allows to delay the loop with the third argument.
+withSlaveRequestsWait ::
+       (MonadConnect m)
+    => Redis
+    -> Milliseconds
+    -- ^ Timeout.  'withSlaveRequestsWait' will wait for a notification
+    -- that slaves are requested.  Since notifications are not
+    -- failsafe, it will run after this timeout if no notification was
+    -- received.
+    -> (m ())
+    -- ^ This function has a loop that keeps grabbing slave requests. This action
+    -- will be called at the beginning of every loop iteration, and can
+    -- be useful to "limit" the loop (e.g. have some timer in between,
+    -- or wait for the worker to be free of processing requests if we
+    -- are doing something else too).
+    -> (NonEmpty WorkerConnectInfo -> m ())
+    -- ^ This function will be applied to the list of the masters that
+    -- accept slaves (sorted by priority, so that the master with the
+    -- fewest connected slaves comes first). Since it is not
+    -- guaranteed that all the masters are still running, the list
+    -- should be traversed until a running master is found.
+    -> m void
+withSlaveRequestsWait redis failsafeTimeout wait f = do
     withSubscribedNotifyChannel (managedConnectInfo (redisConnection redis)) failsafeTimeout (workerRequestsNotify redis) $
         \waitNotification -> forever $ do
             waitNotification
+            wait
             reqs <- getWorkerRequests redis
             case NE.nonEmpty reqs of
                 Nothing -> do

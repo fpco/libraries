@@ -28,6 +28,7 @@ module Distributed.JobQueue.Worker
     , defaultJobQueueConfig
     , jobWorker
     , Reenqueue(..)
+    , jobWorkerWait
     ) where
 
 import ClassyPrelude
@@ -65,12 +66,6 @@ import Data.Typeable (typeOf)
 --
 -- Heartbeats are sent periodically to signal that the worker is alive
 -- and connected to the job queue.
---
--- REVIEW: It uses an atomic redis operation (rpop and lpush) to get stuff from redis,
--- it's not entirely clear who wins when there is contention.
--- REVIEW TODO: Here there is some ambiguity on when we "save" a worker: for example
--- some redis operations are 'try'd, some arent. I propose to never cach exceptions
--- apart in a top-level handler, and when we run the user provided function.
 jobWorker :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
@@ -78,7 +73,23 @@ jobWorker :: forall m request response void.
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m void
-jobWorker config@JobQueueConfig {..} f = do
+jobWorker config f = jobWorkerWait config (return ()) f
+
+-- | Exactly like 'jobWorker', but also allows to delay the loop using the second argument.
+jobWorkerWait :: forall m request response void.
+       (MonadConnect m, Sendable request, Sendable response)
+    => JobQueueConfig
+    -> m ()
+    -- ^ The worker has a loop that keeps popping requests. This action
+    -- will be called at the beginning of every loop iteration, and can
+    -- be useful to "limit" the loop (e.g. have some timer in between,
+    -- or wait for the worker to be free of processing requests if we
+    -- are doing something else too).
+    -> (Redis -> RequestId -> request -> m (Reenqueue response))
+    -- ^ This function is run by the worker, for every request it
+    -- receives.
+    -> m void
+jobWorkerWait config@JobQueueConfig{..} wait f = do
     wid <- liftIO getWorkerId
     let withTag = withLogTag (LogTag ("worker-" ++ tshow (unWorkerId wid)))
     withTag $ withRedis jqcRedisConfig $ \r -> do
@@ -91,7 +102,7 @@ jobWorker config@JobQueueConfig {..} f = do
                 (requestChannel r)
                 (\waitForReq -> do
                     -- writeIORef everConnectedRef True
-                    jobWorkerThread config r wid waitForReq (f r))
+                    jobWorkerThread config r wid waitForReq (f r) wait)
 
 -- | A specialised 'Maybe' to indicate the result of a job: If the job
 -- successfull produced a result @a@, it will yield it via
@@ -116,8 +127,10 @@ jobWorkerThread :: forall request response m void.
     -> m ()
     -- ^ This action, when executed, blocks until we think a new response is present.
     -> (RequestId -> request -> m (Reenqueue response))
+    -> m ()
     -> m void
-jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f = forever $ do
+jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
+    wait
     mbRidbs <- run r (rpoplpush (requestsKey r) (activeKey r wid))
     forM_ mbRidbs $ \ridBs -> do
         let rid = RequestId ridBs

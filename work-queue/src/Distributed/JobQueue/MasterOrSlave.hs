@@ -25,6 +25,7 @@ import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Distributed.RequestSlaves
 import Distributed.JobQueue.Worker
 import Data.List.NonEmpty (NonEmpty)
+import qualified Control.Concurrent.STM as STM
 
 data MasterOrSlave = Idle | Slave | Master
     deriving (Eq, Ord, Show)
@@ -57,12 +58,12 @@ runMasterOrSlave config slaveFunc masterFunc = do
     handleSlaveRequests :: TVar MasterOrSlave -> m void
     handleSlaveRequests stateVar =
         withRedis (jqcRedisConfig config) $ \redis ->
-            withSlaveRequests redis (jqcSlaveRequestsNotificationFailsafeTimeout config) $ \wcis -> do
+            withSlaveRequestsWait redis (jqcSlaveRequestsNotificationFailsafeTimeout config) (waitToBeIdle stateVar) $ \wcis -> do
                 -- If it can't transition to slave, that's fine: all the
                 -- other slave candidates will get the connection request anyway.
                 -- In fact, this node itself will get it again, since
-                -- 'withSubscribedNotifyChannel' gets every request every
-                -- 100 ms.
+                -- 'withSubscribedNotifyChannel' gets every request at a
+                -- timeout.
                 mb <- transitionIdleTo stateVar Slave $ do
                     $logInfo "Transitioned to slave"
                     slaveFunc redis wcis
@@ -71,8 +72,8 @@ runMasterOrSlave config slaveFunc masterFunc = do
                     Just () -> return ()
 
     handleMasterRequests :: TVar MasterOrSlave -> m void
-    handleMasterRequests stateVar =
-        jobWorker config $ \redis rid request -> do
+    handleMasterRequests stateVar = do
+        jobWorkerWait config (waitToBeIdle stateVar) $ \redis rid request -> do
             -- If you couldn't transition to master, re-enqueue.
             mbRes <- transitionIdleTo stateVar Master $ do
                 $logInfo ("Transitioned to master")
@@ -83,6 +84,15 @@ runMasterOrSlave config slaveFunc masterFunc = do
                     return Reenqueue
                 Just res -> do
                     return res
+
+    -- Wait for the node to not be idle first. This is just so that we do not
+    -- try too hard in getting requests or slave requests, but does not
+    -- change the semantics of this function.. In other words, everything should
+    -- still work if we have @waitToBeIdle _ = return ()@.
+    waitToBeIdle :: TVar MasterOrSlave -> m ()
+    waitToBeIdle stateVar = atomically $ do
+        state <- readTVar stateVar
+        unless (state == Idle) STM.retry
 
     transitionIdleTo :: TVar MasterOrSlave -> MasterOrSlave -> m a -> m (Maybe a)
     transitionIdleTo stateVar state' cont = bracket
