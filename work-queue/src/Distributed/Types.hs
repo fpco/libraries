@@ -3,9 +3,17 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
-
--- REVIEW TODO: Add explicit exports or move types to relevant modules
-module Distributed.Types where
+{-|
+Module: Distributed.Types
+Description: Types common to many modules in the work-queue library.
+-}
+module Distributed.Types
+       ( -- * Identifiers for workers and requests
+         WorkerId (..)
+       , RequestId (..)
+         -- * Exceptions
+       , DistributedException (..))
+       where
 
 import           ClassyPrelude hiding ((<>))
 import qualified Data.Aeson as Aeson
@@ -21,8 +29,6 @@ import           Control.DeepSeq (NFData)
 -- | Every worker has a 'WorkerId' to uniquely identify it. It's needed
 -- for the fault tolerance portion - in the event that a worker goes
 -- down we need to be able to re-enqueue its work.
---
--- REVIEW: This is used only for job queue, not work queue.
 newtype WorkerId = WorkerId { unWorkerId :: ByteString }
     deriving (Eq, Ord, Show, Store, IsString, Typeable, Hashable)
 
@@ -32,8 +38,6 @@ instance Aeson.ToJSON WorkerId where
 -- | This is the key used for enqueued requests, and, later, the
 -- response associated with it. It's the hash of the request, which
 -- allows responses to be cached.
---
--- REVIEW: This is used only for job queue, not work queue.
 newtype RequestId = RequestId { unRequestId :: ByteString }
     deriving (Eq, Ord, Show, Store, Hashable, Typeable, NFData)
 
