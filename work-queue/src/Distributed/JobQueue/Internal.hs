@@ -202,8 +202,8 @@ defaultJobQueueConfig prefix = JobQueueConfig
     , jqcResponseExpiry = Seconds 3600
     , jqcEventExpiry = Seconds (3600 * 24) -- 1 day
     , jqcCancelCheckIvl = Seconds 10
-    , jqcRequestNotificationFailsafeTimeout = Milliseconds (10 * 1000) -- 10 secs
-    , jqcSlaveRequestsNotificationFailsafeTimeout = Milliseconds (10 * 1000) -- 10 secs
+    , jqcRequestNotificationFailsafeTimeout = Milliseconds (1 * 1000) -- 1 secs
+    , jqcSlaveRequestsNotificationFailsafeTimeout = Milliseconds (1 * 1000) -- 1 secs
     , jqcWaitForResponseNotificationFailsafeTimeout = Milliseconds 1000 -- 1 secs
     }
 
