@@ -35,7 +35,7 @@ import qualified Data.Random.Source.PureMT as Rand
 main :: IO ()
 main = hspec $ do
   it "passes test using incr and get commands (light)" (fuzzTest 5 100 100)
-  stressfulTest $ it "passes test using incr and get commands (heavy)" (fuzzTest 50 1000 1000)
+  flakyTest $ stressfulTest $ it "passes test using incr and get commands (heavy)" (fuzzTest 50 1000 1000)
 
 fuzzTest :: Int -> Int -> Int -> IO ()
 fuzzTest maxConns threads runs = runFuzzM maxConns $ do
