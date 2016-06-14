@@ -49,11 +49,9 @@ waitingWorkerFunc mvar _ _ _ = do
 runWithoutLogs :: LoggingT IO a -> IO a
 runWithoutLogs = runStdoutLoggingT . filterLogger (\_ _ -> False)
 
-waitForHeartbeat :: IO ()
-waitForHeartbeat = threadDelay $
-    3 * 1000 * 1000 * (fromIntegral . unSeconds $ testHeartbeatCheckIvl)
-waitShortInterval :: IO ()
-waitShortInterval = threadDelay $ 2 * 1000 * 1000
+waitABit :: MonadIO m => m ()
+waitABit = liftIO . threadDelay $
+    4 * 1000 * 1000 * (fromIntegral . unSeconds $ testHeartbeatCheckIvl)
 
 someRequests :: [(RequestId, ByteString)]
 someRequests = [(RequestId . pack . show $ n, pack . show $ n) | n <- [0..10 :: Int]]
@@ -61,19 +59,19 @@ someRequests = [(RequestId . pack . show $ n, pack . show $ n) | n <- [0..10 :: 
 queueReqs :: MonadConnect m => [(RequestId, Request)] -> m ()
 queueReqs reqs = liftIO $ do
     mapM_ startClient reqs
-    waitShortInterval
 
 failHeartbeat :: MonadConnect m => m ()
 failHeartbeat = do
     mvar <- liftIO newEmptyMVar
     worker <- liftIO $ waitingWorker mvar
-    liftIO waitForHeartbeat
+    waitABit
     liftIO $ Async.cancel worker
-    liftIO waitForHeartbeat
+    waitABit
 
 queueRequestsTest :: MonadConnect m => Redis -> m ()
 queueRequestsTest redis = do
     queueReqs someRequests
+    waitABit
     -- check that both getAllRequests and the list of pending requests match the submitted jobs
     jqs <- getJobQueueStatus redis
     jqsPending jqs `shouldMatchList` map fst someRequests
@@ -85,7 +83,7 @@ addWorkerTest redis = do
     queueReqs someRequests
     mvar <- liftIO newEmptyMVar
     _ <- liftIO $ waitingWorker mvar
-    liftIO waitShortInterval
+    waitABit
     jqs' <- getJobQueueStatus redis
     length (jqsWorkers jqs') `shouldBe` 1
     length (jqsPending jqs') `shouldBe` length someRequests - 1
@@ -103,7 +101,7 @@ completeJobTest redis = do
     mvar <- liftIO newEmptyMVar
     _ <- liftIO $ waitingWorker mvar
     liftIO $ putMVar mvar () -- the worker should finish the job now.
-    liftIO waitShortInterval
+    waitABit
     stats' <- getAllRequestStats redis
     length (filter (isJust . rsComputeFinishTime . snd) stats')
         `shouldBe` 1
