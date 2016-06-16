@@ -134,7 +134,7 @@ spec = do
           worker =
             runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing 5) nmsma $
               \mh _reqId () -> do
-                liftIO (threadDelay (3 * 1000 * 1000))
+                liftIO (threadDelay (5 * 1000 * 1000))
                 DontReenqueue <$> getNumSlaves mh
           workersToSpawn = 10
           client :: forall m. (MonadConnect m) => m ()
