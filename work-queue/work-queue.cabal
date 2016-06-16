@@ -72,7 +72,7 @@ library
                      , transformers-base
                      , unix
                      , unordered-containers
-                     , uuid >= 1.3.12
+                     , uuid
                      , vector
                      , void
                      , lifted-async
