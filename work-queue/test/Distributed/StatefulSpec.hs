@@ -153,7 +153,7 @@ spec = do
           wcis `shouldBe` [])
     stressfulTest $
       redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
-    stressfulTest $ redisIt_ "fullfills all requests (long, few)" $ do
+    flakyTest $ stressfulTest $ redisIt_ "fullfills all requests (long, few)" $ do
       (numSlavesAtStartup, numSlavesAtShutdown) <- fullfillsAllRequests (Just (10, 500)) 10 10 30
       let increased = flip execState (0 :: Int) $
             forM_ (HMS.toList numSlavesAtStartup) $ \(reqId, startup) -> do
