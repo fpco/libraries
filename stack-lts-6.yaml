@@ -3,6 +3,8 @@ extra-deps:
   - retry-0.6
   - hspec-expectations-lifted-0.5.0
   - fail-4.9.0.0
+  - store-0.2.0.0
+  - store-core-0.2.0.0
   - th-lift-instances-0.1.7
   - th-orphans-0.13.1
   - th-reify-many-0.1.6
@@ -13,10 +15,6 @@ packages:
   - ./work-queue
   - ./hpc-manager
   - ./th-relative-paths
-  - location:
-      git: git@github.com:fpco/store
-      commit: 6cdffad98ad647d2f17c5b0cc751e776b8aa4ace
-    extra-dep: true
 
 image:
   container:
