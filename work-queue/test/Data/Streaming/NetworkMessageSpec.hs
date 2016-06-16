@@ -73,28 +73,17 @@ spec = do
     loggingIt "throws NMDecodeFailure when fed bogus data" $ do
         let client :: (MonadConnect m) => NMApp Bool Int m ()
             client app = void $ nmRead app
-            server app = liftIO (appWrite (nmAppData app) "bogus data")
-        -- This will complain about no data because the beginning of the bogus data will be interpreted
-        -- as length
+            bogusData = "bogus data that is longer than message magic"
+            server app = liftIO (appWrite (nmAppData app) $ bogusData)
+        mb <- try (runClientAndServer client server)
+        mb `shouldBe` Left (NMDecodeFailure "nmRead PeekException {peekExBytesFromEnd = 0, peekExMessage = \"Wrong message magic, 7017769799613116258\"}")
+    loggingIt "throws NMDecodeFailure when fed too little data" $ do
+        let client :: (MonadConnect m) => NMApp Bool Int m ()
+            client app = void $ nmRead app
+            bogusData = "short data"
+            server app = liftIO (appWrite (nmAppData app) $ bogusData)
         mb <- try (runClientAndServer client server)
         mb `shouldBe` Left (NMDecodeFailure "nmRead Couldn't decode: no data")
-    loggingIt "throws DecodeFailed when fed bogus data of correct length (1)" $ do
-        let client :: (MonadConnect m) => NMApp Bool Bool m Bool
-            client app = nmRead app
-            bogusData = "bogus data"
-            l = BS.length bogusData
-            server app = liftIO (appWrite (nmAppData app) $ S.encode l `BS.append` bogusData)
-        res <- try $ runClientAndServer client server
-        res `shouldBe` Left (NMDecodeFailure "nmRead PeekException {peekExBytesFromEnd = 9, peekExMessage = \"Found invalid tag while peeking (ConT GHC.Types.Bool)\"}")
-    loggingIt "throws DecodeFailed when fed bogus data of correct length (2)" $ do
-        -- In this case, the data is correctly decoded, but there is a remaining `ta`.
-        let client :: (MonadConnect m) => NMApp Bool Int m Int
-            client app = nmRead app
-            bogusData = "bogus data"
-            l = BS.length bogusData
-            server app = liftIO (appWrite (nmAppData app) $ S.encode l `BS.append` bogusData)
-        res <- try $ runClientAndServer client server
-        res `shouldBe` Left (NMDecodeFailure "nmRead PeekException {peekExBytesFromEnd = 2, peekExMessage = \"Didn't consume all input.\"}")
     loggingIt "one side can terminate" $ do
         let client :: (MonadConnect m) => NMApp () () m ()
             client _ = return ()

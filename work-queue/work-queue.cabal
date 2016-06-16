@@ -62,7 +62,7 @@ library
                      , split
                      , stm
                      , stm-containers
-                     , store
+                     , store >= 0.2.0.0
                      , streaming-commons
                      , text
                      , template-haskell
