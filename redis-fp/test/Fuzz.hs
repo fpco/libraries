@@ -170,10 +170,10 @@ stressfulTest m = do
         Just "1" -> return ()
         _ -> m
 
--- | Does not run the test if we have NO_FLAKY=1 in the env
+-- | Only runs the test if we have FLAKY=1 in the env
 flakyTest :: SpecM a () -> SpecM a ()
 flakyTest m = do
-    mbS <- runIO (lookupEnv "NO_FLAKY")
+    mbS <- runIO (lookupEnv "FLAKY")
     case mbS of
-        Just "1" -> return ()
-        _ -> m
+        Just "1" -> m
+        _ -> return ()
