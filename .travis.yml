@@ -37,4 +37,4 @@ services:
   - redis-server
 
 script:
- - env NO_STRESSFUL=1 stack --no-terminal $ARGS test --haddock
+ - stack --no-terminal $ARGS test --haddock

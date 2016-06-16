@@ -111,13 +111,13 @@ killRandomly KillRandomly{..} action = if krRetries < 1
                 Left () -> go (n - 1)
                 Right x -> return x
 
--- | Does not run the action if we have NO_STRESSFUL=1 in the env
+-- | Does not run the action if we have STRESSFUL=1 in the env
 stressfulTest :: SpecM a () -> SpecM a ()
 stressfulTest m = do
-    mbS <- runIO (lookupEnv "NO_STRESSFUL")
+    mbS <- runIO (lookupEnv "STRESSFUL")
     case mbS of
-        Just "1" -> return ()
-        _ -> m
+        Just "1" -> m
+        _ -> return ()
 
 -- | Only runs the test if we have FLAKY=1 in the env
 flakyTest :: SpecM a () -> SpecM a ()
