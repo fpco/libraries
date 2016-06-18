@@ -22,6 +22,7 @@ packages:
   - location:
       git: https://github.com/kazu-yamamoto/logger.git
       commit: d2afcf87eae9c599761a04423fb43a891e21b68b
+    extra-dep: true
     subdirs:
       - fast-logger
       - wai-logger
