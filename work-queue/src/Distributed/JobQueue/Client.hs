@@ -34,6 +34,7 @@ module Distributed.JobQueue.Client
     , cancelRequest
       -- * Auxilliary functions
     , uniqueRequestId
+    , requestHashRequestId
     ) where
 
 import           ClassyPrelude
@@ -56,6 +57,8 @@ import qualified Data.HashMap.Strict as HMS
 import           Data.Void (absurd)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID.V4
+import qualified Crypto.Hash.SHA1 as SHA1
+import qualified Data.ByteString.Base64 as Base64
 
 -- | A 'JobClient' is needed to submit requests and retrieve results.
 --
@@ -269,6 +272,10 @@ checkForResponse JobClient{..} rid = do
 -- | Generate a unique (UUID-based) 'RequestId'.
 uniqueRequestId :: (MonadIO m) => m RequestId
 uniqueRequestId = liftIO (RequestId . UUID.toASCIIBytes <$> UUID.V4.nextRandom)
+
+-- | Generate a 'RequestId' based on the request contents.
+requestHashRequestId :: (Sendable request) => request -> RequestId
+requestHashRequestId = RequestId . Base64.encode . SHA1.hash . S.encode
 
 -- | Cancel a request. This has the effect of erasing the presence of
 -- the 'Request' from the system, so that:
