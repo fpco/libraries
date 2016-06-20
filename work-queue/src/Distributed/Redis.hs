@@ -13,7 +13,6 @@ module Distributed.Redis
       RedisConfig(..)
     , rcConnectInfo
     , defaultRedisConfig
-    , defaultRetryPolicy
     , Redis(..)
     , redisConnectInfo
 
@@ -66,6 +65,8 @@ data RedisConfig = RedisConfig
     , rcKeyPrefix :: !ByteString
     -- ^ Prefix to prepend to redis keys.
     , rcMaxConnections :: !Int
+    , rcConnectionRetries :: !Int
+    , rcConnectionRetriesDelay :: !Int
     } deriving (Eq, Show)
 
 -- | Default settingfs for connecting to redis:
@@ -81,13 +82,9 @@ defaultRedisConfig prefix = RedisConfig
     , rcPort = 6379
     , rcKeyPrefix = prefix
     , rcMaxConnections = 10
+    , rcConnectionRetries = 0 -- By default we do not retry the redis connection.
+    , rcConnectionRetriesDelay = 1000 * 1000 -- 1 second
     }
-
--- | This is the retry policy used for 'withRedis' and 'withSubscription'
--- reconnects. If it fails 10 reconnects, with 1 second between each,
--- then it gives up.
-defaultRetryPolicy :: RetryPolicy
-defaultRetryPolicy = limitRetries 10 <> constantDelay (1000 * 1000)
 
 -- | A connection to redis, along with a prefix for keys.
 data Redis = Redis
@@ -102,7 +99,10 @@ data Redis = Redis
 
 -- | Get a 'ConnectInfo' from a 'RedisConfig'.
 rcConnectInfo :: RedisConfig -> ConnectInfo
-rcConnectInfo RedisConfig{..} = (connectInfo rcHost){connectPort = rcPort}
+rcConnectInfo RedisConfig{..} = (connectInfo rcHost)
+    { connectPort = rcPort
+    , connectRetryPolicy = Just (limitRetries rcConnectionRetries <> constantDelay rcConnectionRetriesDelay)
+    }
 
 -- | Connect to redis, and provide the connection to the inner action.
 -- When the inner action exits (either via return or exception), the
@@ -113,19 +113,6 @@ withRedis rc@RedisConfig{..} f =
         { redisConnection = conn
         , redisKeyPrefix = rcKeyPrefix
         }
-
-{-
--- | Convenient utility for creating a 'RedisConfig'.
-mkRedisConfig :: ByteString -> Int -> Maybe RetryPolicy -> ByteString -> Int -> RedisConfig
-mkRedisConfig host port mpolicy prefix maxConns = RedisConfig
-    { rcConnectInfo = (connectInfo host)
-        { connectPort = port
-        , connectRetryPolicy = mpolicy
-        }
-    , rcKeyPrefix = prefix
-    , rcMaxConnections = maxConns
-    }
--}
 
 -- | Get a 'ConnectInfo' from a 'Redis' connection.
 redisConnectInfo :: Redis -> ConnectInfo
