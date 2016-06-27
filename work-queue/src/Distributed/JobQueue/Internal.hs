@@ -181,6 +181,10 @@ data JobQueueConfig = JobQueueConfig
     , jqcRequestNotificationFailsafeTimeout :: !Milliseconds
     , jqcSlaveRequestsNotificationFailsafeTimeout :: !Milliseconds
     , jqcWaitForResponseNotificationFailsafeTimeout :: !Milliseconds
+    , jqcCheckStaleKeysInterval :: !Seconds
+    -- ^ How often to check for jobs that have been taken by workers
+    -- that are currently considered dead, see
+    -- "Distributed.JobQueue.StaleKeys"
     } deriving (Eq, Show)
 
 -- | Default settings for the job-queue:
@@ -205,6 +209,7 @@ defaultJobQueueConfig prefix = JobQueueConfig
     , jqcRequestNotificationFailsafeTimeout = Milliseconds (1 * 1000) -- 1 secs
     , jqcSlaveRequestsNotificationFailsafeTimeout = Milliseconds (1 * 1000) -- 1 secs
     , jqcWaitForResponseNotificationFailsafeTimeout = Milliseconds 1000 -- 1 secs
+    , jqcCheckStaleKeysInterval = Seconds 90
     }
 
 data JobRequest = JobRequest

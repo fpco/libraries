@@ -19,6 +19,7 @@ library
                        Distributed.JobQueue.Client
                        Distributed.JobQueue.Worker
                        Distributed.JobQueue.MasterOrSlave
+                       Distributed.JobQueue.StaleKeys
                        Distributed.JobQueue.Status
                        Distributed.JobQueue.Internal
                        Distributed.Redis
@@ -42,6 +43,7 @@ library
                      , bytestring
                      , classy-prelude
                      , conduit-extra
+                     , containers
                      , cryptohash
                      , deepseq
                      , exceptions
