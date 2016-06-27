@@ -34,7 +34,7 @@ module Distributed.JobQueue.StaleKeys where
 import           ClassyPrelude hiding (keys)
 import           Control.Concurrent.Lifted (threadDelay)
 import qualified Data.ByteString as BS
-import qualified Data.Set as Set
+import qualified Data.HashSet as HashSet
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Internal
 import           Distributed.Redis
@@ -51,11 +51,15 @@ checkStaleKeys :: MonadConnect m
                   -> Redis
                   -> m void
 checkStaleKeys config r = logNest "checkStaleKeys" $ forever $ do
-    threadDelay (1000000 * (fromIntegral . unSeconds . jqcCheckStaleKeysInterval $ config))
-    liveWorkers <- Set.fromList <$> activeOrUnhandledWorkers r
-    let keyPrefix = redisKeyPrefix r <> "active:"
+    liveWorkers <- HashSet.fromList <$> activeOrUnhandledWorkers r
+    let keyPrefix = allActiveKeyPrefix r
     activeKeys <- run r $ keys keyPrefix
-    let workersWithJobs = Set.fromList $ map (WorkerId . BS.drop (BS.length keyPrefix) .  unKey ) activeKeys
-        staleKeys = Set.toList $ workersWithJobs `Set.difference` liveWorkers
+    let workersWithJobs =
+            HashSet.fromList $ map (WorkerId
+                                    . BS.drop (BS.length keyPrefix - 1) -- -1 to get rid of the wildcard
+                                    . unKey
+                                   ) activeKeys
+        staleKeys = HashSet.toList $ workersWithJobs `HashSet.difference` liveWorkers
     forM_ staleKeys $ \wid -> void (run r (rpoplpush (activeKey r wid) (requestsKey r)))
+    threadDelay (1000000 * (fromIntegral . unSeconds . jqcCheckStaleKeysInterval $ config))
     checkStaleKeys config r

@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
@@ -53,6 +54,10 @@ responseTimeKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestI
 -- or has one element.
 activeKey :: Redis -> WorkerId -> LKey
 activeKey r k = LKey $ Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
+
+-- | Pattern that matches all the 'activeKey's.
+allActiveKeyPrefix :: Redis -> ByteString
+allActiveKeyPrefix r = redisKeyPrefix r <> "active:*"
 
 -- | Channel to push cancellations.
 --
@@ -209,7 +214,10 @@ defaultJobQueueConfig prefix = JobQueueConfig
     , jqcRequestNotificationFailsafeTimeout = Milliseconds (1 * 1000) -- 1 secs
     , jqcSlaveRequestsNotificationFailsafeTimeout = Milliseconds (1 * 1000) -- 1 secs
     , jqcWaitForResponseNotificationFailsafeTimeout = Milliseconds 1000 -- 1 secs
-    , jqcCheckStaleKeysInterval = Seconds 90
+    , jqcCheckStaleKeysInterval = Seconds . (*2) . unSeconds . hcCheckerIvl $ defaultHeartbeatConfig
+      -- we use double the heartbeat check interval -- checking faster
+      -- than the heartbeat check doesn't make sense, since workers
+      -- will only be considered dead after a heartbeat check.
     }
 
 data JobRequest = JobRequest
