@@ -71,8 +71,8 @@
         <td>
           <input type=checkbox .select-pending name=jqr:#{rid} value=t>
         <td>#{start}
-        <td>#{rid}
         <td>#{reenq}
+        <td>#{rid}
 
   <h2>Heartbeat Failures
 
