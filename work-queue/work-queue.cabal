@@ -90,6 +90,7 @@ test-suite wq-test
   other-modules:       TestUtils
                      , Distributed.HeartbeatSpec
                      , Distributed.RequestSlavesSpec
+                     , Distributed.StaleKeySpec
                      , Distributed.StatefulSpec
                      , Distributed.StatusSpec
                      , Data.Streaming.NetworkMessageSpec
@@ -113,11 +114,13 @@ test-suite wq-test
                      , deepseq
                      , directory
                      , enclosed-exceptions
+                     , exceptions
                      , executable-path
                      , hspec
                      , hspec-core
                      , hspec-expectations
                      , hspec-expectations-lifted
+                     , HUnit
                      , lifted-base
                      , monad-control
                      , monad-logger
@@ -126,6 +129,7 @@ test-suite wq-test
                      , random
                      , redis-fp
                      , resourcet
+                     , retry
                      , semigroups
                      , silently
                      , split

@@ -5,6 +5,7 @@ import           System.Posix.Resource
 
 import qualified Distributed.HeartbeatSpec
 import qualified Distributed.RequestSlavesSpec
+import qualified Distributed.StaleKeySpec
 import qualified Distributed.JobQueueSpec
 import qualified Data.Streaming.NetworkMessageSpec
 import qualified Distributed.StatefulSpec
@@ -25,3 +26,4 @@ main = do
     describe "Distributed.StatusSpec" Distributed.StatusSpec.spec
     describe "Data.Streaming.NetworkMessage" Data.Streaming.NetworkMessageSpec.spec
     describe "Data.WorkQueue" Data.WorkQueueSpec.spec
+    describe "Distributed.StaleKey" Distributed.StaleKeySpec.spec
