@@ -19,21 +19,27 @@ module TestUtils
     , killRandomly
     , stressfulTest
     , flakyTest
+    , waitFor
+    , upToNSeconds
+    , upToTenSeconds
     ) where
 
-import           ClassyPrelude hiding (keys)
+import           ClassyPrelude hiding (keys, (<>))
+import           Control.Concurrent (threadDelay)
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import           Control.Monad.Catch (Handler (..))
+import           Control.Monad.Logger
+import           Control.Retry
+import qualified Data.Text as T
+import           Distributed.Heartbeat
+import           Distributed.JobQueue.Worker
+import           FP.Redis
+import           System.Environment (lookupEnv)
+import           System.Random (randomRIO)
+import           Test.HUnit.Lang (HUnitFailure (..))
 import           Test.Hspec (Spec, it)
 import           Test.Hspec.Core.Spec (SpecM, runIO)
-import           FP.Redis
-import           Control.Monad.Logger
-import qualified Data.Text as T
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import           System.Random (randomRIO)
-import           Control.Concurrent (threadDelay)
 import qualified Test.QuickCheck as QC
-import           Distributed.JobQueue.Worker
-import           Distributed.Heartbeat
-import           System.Environment (lookupEnv)
 
 import           Distributed.Redis
 
@@ -126,3 +132,25 @@ flakyTest m = do
     case mbS of
         Just "1" -> m
         _ -> return ()
+
+-- | This function allows us to make assertions that should become true, after some time.
+--
+-- If the assertion fails, it will retry, until it passes.  The
+-- 'RetryPolicy' can be chosen to limit the number of retries.
+--
+-- This allows us, for example, to test that heartbeat failures are
+-- detected, without waiting a fixed amount of time.
+waitFor :: forall m . (MonadIO m, MonadMask m) => RetryPolicy -> m () -> m ()
+waitFor policy expectation =
+    recovering policy [handler] expectation
+  where
+    handler :: Int -> Handler m Bool
+    handler _ = Handler $ \(HUnitFailure _) -> return True
+
+-- | Wiat for up to @n@ seconds, in steps of 1/10th of a second.
+upToNSeconds :: Int -> RetryPolicy
+upToNSeconds n = constantDelay 100000 <> limitRetries (n * 10)
+
+upToTenSeconds :: RetryPolicy
+upToTenSeconds = upToNSeconds 10
+
