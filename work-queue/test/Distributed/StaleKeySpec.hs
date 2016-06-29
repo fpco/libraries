@@ -49,19 +49,17 @@ jqc = testJobQueueConfig { jqcHeartbeatConfig = heartbeatConfig
 
 workerFunc :: MVar () -> Redis -> RequestId -> Request -> (LoggingT IO) (Reenqueue Response)
 workerFunc mvar _ _ _ = do
-    liftIO . putStrLn $ "+++ worker starts job!"
     _ <- takeMVar mvar
-    liftIO . putStrLn $ "+++ worker finished job!"
     return $ DontReenqueue "done"
 
 myWorker :: MVar () -> IO ()
-myWorker mvar = runStdoutLoggingT $ jobWorker jqc (workerFunc mvar)
+myWorker mvar = logging $ jobWorker jqc (workerFunc mvar)
 
 requestId :: RequestId
 requestId = RequestId "myRequest"
 
 myClient :: MVar () -> IO ()
-myClient mvar = runStdoutLoggingT . withJobClient jqc $ \jq -> do
+myClient mvar = logging . withJobClient jqc $ \jq -> do
     let request = "some request" :: Request
     submitRequest jq requestId request
     mResponse <- waitForResponse_ jq requestId

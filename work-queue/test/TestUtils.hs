@@ -14,6 +14,7 @@ module TestUtils
     , redisIt_
     , loggingIt
     , loggingProperty
+    , logging
     , randomThreadDelay
     , KillRandomly(..)
     , killRandomly
@@ -75,6 +76,9 @@ loggingProperty :: forall prop.
     => (LoggingT IO prop) -> QC.Property
 loggingProperty m = QC.ioProperty
     (runStdoutLoggingT (filterLogger (\_ -> minimumLogLevel) m) :: IO prop)
+
+logging :: LoggingT IO a -> IO a
+logging = runStdoutLoggingT . filterLogger (\_ -> minimumLogLevel)
 
 redisIt_ :: String -> (forall m. (MonadConnect m) => m ()) -> Spec
 redisIt_ msg cont = redisIt msg (\_r -> cont)
