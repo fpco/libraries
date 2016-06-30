@@ -12,6 +12,7 @@ module Distributed.StaleKeySpec (spec) where
 import ClassyPrelude hiding (keys, (<>))
 import Data.Void
 import Control.Concurrent.Async.Lifted.Safe
+import Control.Monad.Base
 import Control.Monad.Catch (Handler (..))
 import Control.Monad.Logger
 import Control.Retry
@@ -48,19 +49,19 @@ jqc = testJobQueueConfig { jqcHeartbeatConfig = heartbeatConfig
                          , jqcCheckStaleKeysInterval = Seconds 2
                          }
 
-workerFunc :: MVar () -> Redis -> RequestId -> Request -> (LoggingT IO) (Reenqueue Response)
+workerFunc :: (MonadBase IO m, MonadLogger m) => MVar () -> Redis -> RequestId -> Request -> m (Reenqueue Response)
 workerFunc mvar _ _ _ = do
     _ <- takeMVar mvar
     return $ DontReenqueue "done"
 
-myWorker :: MVar () -> IO void
-myWorker mvar = logging $ jobWorker jqc (workerFunc mvar)
+myWorker :: (MonadLogger m, MonadConnect m) => MVar () -> m void
+myWorker mvar = jobWorker jqc (workerFunc mvar)
 
 requestId :: RequestId
 requestId = RequestId "myRequest"
 
-myClient :: MVar () -> IO ()
-myClient mvar = logging . withJobClient jqc $ \jq -> do
+myClient :: MonadConnect m => MVar () -> m ()
+myClient mvar = withJobClient jqc $ \jq -> do
     let request = "some request" :: Request
     submitRequest jq requestId request
     mResponse <- waitForResponse_ jq requestId
@@ -107,10 +108,10 @@ staleKeyTest redis = do
     -- heartbeat was checked by the client, it would already have
     -- taken the job.
     heartbeatChecker <- async (checkHeartbeats (jqcHeartbeatConfig jqc) redis $ \_inactive cleanup -> cleanup)
-    worker <- async (liftIO $ myWorker mvarWorker)
+    worker <- async (myWorker mvarWorker)
     waitForHeartbeatFailure redis -- worker fails heartbeat, but is actually still alive.
     cancel heartbeatChecker
-    fmap (either id id) $ race (liftIO $ myClient mvarClient) $ do
+    fmap (either id id) $ race (myClient mvarClient) $ do
         waitForJobStarted redis
         -- now the worker dies for good -- after taking on another job, after being considered dead by the heartbeat checker
         cancel worker
