@@ -54,11 +54,15 @@ checkStaleKeys :: MonadConnect m
 checkStaleKeys config r = logNest "checkStaleKeys" $ forever $ do
     threadDelay (1000000 * (fromIntegral . unSeconds . jqcCheckStaleKeysInterval $ config))
     liveWorkers <- HashSet.fromList <$> activeOrUnhandledWorkers r
-    let keyPrefix = allActiveKeyPrefix r
+    let keyPrefix = allActiveKeyPattern r
     activeKeys <- run r $ keys keyPrefix
-    let workersWithJobs =
-            HashSet.fromList . catMaybes $ map (workerIdFromActiveKey r) activeKeys
-        staleKeys = HashSet.toList $ workersWithJobs `HashSet.difference` liveWorkers
+    workersWithJobs <- HashSet.fromList
+        <$> mapM (\k -> case workerIdFromActiveKey r k of
+                         Nothing -> liftIO . throwIO . InternalJobQueueException $
+                             "failed to convert activeKey " ++ pack (show k) ++ " to WorkerId."
+                         Just wid -> return wid)
+            activeKeys
+    let staleKeys = HashSet.toList $ workersWithJobs `HashSet.difference` liveWorkers
     forM_ staleKeys $ \wid -> do
             mbRid <- run r (rpoplpush (activeKey r wid) (requestsKey r))
             case mbRid of

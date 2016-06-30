@@ -56,9 +56,13 @@ responseTimeKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestI
 activeKey :: Redis -> WorkerId -> LKey
 activeKey r k = LKey $ Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
 
--- | Pattern that matches all the 'activeKey's.
+-- | Prefix of all the 'activeKey's.
 allActiveKeyPrefix :: Redis -> ByteString
-allActiveKeyPrefix r = redisKeyPrefix r <> "active:*"
+allActiveKeyPrefix r = redisKeyPrefix r <> "active:"
+
+-- | Pattern that matches all the 'activeKey's.
+allActiveKeyPattern :: Redis -> ByteString
+allActiveKeyPattern r = allActiveKeyPrefix r <> "*"
 
 -- | Given a worker's 'activeKey', get its 'WorkerId'.
 workerIdFromActiveKey :: Redis -> Key -> Maybe WorkerId
@@ -67,7 +71,7 @@ workerIdFromActiveKey r k =
     then Just . WorkerId . BS.drop (BS.length prefix) $ bs
     else Nothing
   where
-    prefix = BS.init (allActiveKeyPrefix r)
+    prefix = allActiveKeyPrefix r
     bs = unKey k
 
 -- | Channel to push cancellations.
