@@ -10,6 +10,7 @@
 module Distributed.StaleKeySpec (spec) where
 
 import ClassyPrelude hiding (keys, (<>))
+import Data.Void
 import Control.Concurrent.Async.Lifted.Safe
 import Control.Monad.Catch (Handler (..))
 import Control.Monad.Logger
@@ -52,7 +53,7 @@ workerFunc mvar _ _ _ = do
     _ <- takeMVar mvar
     return $ DontReenqueue "done"
 
-myWorker :: MVar () -> IO ()
+myWorker :: MVar () -> IO void
 myWorker mvar = logging $ jobWorker jqc (workerFunc mvar)
 
 requestId :: RequestId
@@ -88,36 +89,32 @@ waitForJobStarted redis = waitFor upToFiveSeconds $ do
     allRequests <- getAllRequests redis
     allRequests `shouldBe` [requestId]
     jqs <- getJobQueueStatus redis
-    length (jqsPending jqs) `shouldBe` 0 -- there should be no job enqueued
-
+    jqsPending jqs `shouldBe` [] -- there should be no job enqueued
 
 waitForJobReenqueued :: MonadConnect m => Redis -> m ()
 waitForJobReenqueued redis = waitFor upToFiveSeconds $ do
     allRequestStats <- getAllRequestStats redis
     map fst allRequestStats `shouldBe` [requestId]
     jqs <- getJobQueueStatus redis
-    length (jqsPending jqs) `shouldBe` 1 -- there should be one job enqueued
-
+    jqsPending jqs `shouldBe` [requestId] -- the job should be enqueued again
 
 staleKeyTest :: MonadConnect m => Redis -> m ()
 staleKeyTest redis = do
     mvarWorker <- liftIO newEmptyMVar
     mvarClient <- liftIO newEmptyMVar
-    let test = do
-            waitForHeartbeatFailure redis
-            race_ (liftIO $ myClient mvarClient) $ do
-                waitForJobStarted redis
-                waitForJobReenqueued redis
-
-    race_ test ((either absurd id) <$>
-                race
-                    -- we want to have an explicit heartbeat check
-                    -- before starting the client, so that the worker
-                    -- can pick up the job _after_ failing its
-                    -- heartbeat.
-                    (checkHeartbeats (jqcHeartbeatConfig jqc) redis $ \_inactive cleanup -> cleanup)
-                    (liftIO $ myWorker mvarWorker)
-               )
+    -- We'll need an explicit 'heartbeatChecker', since the client
+    -- should pick a job _after_ failing its heartbeat.  If its
+    -- heartbeat was checked by the client, it would already have
+    -- taken the job.
+    heartbeatChecker <- async (checkHeartbeats (jqcHeartbeatConfig jqc) redis $ \_inactive cleanup -> cleanup)
+    worker <- async (liftIO $ myWorker mvarWorker)
+    waitForHeartbeatFailure redis -- worker fails heartbeat, but is actually still alive.
+    cancel heartbeatChecker
+    fmap (either id id) $ race (liftIO $ myClient mvarClient) $ do
+        waitForJobStarted redis
+        -- now the worker dies for good -- after taking on another job, after being considered dead by the heartbeat checker
+        cancel worker
+        waitForJobReenqueued redis
 
 spec :: Spec
 spec = redisIt "Re-enqueues jobs from dead workers that had already failed their heartbeat before working on the job." staleKeyTest

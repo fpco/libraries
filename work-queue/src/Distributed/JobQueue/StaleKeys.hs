@@ -52,6 +52,7 @@ checkStaleKeys :: MonadConnect m
                   -> Redis
                   -> m void
 checkStaleKeys config r = logNest "checkStaleKeys" $ forever $ do
+    threadDelay (1000000 * (fromIntegral . unSeconds . jqcCheckStaleKeysInterval $ config))
     liveWorkers <- HashSet.fromList <$> activeOrUnhandledWorkers r
     let keyPrefix = allActiveKeyPrefix r
     activeKeys <- run r $ keys keyPrefix
@@ -63,5 +64,4 @@ checkStaleKeys config r = logNest "checkStaleKeys" $ forever $ do
             case mbRid of
                 Nothing -> $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and does not have a job."
                 Just rid -> $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and " <> tshow rid <> " was re-enqueued."
-    threadDelay (1000000 * (fromIntegral . unSeconds . jqcCheckStaleKeysInterval $ config))
     checkStaleKeys config r
