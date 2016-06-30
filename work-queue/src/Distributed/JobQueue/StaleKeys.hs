@@ -35,7 +35,6 @@ module Distributed.JobQueue.StaleKeys where
 import           ClassyPrelude hiding (keys)
 import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Monad.Logger
-import qualified Data.ByteString as BS
 import qualified Data.HashSet as HashSet
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Internal
@@ -57,10 +56,7 @@ checkStaleKeys config r = logNest "checkStaleKeys" $ forever $ do
     let keyPrefix = allActiveKeyPrefix r
     activeKeys <- run r $ keys keyPrefix
     let workersWithJobs =
-            HashSet.fromList $ map (WorkerId
-                                    . BS.drop (BS.length keyPrefix - 1) -- -1 to get rid of the wildcard
-                                    . unKey
-                                   ) activeKeys
+            HashSet.fromList . catMaybes $ map (workerIdFromActiveKey r) activeKeys
         staleKeys = HashSet.toList $ workersWithJobs `HashSet.difference` liveWorkers
     forM_ staleKeys $ \wid -> do
             mbRid <- run r (rpoplpush (activeKey r wid) (requestsKey r))

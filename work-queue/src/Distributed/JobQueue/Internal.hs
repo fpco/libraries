@@ -9,6 +9,7 @@ module Distributed.JobQueue.Internal where
 import ClassyPrelude
 import Control.Monad.Logger (logWarn, logInfo)
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString as BS
 import Data.List.NonEmpty
 import Data.Store (Store, encode)
 import Distributed.Redis
@@ -58,6 +59,16 @@ activeKey r k = LKey $ Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
 -- | Pattern that matches all the 'activeKey's.
 allActiveKeyPrefix :: Redis -> ByteString
 allActiveKeyPrefix r = redisKeyPrefix r <> "active:*"
+
+-- | Given a worker's 'activeKey', get its 'WorkerId'.
+workerIdFromActiveKey :: Redis -> Key -> Maybe WorkerId
+workerIdFromActiveKey r k =
+    if prefix `BS.isPrefixOf` bs
+    then Just . WorkerId . BS.drop (BS.length prefix) $ bs
+    else Nothing
+  where
+    prefix = BS.init (allActiveKeyPrefix r)
+    bs = unKey k
 
 -- | Channel to push cancellations.
 --
