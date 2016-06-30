@@ -75,25 +75,25 @@ waitFor policy expectation =
     handler :: Int -> Handler m Bool
     handler _ = Handler $ \(HUnitFailure _) -> return True
 
-upToFiveSeconds :: RetryPolicy
-upToFiveSeconds = constantDelay 100000 <> limitRetries 50
+upToTenSeconds :: RetryPolicy
+upToTenSeconds = constantDelay 100000 <> limitRetries 100
 
 waitForHeartbeatFailure :: MonadConnect m => Redis -> m ()
-waitForHeartbeatFailure redis = waitFor upToFiveSeconds $ do
+waitForHeartbeatFailure redis = waitFor upToTenSeconds $ do
     liveWorkers <- activeOrUnhandledWorkers redis
     liveWorkers `shouldBe` [] -- no active workers
     failedWorkers <- deadWorkers redis
     length failedWorkers `shouldBe` 1 -- 1 heartbeat failure
 
 waitForJobStarted :: MonadConnect m => Redis -> m ()
-waitForJobStarted redis = waitFor upToFiveSeconds $ do
+waitForJobStarted redis = waitFor upToTenSeconds $ do
     allRequests <- getAllRequests redis
     allRequests `shouldBe` [requestId]
     jqs <- getJobQueueStatus redis
     jqsPending jqs `shouldBe` [] -- there should be no job enqueued
 
 waitForJobReenqueued :: MonadConnect m => Redis -> m ()
-waitForJobReenqueued redis = waitFor upToFiveSeconds $ do
+waitForJobReenqueued redis = waitFor upToTenSeconds $ do
     allRequestStats <- getAllRequestStats redis
     map fst allRequestStats `shouldBe` [requestId]
     jqs <- getJobQueueStatus redis
