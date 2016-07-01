@@ -56,16 +56,15 @@ checkStaleKeys config r = logNest "checkStaleKeys" $ forever $ do
     liveWorkers <- HashSet.fromList <$> activeOrUnhandledWorkers r
     let keyPrefix = allActiveKeyPattern r
     activeKeys <- run r $ keys keyPrefix
-    workersWithJobs <- HashSet.fromList
-        <$> mapM (\k -> case workerIdFromActiveKey r k of
-                         Nothing -> liftIO . throwIO . InternalJobQueueException $
-                             "failed to convert activeKey " ++ pack (show k) ++ " to WorkerId."
-                         Just wid -> return wid)
-            activeKeys
+    workersWithJobs <- fmap HashSet.fromList $ forM activeKeys $ \k ->
+        case workerIdFromActiveKey r k of
+            Nothing -> liftIO . throwIO . InternalJobQueueException $
+                "failed to convert activeKey " ++ pack (show k) ++ " to WorkerId."
+            Just wid -> return wid
     let staleKeys = HashSet.toList $ workersWithJobs `HashSet.difference` liveWorkers
     forM_ staleKeys $ \wid -> do
-            mbRid <- run r (rpoplpush (activeKey r wid) (requestsKey r))
-            case mbRid of
-                Nothing -> $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and does not have a job."
-                Just rid -> $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and " <> tshow rid <> " was re-enqueued."
+        mbRid <- run r (rpoplpush (activeKey r wid) (requestsKey r))
+        case mbRid of
+            Nothing -> $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and does not have a job."
+            Just rid -> $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and " <> tshow rid <> " was re-enqueued."
     checkStaleKeys config r

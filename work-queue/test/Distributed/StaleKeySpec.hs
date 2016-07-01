@@ -105,17 +105,17 @@ staleKeyTest redis =
     -- should pick a job _after_ failing its heartbeat.  If its
     -- heartbeat was checked by the client, it would already have
     -- taken the job.
-    fmap (either id id) $ race
-        (either absurd absurd <$> race myWorker
-         (checkHeartbeats (jqcHeartbeatConfig jqc) redis $ \_inactive cleanup -> cleanup)
-        ) $ do
-            waitForHeartbeatFailure redis -- worker fails heartbeat, but is actually still alive.
-            fmap (either id id) $ race myClient $ do
-                -- we expect the worker to take the job
-                waitForJobStarted redis
-                -- and the client to subsequently re-enqueue it, since
-                -- the worker is not in the list of active workers.
-                waitForJobReenqueued redis
+    runConcurrently $
+        Concurrently myWorker <|>
+        Concurrently (checkHeartbeats (jqcHeartbeatConfig jqc) redis $ \_inactive cleanup -> cleanup) <|>
+        Concurrently
+            (do waitForHeartbeatFailure redis -- worker fails heartbeat, but is actually still alive.
+                fmap (either id id) $ race myClient $ do
+                    -- we expect the worker to take the job
+                    waitForJobStarted redis
+                    -- and the client to subsequently re-enqueue it, since
+                    -- the worker is not in the list of active workers.
+                    waitForJobReenqueued redis)
 
 spec :: Spec
 spec = redisIt "Re-enqueues jobs from dead workers that had already failed their heartbeat before working on the job." staleKeyTest
