@@ -52,6 +52,15 @@ jqc = testJobQueueConfig { jqcHeartbeatConfig = heartbeatConfig
 
 workerFunc :: MonadConnect m => Redis -> RequestId -> Request -> m (Reenqueue Response)
 workerFunc _ _ _ = do
+    -- the worker should never finish in this test, for two reasons:
+    --
+    -- - We want to have enough time for the job to be rescheduled by
+    --   'checkStaleKeys', and infinite is enough
+    --
+    -- - We need the client to run long enough (i.e., indefinitely),
+    --   since the running client is what repeatedly calls
+    --   'checkStaleKeys'.  If the worker doesn't finish, neither does
+    --   the client, since it waits for the worker's result.
     _ <- forever $ threadDelay maxBound
     return $ DontReenqueue "done"
 
