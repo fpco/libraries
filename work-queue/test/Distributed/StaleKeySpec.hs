@@ -10,12 +10,9 @@
 module Distributed.StaleKeySpec (spec) where
 
 import ClassyPrelude hiding (keys, (<>))
-import Data.Void
-import Control.Concurrent.Lifted (threadDelay)
 import Control.Concurrent.Async.Lifted.Safe
-import Control.Monad.Base
+import Control.Concurrent.Lifted (threadDelay)
 import Control.Monad.Catch (Handler (..))
-import Control.Monad.Logger
 import Control.Retry
 import Data.Store.TypeHash (mkHasTypeHash)
 import Data.Void
@@ -110,6 +107,31 @@ waitForJobReenqueued redis = waitFor upToTenSeconds $ do
     jqs <- getJobQueueStatus redis
     jqsPending jqs `shouldBe` [requestId] -- the job should be enqueued again
 
+
+-- | Test that `checkStaleKeys`, as run by a jobClientThread, actually works.
+--
+-- The timing is a bit tricky:
+--
+-- - We start a worker, and an explicit checkHeartbeats.
+--
+-- - The heartbeatConfig is such that the worker only sends one
+--   heartbeat, so it will fail its heartbeat check very soon, and
+--   `checkHeartbeats will remove it from the list of active workers. So
+--   it is now in a state where it is idle, looking for jobs, but
+--   considered to be dead by the heartbeat checker.
+--
+-- - Now, we start a client, submitting a job and starting checkStaleKeys.
+--
+-- - The worker will take the job, but it will still be considered dead
+--   by the heartbeat checker. Without checkStaleKeys, the job would
+--   stay in its activeKey. That would be the dangerous situation that
+--   checkStaleKeys fixes: if the worker dies now, the heartbeat checker
+--   would not re-schedule the job, since it thinks that the worker died
+--   a long time ago (see issue #133).
+--
+-- - Finally, checkStaleKeys detects that a worker that is considered
+--   dead is at the same time responsible for completing a job, and
+--   re-schedules the job.
 staleKeyTest :: MonadConnect m => Redis -> m ()
 staleKeyTest redis =
     -- We'll need an explicit 'heartbeatChecker', since the client
