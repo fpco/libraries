@@ -49,6 +49,7 @@ import           Data.Typeable (Proxy(..))
 import           Distributed.Heartbeat (checkHeartbeats)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Distributed.JobQueue.Internal
+import           Distributed.JobQueue.StaleKeys
 import           Distributed.Redis
 import           Distributed.Types
 import           FP.Redis
@@ -116,13 +117,17 @@ jobClientThread JobClient{..} = do
     setRedisSchemaVersion jcRedis
     fmap (either absurd absurd) (Async.race checker subscriber)
   where
-    checker =
+    heartbeatChecker =
         checkHeartbeats (jqcHeartbeatConfig jcConfig) jcRedis $ \inactive cleanup -> do
             reenqueuedSome <- or <$> forM inactive (handleWorkerFailure jcRedis)
             cleanup
             when reenqueuedSome $ do
                 $logDebugS "JobClient" "Notifying that some requests were re-enqueued"
                 sendNotify jcRedis (requestChannel jcRedis)
+
+    staleChecker = checkStaleKeys jcConfig jcRedis
+
+    checker = fmap (either absurd absurd) (Async.race heartbeatChecker staleChecker)
 
     subscriber =
         withLogTag (LogTag "jobClient") $ do

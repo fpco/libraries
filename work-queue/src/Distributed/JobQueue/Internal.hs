@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
@@ -8,6 +9,7 @@ module Distributed.JobQueue.Internal where
 import ClassyPrelude
 import Control.Monad.Logger (logWarn, logInfo)
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString as BS
 import Data.List.NonEmpty
 import Data.Store (Store, encode)
 import Distributed.Redis
@@ -53,6 +55,24 @@ responseTimeKey r k = VKey $ Key $ redisKeyPrefix r <> "response:" <> unRequestI
 -- or has one element.
 activeKey :: Redis -> WorkerId -> LKey
 activeKey r k = LKey $ Key $ redisKeyPrefix r <> "active:" <> unWorkerId k
+
+-- | Prefix of all the 'activeKey's.
+allActiveKeyPrefix :: Redis -> ByteString
+allActiveKeyPrefix r = redisKeyPrefix r <> "active:"
+
+-- | Pattern that matches all the 'activeKey's.
+allActiveKeyPattern :: Redis -> ByteString
+allActiveKeyPattern r = allActiveKeyPrefix r <> "*"
+
+-- | Given a worker's 'activeKey', get its 'WorkerId'.
+workerIdFromActiveKey :: Redis -> Key -> Maybe WorkerId
+workerIdFromActiveKey r k =
+    if prefix `BS.isPrefixOf` bs
+    then Just . WorkerId . BS.drop (BS.length prefix) $ bs
+    else Nothing
+  where
+    prefix = allActiveKeyPrefix r
+    bs = unKey k
 
 -- | Channel to push cancellations.
 --
@@ -181,6 +201,10 @@ data JobQueueConfig = JobQueueConfig
     , jqcRequestNotificationFailsafeTimeout :: !Milliseconds
     , jqcSlaveRequestsNotificationFailsafeTimeout :: !Milliseconds
     , jqcWaitForResponseNotificationFailsafeTimeout :: !Milliseconds
+    , jqcCheckStaleKeysInterval :: !Seconds
+    -- ^ How often to check for jobs that have been taken by workers
+    -- that are currently considered dead, see
+    -- "Distributed.JobQueue.StaleKeys"
     } deriving (Eq, Show)
 
 -- | Default settings for the job-queue:
@@ -205,6 +229,10 @@ defaultJobQueueConfig prefix = JobQueueConfig
     , jqcRequestNotificationFailsafeTimeout = Milliseconds (1 * 1000) -- 1 secs
     , jqcSlaveRequestsNotificationFailsafeTimeout = Milliseconds (1 * 1000) -- 1 secs
     , jqcWaitForResponseNotificationFailsafeTimeout = Milliseconds 1000 -- 1 secs
+    , jqcCheckStaleKeysInterval = Seconds . (*2) . unSeconds . hcCheckerIvl $ defaultHeartbeatConfig
+      -- we use double the heartbeat check interval -- checking faster
+      -- than the heartbeat check doesn't make sense, since workers
+      -- will only be considered dead after a heartbeat check.
     }
 
 data JobRequest = JobRequest
