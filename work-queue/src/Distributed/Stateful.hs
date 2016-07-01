@@ -64,6 +64,7 @@ module Distributed.Stateful
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import           Distributed.Heartbeat
 import           Distributed.Stateful.Slave
 import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
@@ -300,12 +301,13 @@ runRequestedStatefulSlave ::
     -> Milliseconds
     -> Update m state context input output
     -> m void
-runRequestedStatefulSlave r failsafeTimeout update_ = connectToMaster r failsafeTimeout (runNMStatefulSlave update_)
+runRequestedStatefulSlave r failsafeTimeout update_ = connectToMaster r failsafeTimeout (activeOrUnhandledWorkers r) (runNMStatefulSlave update_)
 
 -- | Run a master node that will automatically request existing slave nodes to join it.
 runRequestingStatefulMaster :: forall m state output context input b.
        (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input)
     => Redis
+    -> WorkerId
     -> CN.ServerSettings
     -- ^ The settings used to create the server. You can use 0 as port number to have
     -- it automatically assigned
@@ -318,7 +320,7 @@ runRequestingStatefulMaster :: forall m state output context input b.
     -> NMStatefulMasterArgs
     -> (MasterHandle m state context input output -> m b)
     -> m (Maybe b)
-runRequestingStatefulMaster r ss0 host mbPort ma nmsma cont = do
+runRequestingStatefulMaster r wid ss0 host mbPort ma nmsma cont = do
     nmSettings <- defaultNMSettings
     (ss, getPort) <- liftIO (getPortAfterBind ss0)
     whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
@@ -345,7 +347,7 @@ runRequestingStatefulMaster r ss0 host mbPort ma nmsma cont = do
             port <- liftIO getPort
             $logDebug ("Master starting on " ++ tshow (CN.serverHost ss, port))
             let wci = WorkerConnectInfo host (fromMaybe port mbPort)
-            requestSlaves r wci $ \wsc -> do
+            requestSlaves r wid wci $ \wsc -> do
                 putMVar whenSlaveConnectsVar wsc
                 takeMVar keepRequestingSlaves
     let stopRequestingSlaves = tryPutMVar keepRequestingSlaves ()
@@ -384,8 +386,8 @@ runJobQueueStatefulWorker ::
     -> m void
 runJobQueueStatefulWorker jqc ss host mbPort ma nmsma cont = runMasterOrSlave jqc
     (\_r wcis -> connectToAMaster (runNMStatefulSlave (maUpdate ma)) wcis)
-    (\r reqId req -> do
-      mbResp <- runRequestingStatefulMaster r ss host mbPort ma nmsma (\mh -> cont mh reqId req)
+    (\r wid reqId req -> do
+      mbResp <- runRequestingStatefulMaster r wid ss host mbPort ma nmsma (\mh -> cont mh reqId req)
       case mbResp of
         Nothing -> liftIO (fail "Timed out waiting for slaves to connect")
         Just resp -> return resp)

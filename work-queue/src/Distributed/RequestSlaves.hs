@@ -6,7 +6,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE MultiWayIf #-}
 {-|
 Module: Distributed.RequestSlaves
 Description: Facilities to connect worker nodes as slaves and masters.
@@ -41,12 +40,12 @@ module Distributed.RequestSlaves
 
 import ClassyPrelude
 import Control.Monad.Logger
+import qualified Data.HashSet as HashSet
 import Data.List.NonEmpty (NonEmpty(..))
-import Data.Store (encode)
+import Data.Store (Store, encode)
 import Distributed.Redis
 import Distributed.Types (WorkerId(..), DistributedException(..))
 import FP.Redis
-import Data.Store (Store)
 import qualified Data.List.NonEmpty as NE
 import Data.Streaming.NetworkMessage
 import qualified Data.Conduit.Network as CN
@@ -54,8 +53,6 @@ import qualified Data.Streaming.Network.Internal as CN
 import Control.Monad.Trans.Control (control)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Data.Void (absurd)
-import qualified Data.UUID as UUID
-import qualified Data.UUID.V4 as UUID
 import Control.Exception (BlockedIndefinitelyOnMVar)
 
 -- | Information for connecting to a worker
@@ -76,13 +73,13 @@ instance Store WorkerConnectInfoWithWorkerId
 requestSlaves
     :: (MonadConnect m)
     => Redis
+    -> WorkerId -- ^ The 'WorkerId' of the master.
     -> WorkerConnectInfo
     -- ^ This worker's connection information.
     -> (m () -> m a)
     -- ^ When a slave connects, this continuation will be called.  As soon as it terminates, the master will stop accepting slaves.
     -> m a
-requestSlaves r wci0 cont = do
-    wid <- getWorkerId
+requestSlaves r wid wci0 cont = do
     let wci = WorkerConnectInfoWithWorkerId wid wci0
     let encoded = encode wci
     stoppedVar :: MVar Bool <- newMVar False
@@ -90,10 +87,7 @@ requestSlaves r wci0 cont = do
             if stopped
                 then $logInfo ("Trying to increase the slave count when worker " ++ tshow wid ++ " has already been removed, ignoring")
                 else run_ r (zincrby (workerRequestsKey r) 1 encoded)
-    -- REVIEW TODO There is a slight chance that this fails, in which case
-    -- a stray WorkerConnectInfo remains in the workerRequestsKey forever.
-    -- Is this a big problem? Can we mitigate against this?
-    let remove = modifyMVar_ stoppedVar $ \stopped -> do
+    let remove = modifyMVar_ stoppedVar $ \stopped ->
             if stopped
                 then do
                     $logInfo ("Trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests, but it is already removed")
@@ -104,7 +98,7 @@ requestSlaves r wci0 cont = do
                             throwIO (InternalConnectRequestException ("Got no removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests. This can happen if the removal function is called twice"))
                         | removed == 1 ->
                             return ()
-                        | True -> do
+                        | True ->
                             throwIO (InternalConnectRequestException ("Got multiple removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests."))
                     return True
     bracket
@@ -121,6 +115,11 @@ withSlaveRequests ::
     -- that slaves are requested.  Since notifications are not
     -- failsafe, it will run after this timeout if no notification was
     -- received.
+    -> m [WorkerId]
+    -- ^ Function that returns the 'WorkerId's of all workers that are
+    -- alive.  Potential masters will be checked against this.  Any
+    -- masters not in the list will be removed from
+    -- 'workerRequestsKey'.
     -> (NonEmpty WorkerConnectInfo -> m ())
     -- ^ This function will be applied to the list of the masters that
     -- accept slaves (sorted by priority, so that the master with the
@@ -128,7 +127,7 @@ withSlaveRequests ::
     -- guaranteed that all the masters are still running, the list
     -- should be traversed until a running master is found.
     -> m void
-withSlaveRequests redis failsafeTimeout f = withSlaveRequestsWait redis failsafeTimeout (return ()) f
+withSlaveRequests redis failsafeTimeout getLiveWorkers f = withSlaveRequestsWait redis failsafeTimeout getLiveWorkers (return ()) f
 
 -- | Exactly like 'withSlaveRequests', but allows to delay the loop with the third argument.
 withSlaveRequestsWait ::
@@ -139,6 +138,11 @@ withSlaveRequestsWait ::
     -- that slaves are requested.  Since notifications are not
     -- failsafe, it will run after this timeout if no notification was
     -- received.
+    -> m [WorkerId]
+    -- ^ Function that indicates whether the worker with a given
+    -- 'WorkerId' is still alive.  Potential masters will be checked
+    -- against this.  Any masters that fail the test will be removed
+    -- from 'workerRequestsKey'.
     -> (m ())
     -- ^ This function has a loop that keeps grabbing slave requests. This action
     -- will be called at the beginning of every loop iteration, and can
@@ -152,19 +156,28 @@ withSlaveRequestsWait ::
     -- guaranteed that all the masters are still running, the list
     -- should be traversed until a running master is found.
     -> m void
-withSlaveRequestsWait redis failsafeTimeout wait f = do
+withSlaveRequestsWait redis failsafeTimeout getLiveWorkers wait f = do
     withSubscribedNotifyChannel (managedConnectInfo (redisConnection redis)) failsafeTimeout (workerRequestsNotify redis) $
         \waitNotification -> forever $ do
             waitNotification
             wait
-            reqs <- getWorkerRequests redis
-            case NE.nonEmpty reqs of
+            reqs <- getWorkerRequestsWithWorkerIds redis
+            liveWorkers <- HashSet.fromList <$> getLiveWorkers
+            let (validReqs, invalidReqs) =
+                    partition (\x -> HashSet.member (wciwwiWorkerId x) liveWorkers) reqs
+            case NE.nonEmpty invalidReqs of
+                Nothing -> return ()
+                Just invalidReqs' -> do
+                    n <- run redis $ zrem (workerRequestsKey redis) (encode <$> invalidReqs')
+                    when (n /= fromIntegral (NE.length invalidReqs')) $
+                        $logWarn $ "Trying to remove slave requests from " ++ pack (show (NE.length invalidReqs')) ++ " dead masters, removed only " ++ pack (show n) ++ ". Probably another slave has removed the rest already."
+            case NE.nonEmpty validReqs of
                 Nothing -> do
                     $logDebug ("Tried to get masters to connect to but got none")
                     return ()
                 Just reqs' -> do
                     $logDebug ("Got " ++ tshow reqs' ++ " masters to try to connect to")
-                    mbRes :: Either SomeException () <- tryAny (f reqs')
+                    mbRes :: Either SomeException () <- tryAny (f (wciwwiWci <$> reqs'))
                     case mbRes of
                         Left err -> do
                             $logWarn ("withSlaveRequests: got error " ++ tshow err ++ ", continuing")
@@ -177,9 +190,12 @@ withSlaveRequestsWait redis failsafeTimeout wait f = do
 -- to a master are counted, and it is assumed that clients stay
 -- connected to the master as long as the master runs, see issue #134).
 getWorkerRequests :: (MonadConnect m) => Redis -> m [WorkerConnectInfo]
-getWorkerRequests r = do
+getWorkerRequests r = map wciwwiWci <$> getWorkerRequestsWithWorkerIds r
+
+getWorkerRequestsWithWorkerIds :: (MonadConnect m) => Redis -> m [WorkerConnectInfoWithWorkerId]
+getWorkerRequestsWithWorkerIds r = do
     resps <- run r (zrangebyscore (workerRequestsKey r) (-1/0) (1/0) False)
-    map wciwwiWci <$> mapM (decodeOrThrow "getWorkerRequests") resps
+    mapM (decodeOrThrow "getWorkerRequests") resps
 
 -- | Channel used for notifying that there's a new ConnectRequest.
 workerRequestsNotify :: Redis -> NotifyChannel
@@ -245,26 +261,23 @@ connectToMaster :: forall m slaveSends masterSends void.
     => Redis
     -> Milliseconds
     -- ^ Timeout as in 'withSlaveRequests'
+    -> m [WorkerId]
     -> NMApp slaveSends masterSends m () -- ^ What to do when we connect
     -> m void
-connectToMaster r failsafeTimeout cont = withSlaveRequests r failsafeTimeout (connectToAMaster cont)
+connectToMaster r failsafeTimeout getLiveWorkers cont = withSlaveRequests r failsafeTimeout getLiveWorkers (connectToAMaster cont)
 
 -- | Exceptions that we anticipate when trying to connect.
 acceptableException :: SomeException -> Bool
 acceptableException err
     | Just (_ :: IOError) <- fromException err = True
     | Just (_ :: NetworkMessageException) <- fromException err = True
-    | True = False
-
--- | Create a new unique 'WorkerId'.
-getWorkerId :: (MonadIO m) => m WorkerId
-getWorkerId = do
-    liftIO (WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom)
+    | otherwise = False
 
 -- | Run a master that listens to slaves, and request slaves to connect.
 acceptSlaveConnections :: forall m masterSends slaveSends a.
        (MonadConnect m, Sendable masterSends, Sendable slaveSends)
     => Redis
+    -> WorkerId
     -> CN.ServerSettings
     -- ^ The settings used to create the server. You can use 0 as port number to have
     -- it automatically assigned
@@ -279,7 +292,7 @@ acceptSlaveConnections :: forall m masterSends slaveSends a.
     -- ^ Continuation, the master will quit when requesting slaves when this
     -- continuation exits
     -> m a
-acceptSlaveConnections r ss0 host mbPort contSlaveConnect cont = do
+acceptSlaveConnections r wid ss0 host mbPort contSlaveConnect cont = do
     nmSettings <- defaultNMSettings
     (ss, getPort) <- liftIO (getPortAfterBind ss0)
     whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
@@ -310,7 +323,7 @@ acceptSlaveConnections r ss0 host mbPort contSlaveConnect cont = do
             port <- liftIO getPort
             $logDebug ("Master starting on " ++ tshow (CN.serverHost ss, port))
             let wci = WorkerConnectInfo host (fromMaybe port mbPort)
-            requestSlaves r wci $ \wsc -> do
+            requestSlaves r wid wci $ \wsc -> do
                 putMVar whenSlaveConnectsVar wsc
                 cont
     fmap (either absurd id) (Async.race acceptConns runMaster)
