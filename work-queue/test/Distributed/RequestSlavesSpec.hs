@@ -68,17 +68,17 @@ slaveLog (SlaveId mid) msg = "(S" ++ tshow mid ++ ") " ++ msg
 
 runMaster :: forall m a.
        (MonadConnect m)
-    => Redis -> NMApp MasterSends SlaveSends m () -> m a -> m a
-runMaster r =
-    acceptSlaveConnections r (CN.serverSettings 0 "*") "127.0.0.1" Nothing
+    => Redis -> WorkerId -> NMApp MasterSends SlaveSends m () -> m a -> m a
+runMaster r wid =
+    acceptSlaveConnections r wid (CN.serverSettings 0 "*") "127.0.0.1" Nothing
 
 runSlave :: forall m void.
        (MonadConnect m)
     => Redis -> NMApp SlaveSends MasterSends m () -> m void
 runSlave r cont = connectToMaster r (Milliseconds 100) cont
 
-runMasterCollectResults :: (MonadConnect m) => Redis -> MasterId -> Int -> m ()
-runMasterCollectResults r mid numSlaves = do
+runMasterCollectResults :: (MonadConnect m) => Redis -> WorkerId -> MasterId -> Int -> m ()
+runMasterCollectResults r wid mid numSlaves = do
     resultsVar :: TVar (Map.Map SlaveId MasterId) <- liftIO (newTVarIO mempty)
     let whenSlaveConnects nm = do
             nmWrite nm (MasterSends mid)
@@ -93,7 +93,7 @@ runMasterCollectResults r mid numSlaves = do
             return results
         $logInfo (masterLog mid "Slaves done")
         return res
-    results <- runMaster r whenSlaveConnects master
+    results <- runMaster r wid whenSlaveConnects master
     unless (results == Map.fromList [(SlaveId x, mid) | x <- [1..numSlaves]]) $
         fail "Unexpected results"
 

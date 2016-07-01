@@ -17,6 +17,7 @@ module Distributed.JobQueue.MasterOrSlave
 import ClassyPrelude
 import Control.Monad.Logger
 import Data.Streaming.NetworkMessage
+import Distributed.Heartbeat
 import Distributed.JobQueue.Internal
 import Distributed.Redis
 import Distributed.Types
@@ -47,7 +48,7 @@ runMasterOrSlave :: forall m request response void.
     -- ^ Slave function. The slave function should try to connect to the master
     -- with 'connectToAMaster', which will do the right thing with the list of
     -- candidate masters.
-    -> (Redis -> RequestId -> request -> m (Reenqueue response))
+    -> (Redis -> WorkerId -> RequestId -> request -> m (Reenqueue response))
     -- ^ Master function.
     -> m void
 runMasterOrSlave config slaveFunc masterFunc = do
@@ -58,7 +59,7 @@ runMasterOrSlave config slaveFunc masterFunc = do
     handleSlaveRequests :: TVar MasterOrSlave -> m void
     handleSlaveRequests stateVar =
         withRedis (jqcRedisConfig config) $ \redis ->
-            withSlaveRequestsWait redis (jqcSlaveRequestsNotificationFailsafeTimeout config) (waitToBeIdle stateVar) $ \wcis -> do
+            withSlaveRequestsWait redis (jqcSlaveRequestsNotificationFailsafeTimeout config) (activeOrUnhandledWorkers redis) (waitToBeIdle stateVar) $ \wcis -> do
                 -- If it can't transition to slave, that's fine: all the
                 -- other slave candidates will get the connection request anyway.
                 -- In fact, this node itself will get it again, since
@@ -73,11 +74,11 @@ runMasterOrSlave config slaveFunc masterFunc = do
 
     handleMasterRequests :: TVar MasterOrSlave -> m void
     handleMasterRequests stateVar = do
-        jobWorkerWait config (waitToBeIdle stateVar) $ \redis rid request -> do
+        jobWorkerWait config (waitToBeIdle stateVar) $ \redis wid rid request -> do
             -- If you couldn't transition to master, re-enqueue.
             mbRes <- transitionIdleTo stateVar Master $ do
                 $logInfo ("Transitioned to master")
-                masterFunc redis rid request
+                masterFunc redis wid rid request
             case mbRes of
                 Nothing -> do
                     $logDebug ("Tried to transition to master, but couldn't. Request " ++ tshow rid ++ " will be re-enqueued.")

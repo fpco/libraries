@@ -69,7 +69,7 @@ import Data.Typeable (typeOf)
 jobWorker :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
-    -> (Redis -> RequestId -> request -> m (Reenqueue response))
+    -> (Redis -> WorkerId -> RequestId -> request -> m (Reenqueue response))
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m void
@@ -85,12 +85,12 @@ jobWorkerWait :: forall m request response void.
     -- be useful to "limit" the loop (e.g. have some timer in between,
     -- or wait for the worker to be free of processing requests if we
     -- are doing something else too).
-    -> (Redis -> RequestId -> request -> m (Reenqueue response))
+    -> (Redis -> WorkerId -> RequestId -> request -> m (Reenqueue response))
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m void
 jobWorkerWait config@JobQueueConfig{..} wait f = do
-    wid <- liftIO getWorkerId
+    wid <- getWorkerId
     let withTag = withLogTag (LogTag ("worker-" ++ tshow (unWorkerId wid)))
     withTag $ withRedis jqcRedisConfig $ \r -> do
         $logInfo "Starting heartbeats"
@@ -102,7 +102,7 @@ jobWorkerWait config@JobQueueConfig{..} wait f = do
                 (requestChannel r)
                 (\waitForReq -> do
                     -- writeIORef everConnectedRef True
-                    jobWorkerThread config r wid waitForReq (f r) wait)
+                    jobWorkerThread config r wid waitForReq (f r wid) wait)
 
 -- | A specialised 'Maybe' to indicate the result of a job: If the job
 -- successfull produced a result @a@, it will yield it via
@@ -302,6 +302,6 @@ wrapException ex =
         (fromException -> Just err) -> NetworkMessageException err
         _ -> OtherException (tshow (typeOf ex)) (tshow ex)
 
-getWorkerId :: IO WorkerId
-getWorkerId = do
+getWorkerId :: MonadIO m => m WorkerId
+getWorkerId = liftIO $
     WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom
