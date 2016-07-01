@@ -74,9 +74,10 @@ myClient :: MonadConnect m => m void
 myClient = withJobClient jqc $ \jq -> do
     let request = "some request" :: Request
     submitRequest jq requestId request
-    mResponse <- waitForResponse_ jq requestId
-    mResponse `shouldBe` Just ("done" :: Response)
-    fail "Client unexpectedly finished, which it should not."
+    mResponse :: Maybe Response <- waitForResponse_ jq requestId
+    case mResponse of
+        Nothing -> fail "myClient got 'Nothing' when waiting for the response!"
+        Just _ -> fail "myClient got a response, which should never happen since the worker function never returns"
 
 waitFor :: forall m . (MonadIO m, MonadMask m) => RetryPolicy -> m () -> m ()
 waitFor policy expectation =
