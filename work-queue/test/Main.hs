@@ -4,7 +4,7 @@ import           Test.Hspec
 import           System.Posix.Resource
 
 import qualified Distributed.HeartbeatSpec
--- import qualified Distributed.RequestSlavesSpec
+import qualified Distributed.RequestSlavesSpec
 import qualified Distributed.StaleKeySpec
 import qualified Distributed.JobQueueSpec
 import qualified Data.Streaming.NetworkMessageSpec
@@ -20,7 +20,7 @@ main = do
   setResourceLimit ResourceOpenFiles rl{softLimit = ResourceLimit 50000}
   hspec $ do
     describe "Distributed.Heartbeat" Distributed.HeartbeatSpec.spec
-    -- describe "Distributed.RequestSlaves" Distributed.RequestSlavesSpec.spec
+    describe "Distributed.RequestSlaves" Distributed.RequestSlavesSpec.spec
     describe "Distributed.JobQueue" Distributed.JobQueueSpec.spec
     describe "Distributed.StatefulSpec" Distributed.StatefulSpec.spec
     describe "Distributed.StatusSpec" Distributed.StatusSpec.spec
