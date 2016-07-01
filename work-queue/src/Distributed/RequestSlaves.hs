@@ -87,9 +87,6 @@ requestSlaves r wid wci0 cont = do
             if stopped
                 then $logInfo ("Trying to increase the slave count when worker " ++ tshow wid ++ " has already been removed, ignoring")
                 else run_ r (zincrby (workerRequestsKey r) 1 encoded)
-    -- REVIEW TODO There is a slight chance that this fails, in which case
-    -- a stray WorkerConnectInfo remains in the workerRequestsKey forever.
-    -- Is this a big problem? Can we mitigate against this?
     let remove = modifyMVar_ stoppedVar $ \stopped ->
             if stopped
                 then do
