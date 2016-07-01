@@ -61,12 +61,13 @@ myWorker = jobWorker jqc workerFunc
 requestId :: RequestId
 requestId = RequestId "myRequest"
 
-myClient :: MonadConnect m => m ()
+myClient :: MonadConnect m => m void
 myClient = withJobClient jqc $ \jq -> do
     let request = "some request" :: Request
     submitRequest jq requestId request
     mResponse <- waitForResponse_ jq requestId
     mResponse `shouldBe` Just ("done" :: Response)
+    fail "Client unexpectedly finished, which it should not."
 
 waitFor :: forall m . (MonadIO m, MonadMask m) => RetryPolicy -> m () -> m ()
 waitFor policy expectation =
@@ -110,7 +111,7 @@ staleKeyTest redis =
         Concurrently (checkHeartbeats (jqcHeartbeatConfig jqc) redis $ \_inactive cleanup -> cleanup) <|>
         Concurrently
             (do waitForHeartbeatFailure redis -- worker fails heartbeat, but is actually still alive.
-                fmap (either id id) $ race myClient $ do
+                fmap (either absurd id) $ race myClient $ do
                     -- we expect the worker to take the job
                     waitForJobStarted redis
                     -- and the client to subsequently re-enqueue it, since
