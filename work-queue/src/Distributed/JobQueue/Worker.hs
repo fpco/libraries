@@ -275,7 +275,7 @@ sendResponse r expiry wid k x = do
         $logWarn ("Expecting no request " <> tshow k <> " in requestsKey, but found " ++ tshow removed ++ ". This can happen with spurious heartbeat failures.")
     -- Store when the response was stored.
     responseTime <- liftIO getPOSIXTime
-    setRedisTime r (responseTimeKey r k) responseTime [EX expiry]
+    void $ setRedisTime r (responseTimeKey r k) responseTime [EX expiry]
 
 watchForCancel :: forall m. (MonadConnect m) => Redis -> RequestId -> Seconds -> m ()
 watchForCancel r k ivl = loop
