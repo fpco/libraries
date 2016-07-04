@@ -29,6 +29,7 @@ module Distributed.JobQueue.Worker
     , jobWorker
     , Reenqueue(..)
     , jobWorkerWait
+    , getWorkerId
     ) where
 
 import ClassyPrelude
