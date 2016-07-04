@@ -28,6 +28,7 @@ import           TestUtils
 heartbeatConfig :: HeartbeatConfig
 heartbeatConfig = HeartbeatConfig
     { hcSenderIvl = Seconds 2
+    , hcTimeoutIvl = Seconds 1
     , hcCheckerIvl = Seconds 1
     }
 

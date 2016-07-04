@@ -224,5 +224,5 @@ getRedisTime :: MonadConnect m => Redis -> VKey -> m (Maybe POSIXTime)
 getRedisTime r k = fmap timeFromBS <$> run r (get k)
 
 -- | Store (or update) a Timestamp in the database.
-setRedisTime :: MonadConnect m => Redis -> VKey -> POSIXTime -> [SetOption] -> m ()
-setRedisTime r k x opts = run_ r $ set k (timeToBS x) opts
+setRedisTime :: MonadConnect m => Redis -> VKey -> POSIXTime -> [SetOption] -> m Bool
+setRedisTime r k x opts = run r $ set k (timeToBS x) opts

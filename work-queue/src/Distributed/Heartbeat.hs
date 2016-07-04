@@ -36,6 +36,7 @@ module Distributed.Heartbeat
 
 import ClassyPrelude
 import Control.Concurrent.Lifted (threadDelay)
+import Control.Monad.Extra (partitionM)
 import Control.Monad.Logger (logDebug, logInfo)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import qualified Data.List.NonEmpty as NE
@@ -48,13 +49,15 @@ import Data.Void (absurd)
 import Distributed.Redis
 import Distributed.Types
 
--- TODO: add warnings when the check rate is too low compared to send
--- rate.
+-- TODO: add warnings when the checkor timeout rate is too low
+-- compared to send rate.
 
 -- | Configuration of heartbeats, used by both the checker and sender.
 data HeartbeatConfig = HeartbeatConfig
     { hcSenderIvl :: !Seconds
     -- ^ How frequently heartbeats should be sent.
+    , hcTimeoutIvl :: !Seconds
+    -- ^ How long a heartbeat lasts in the database.
     , hcCheckerIvl :: !Seconds
     -- ^ How frequently heartbeats should be checked. Should be
     -- substantially larger than 'hcSenderIvl'.
@@ -62,25 +65,36 @@ data HeartbeatConfig = HeartbeatConfig
 
 -- | Default 'HeartbeatConfig'.
 --
--- Heartbeats are sent every 15 seconds, checked every 30 seconds.
+-- Heartbeats are sent every 15 seconds, last 30 seconds and are
+-- checked every 30 seconds.
 defaultHeartbeatConfig :: HeartbeatConfig
 defaultHeartbeatConfig = HeartbeatConfig
     { hcSenderIvl = Seconds 15
+    , hcTimeoutIvl = Seconds 30
     , hcCheckerIvl = Seconds 30
     }
 
--- | Redis key used to collect the most recent heartbeat of nodes, in
--- a sorted set with the timestamp of the last heartbeat as key.
-heartbeatActiveKey :: Redis -> ZKey
-heartbeatActiveKey r = ZKey $ Key $ redisKeyPrefix r <> "heartbeat:active"
+-- | Redis key used to collect the 'WorkerId's of active workers.
+heartbeatActiveKey :: Redis -> SKey
+heartbeatActiveKey r = SKey $ Key $ redisKeyPrefix r <> "heartbeat:active"
 
--- | A sorted set of 'WorkerId's that are considered dead, i.e., they
--- failed their last heartbeat check.  Score is the time of the
--- unsuccessful heartbeat check.
+-- | Redis key to hold the current heartbeat of a given 'WorkerId'.
+-- Heartbeats expire automatically, and are refreshed byt he worker
+-- periodically.  That way, each worker for which the
+-- 'heartbeatWorkerKey' is set passes the heartbeat check, without the
+-- need to compare the time of the last heartbeat against a clock.
+heartbeatOfWorkerKey :: Redis -> WorkerId -> VKey
+heartbeatOfWorkerKey r wid = VKey $ Key $ redisKeyPrefix r <> "heartbeat:heartbeat:" <> unWorkerId wid
+
+-- | A sorted set of 'WorkerId's that have failed a heartbeat check in
+-- the past.  Score is the time of the unsuccessful heartbeat check.
+--
+-- Note that workers that have failed a heartbeat check temporarily
+-- are included here.
 heartbeatDeadKey :: Redis -> ZKey
 heartbeatDeadKey r = ZKey $ Key $ redisKeyPrefix r <> "heartbeat:dead"
 
--- | Redis ey to store the timestamp for the last time the heartbeat check successfully ran.
+-- | Redis key to store the timestamp for the last time the heartbeat check successfully ran.
 heartbeatLastCheckKey :: Redis -> VKey
 heartbeatLastCheckKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:last-check"
 
@@ -91,7 +105,7 @@ heartbeatLastCheckKey r = VKey $ Key $ redisKeyPrefix r <> "heartbeat:last-check
 -- for work.
 activeOrUnhandledWorkers :: (MonadConnect m) => Redis -> m [WorkerId]
 activeOrUnhandledWorkers r =
-    map WorkerId <$> run r (zrange (heartbeatActiveKey r) 0 (-1) False)
+    map WorkerId <$> run r (smembers (heartbeatActiveKey r))
 
 -- | Returns all the workers that failed a heartbeat check.
 --
@@ -111,11 +125,10 @@ lastHeartbeatCheck r =
 -- | Get the most recent time a given worker sent its hearbeat.
 --
 -- Will return nothing if the worker has not sent a heartbeat yet, or
--- if it failed the last heartbeat check.
+-- if the last heartbeat has already expired.
 lastHeartbeatForWorker :: (MonadConnect m) => Redis -> WorkerId -> m (Maybe UTCTime)
 lastHeartbeatForWorker r wid =
-    fmap (posixSecondsToUTCTime . realToFrac) <$>
-    run r (zscore (heartbeatActiveKey r) (unWorkerId wid))
+    fmap posixSecondsToUTCTime <$> getRedisTime r (heartbeatOfWorkerKey r wid)
 
 -- | Get the time of the most recent heartbeat failure for a specific worker.
 lastHeartbeatFailureForWorker :: MonadConnect m => Redis -> WorkerId -> m (Maybe UTCTime)
@@ -133,14 +146,15 @@ clearHeartbeatFailures r = do
 
 -- | Periodically check worker heartbeats.
 --
--- If enough time has passed since the last heartbeat check, look at
--- the latest heartbeat from every worker.  If it is too old, we have
--- a heartbeat failure of that worker.
+-- If enough time has passed since the last heartbeat check, check the
+-- heartbeats of all workers that are currently believed to be live.
+--
+-- Workers periodically send heartbeats.  Each heartbeat expires
+-- automatically, so workers that stop sending their heartbeats will
+-- fail their heartbeat test after a short time.
 --
 -- After the heartbeat check, @handleFailures@ will be run on the list
 -- of workers that failed their heartbeat.
---
--- See #78 for a detailed description of the design.
 --
 -- Note that:
 --
@@ -167,7 +181,7 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
         tshow oldTime
     mlastTime <- getRedisTime r (heartbeatLastCheckKey r)
     let setTimeAndWait = do
-            setRedisTime r (heartbeatLastCheckKey r) startTime []
+            void $ setRedisTime r (heartbeatLastCheckKey r) startTime []
             liftIO $ threadDelay (fromIntegral ivl * 1000000)
     -- Do the heartbeat check when enough time has elapsed since the last check,
     -- or when no check has ever happened.
@@ -177,28 +191,28 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
             $logDebug $ "Heartbeat check: Not enough time has elapsed since the last check, delaying by: " ++
                         tshow usecs
             liftIO $ threadDelay usecs
-        Just lastTime -> do
+        Just _lastTime -> do
             -- Note that nothing prevents two checkers from checking up on
             -- the workers at the same time. This is fine and part of the contract of the
             -- function.
-            $logDebug ("Enough time has passed, checking if there are any inactive workers.")
-            let ninf = -1 / 0
-            inactives00 <- run r $ zrangebyscore (heartbeatActiveKey r) ninf (realToFrac lastTime) False
-            case inactives00 of
-                [] -> return ()
-                inactive : inactives0 -> do
-                    let inactives = inactive :| inactives0
+            $logDebug "Enough time has passed, checking if there are any inactive workers."
+            workers <- activeOrUnhandledWorkers r
+            (_passed, failed) <- partitionM (\wid -> isJust <$> lastHeartbeatForWorker r wid) workers
+            case NE.nonEmpty failed of
+                Nothing -> return ()
+                Just inactives -> do
                     $logInfo ("Got inactive workers: " ++ tshow inactives)
-                    deadones <- run r (zadd (heartbeatDeadKey r) (NE.zip (NE.repeat (realToFrac startTime)) inactives))
+                    deadones <- run r (zadd (heartbeatDeadKey r) (NE.zip (NE.repeat (realToFrac startTime)) (unWorkerId <$> inactives)))
                     unless (deadones == fromIntegral (length inactives)) $
                         $logDebug ("Expecting to have registered " ++ tshow (length inactives) ++ " dead workers, but got " ++ tshow deadones ++ ", some other client probably took care of it already.")
                     -- TODO consider catching exceptins here
                     handleFailures
-                        (map WorkerId inactives)
+                        inactives
                         (do $logDebug ("Cleaning up inactive workers " ++ tshow inactives)
-                            removed <- run r (zrem (heartbeatActiveKey r) inactives)
+                            removed <- run r $ srem (heartbeatActiveKey r) (unWorkerId <$> inactives)
                             unless (removed == fromIntegral (length inactives)) $
-                                $logDebug ("Expecting to have cleaned up " ++ tshow (length inactives) ++ " but got " ++ tshow removed ++ ", some other client probably took care of it already."))
+                                $logDebug ("Expecting to have cleaned up " ++ tshow (length inactives) ++ " but got " ++ tshow removed ++ ", some other client probably took care of it already.")
+                        )
             $logDebug "Setting timestamp for last heartbeat check"
             setTimeAndWait
         Nothing -> setTimeAndWait
@@ -237,15 +251,8 @@ withCheckHeartbeats
 withCheckHeartbeats conf redis handle' cont =
     fmap (either id absurd) (race cont (checkHeartbeats conf redis handle'))
 
--- | This periodically removes the worker's key from the set of
--- inactive workers.  This set is periodically re-initialized and
--- checked by 'checkHeartbeats'.
---
--- Note that using the same 'Seconds' time interval for both
--- 'checkHeartbeats' and 'sendHeartbeats' will be unreliable.
--- Instead, a lesser time interval should be passed to
--- 'sendHeartbeats', to be sure that the heartbeat is seen by every
--- iteration of 'checkHeartbeats'.
+-- | Periodically sends heartbeats, and makes sure that the worker is
+-- in the set of active workers.
 withHeartbeats
     :: MonadConnect m => HeartbeatConfig -> Redis -> WorkerId -> m a -> m a
 withHeartbeats config r wid cont = do
@@ -256,5 +263,13 @@ withHeartbeats config r wid cont = do
         sendHeartbeat
   where
     sendHeartbeat = do
-        now <- liftIO getPOSIXTime
-        run_ r $ zadd (heartbeatActiveKey r) ((realToFrac now, unWorkerId wid) :| [])
+        curTime <- liftIO getPOSIXTime
+        -- try to refresh the heartbeat. This will fail if the worker
+        -- has not sent a heartbeat before, or if the last heartbeat
+        -- has already expired.
+        is_there <- setRedisTime r (heartbeatOfWorkerKey r wid) curTime [EX (hcTimeoutIvl config), XX]
+        unless is_there $ do
+            -- send the first heartbeat (or first heartbeat after a heartbeat failure)
+            void $ setRedisTime r (heartbeatOfWorkerKey r wid) curTime [EX (hcTimeoutIvl config)]
+            -- add this node as an active node
+            run_ r $ sadd (heartbeatActiveKey r) (unWorkerId wid :| [])
