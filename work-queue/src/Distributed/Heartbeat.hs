@@ -56,12 +56,14 @@ import Distributed.Types
 data HeartbeatConfig = HeartbeatConfig
     { hcSenderIvl :: !Seconds
     -- ^ How frequently heartbeats should be sent.
-    , hcTimeoutIvl :: !Seconds
-    -- ^ How long a heartbeat lasts in the database.
     , hcCheckerIvl :: !Seconds
     -- ^ How frequently heartbeats should be checked. Should be
     -- substantially larger than 'hcSenderIvl'.
     } deriving (Eq, Show)
+
+-- | How long a heartbeat lasts in the database.
+hcTimeoutIvl :: HeartbeatConfig -> Seconds
+hcTimeoutIvl = hcCheckerIvl
 
 -- | Default 'HeartbeatConfig'.
 --
@@ -70,7 +72,6 @@ data HeartbeatConfig = HeartbeatConfig
 defaultHeartbeatConfig :: HeartbeatConfig
 defaultHeartbeatConfig = HeartbeatConfig
     { hcSenderIvl = Seconds 15
-    , hcTimeoutIvl = Seconds 30
     , hcCheckerIvl = Seconds 30
     }
 

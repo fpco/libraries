@@ -51,7 +51,6 @@ testJobQueueConfig = (defaultJobQueueConfig "test:")
     , jqcCancelCheckIvl = Seconds 1
     , jqcHeartbeatConfig = HeartbeatConfig
         { hcSenderIvl = Seconds 1
-        , hcTimeoutIvl = testHeartbeatCheckIvl
         , hcCheckerIvl = testHeartbeatCheckIvl
         }
     }

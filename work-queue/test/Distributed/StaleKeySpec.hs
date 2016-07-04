@@ -39,7 +39,6 @@ type Response = ByteString
 heartbeatConfig :: HeartbeatConfig
 heartbeatConfig = HeartbeatConfig
     { hcSenderIvl = Seconds 3600 -- We don't want the second heartbeat to arrive, ever.
-    , hcTimeoutIvl = Seconds 1
     , hcCheckerIvl = Seconds 1
     }
 
