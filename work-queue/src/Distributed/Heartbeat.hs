@@ -175,6 +175,11 @@ checkHeartbeats
     -- the 'WorkerId's will show up again.
     -> m void
 checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ do
+    -- We use the current time here in order to reduce the total
+    -- number of heartbeat checks in case many clients perform them:
+    -- after every successfult heartbeat check, the time of the check
+    -- is entered into the database.  Before performing a heartbeat
+    -- check, we ensure that enough time has passed.
     startTime <- liftIO getPOSIXTime
     let Seconds ivl = hcCheckerIvl config
         oldTime = startTime - fromIntegral ivl
@@ -264,13 +269,14 @@ withHeartbeats config r wid cont = do
         sendHeartbeat
   where
     sendHeartbeat = do
+        -- We need the current time here only for displaying the time
+        -- of the last heartbeat in the hpc-manager.  For the
+        -- heartbeat mechanism itself, a fixed string would work just
+        -- as well.
         curTime <- liftIO getPOSIXTime
-        -- try to refresh the heartbeat. This will fail if the worker
-        -- has not sent a heartbeat before, or if the last heartbeat
-        -- has already expired.
-        is_there <- setRedisTime r (heartbeatOfWorkerKey r wid) curTime [EX (hcTimeoutIvl config), XX]
-        unless is_there $ do
-            -- send the first heartbeat (or first heartbeat after a heartbeat failure)
-            void $ setRedisTime r (heartbeatOfWorkerKey r wid) curTime [EX (hcTimeoutIvl config)]
-            -- add this node as an active node
-            run_ r $ sadd (heartbeatActiveKey r) (unWorkerId wid :| [])
+        -- Update the heartbeat
+        void $ setRedisTime r (heartbeatOfWorkerKey r wid) curTime [EX (hcTimeoutIvl config)]
+        -- Make sure the worker appears in the set of active workers.
+        -- Since it's a set, adding an element is idempotent, so it's
+        -- safe to add every time we send a heartbeat.
+        run_ r $ sadd (heartbeatActiveKey r) (unWorkerId wid :| [])
