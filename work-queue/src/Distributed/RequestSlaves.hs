@@ -168,9 +168,7 @@ withSlaveRequestsWait redis failsafeTimeout getLiveWorkers wait f = do
             case NE.nonEmpty invalidReqs of
                 Nothing -> return ()
                 Just invalidReqs' -> do
-                    n <- run redis $ zrem (workerRequestsKey redis) (encode <$> invalidReqs')
-                    when (n /= fromIntegral (NE.length invalidReqs')) $
-                        $logWarn $ "Trying to remove slave requests from " ++ pack (show (NE.length invalidReqs')) ++ " dead masters, removed only " ++ pack (show n) ++ ". Probably another slave has removed the rest already."
+                    $logWarn ("Ignoring dead masters " ++ tshow invalidReqs')
             case NE.nonEmpty validReqs of
                 Nothing -> do
                     $logDebug ("Tried to get masters to connect to but got none")
