@@ -8,21 +8,22 @@
 module Distributed.StatusSpec (spec) where
 
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.MVar
 import           Control.Monad
 import           Control.Monad.IO.Class
-import           Control.Monad.Logger
 import           Data.ByteString (ByteString)
 import           Data.ByteString.Char8 (pack)
 import           Data.Maybe
 import           Data.Store.TypeHash (mkManyHasTypeHash)
+import           Data.Void
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Client
 import           Distributed.JobQueue.Status
 import           Distributed.JobQueue.Worker
 import           Distributed.Redis
 import           Distributed.Types
-import           FP.Redis (MonadConnect)
+import           FP.Redis (Seconds (..), MonadConnect)
 import           Test.Hspec (Spec)
 import           Test.Hspec.Expectations.Lifted
 import           TestUtils
@@ -31,11 +32,6 @@ $(mkManyHasTypeHash [[t| ByteString |]])
 
 type Request = ByteString
 type Response = ByteString
-
-startClient :: forall m . (MonadConnect m, MonadLogger m) => (RequestId, Request) -> m (Async.Async ())
-startClient (rid, req) = Async.async $ withJobClient testJobQueueConfig $ \jc -> do
-    submitRequest jc rid req
-    void (waitForResponse_ jc rid :: m (Maybe Response))
 
 -- | This worker completes as soon as the 'MVar' is not empty.
 waitingWorker :: MonadConnect m => MVar () -> m void
@@ -46,72 +42,95 @@ waitingWorkerFunc mvar _ _ _ = do
     _ <- liftIO $ takeMVar mvar
     return (DontReenqueue "Done")
 
+-- | This 'JobQueueConfig' will cause heartbeat failures, since
+-- 'hcSenderIvl' is larger than 'hcCheckerIvl'.
+failingJqc :: JobQueueConfig
+failingJqc = testJobQueueConfig
+    { jqcHeartbeatConfig = HeartbeatConfig { hcSenderIvl = Seconds 3600
+                                           , hcCheckerIvl = Seconds 2 }}
+
+-- | A worker that will fail its heartbeat
+failingWorker :: MonadConnect m => m void
+failingWorker = jobWorkerWithHeartbeats failingJqc failingWorkerFunc
+
+-- | The worker function of the 'failingWorker'.
+--
+-- It simply does not terminate.
+failingWorkerFunc :: MonadConnect m => Redis -> RequestId -> Request -> m (Reenqueue Response)
+failingWorkerFunc _ _ _ = forever (threadDelay maxBound) >> return (DontReenqueue "done")
+
+-- | Simple client that submits a request and waits for the result.
+startClient :: forall m . MonadConnect m => (RequestId, Request) -> m ()
+startClient (rid, req) = withJobClient testJobQueueConfig $ \jc -> do
+    submitRequest jc rid req
+    void (waitForResponse_ jc rid :: m (Maybe Response))
+
+-- | Some requests.
 someRequests :: [(RequestId, ByteString)]
 someRequests = [(RequestId . pack . show $ n, pack . show $ n) | n <- [0..10 :: Int]]
 
-queueReqs :: (MonadLogger m, MonadConnect m) => Redis -> [(RequestId, Request)] -> m ()
-queueReqs redis reqs = do
-    mapM_ startClient reqs
-    waitFor upToTenSeconds $ do
-        reqs' <- getAllRequests redis
-        reqs' `shouldMatchList` map fst reqs
+-- | Start some clients that each enqueue a request, wait until all
+-- requests are in the database, and then perform a test.
+--
+-- All the tests require at least one active client for stuff like
+-- heartbeat checks, as well as to set the redis schema.
+withRequests :: (MonadConnect m) => Redis -> [(RequestId, Request)] -> m () -> m ()
+withRequests redis reqs cont =
+    foldl (\x req -> either id id <$> Async.race x (startClient req))
+        (waitFor (upToNSeconds 15) $ do
+                reqs' <- getAllRequests redis
+                reqs' `shouldMatchList` map fst reqs
+                cont)
+        reqs
 
 queueRequestsTest :: MonadConnect m => Redis -> m ()
-queueRequestsTest redis = do
-    queueReqs redis someRequests
+queueRequestsTest redis = withRequests redis someRequests $
     waitFor upToTenSeconds $ do
-    -- check that both getAllRequests and the list of pending requests match the submitted jobs
+    -- check that the list of pending requests match the submitted jobs
         jqs <- getJobQueueStatus redis
         jqsPending jqs `shouldMatchList` map fst someRequests
-        allReqs <- getAllRequests redis
-        allReqs `shouldMatchList` map fst someRequests
 
 addWorkerTest :: MonadConnect m => Redis -> m ()
-addWorkerTest redis = do
-    queueReqs redis someRequests
+addWorkerTest redis = withRequests redis someRequests $ do
     mvar <- liftIO newEmptyMVar
-    Async.race_
+    either absurd id <$> Async.race
         (waitingWorker mvar)
-        (waitFor upToTenSeconds $ do
+        (do waitFor upToTenSeconds $ do
                 jqs' <- getJobQueueStatus redis
                 length (jqsWorkers jqs') `shouldBe` 1
                 length (jqsPending jqs') `shouldBe` length someRequests - 1
-                liftIO $ putMVar mvar ()
-        )
+            liftIO $ putMVar mvar ())
 
 heartbeatFailureTest :: MonadConnect m => Redis -> m ()
-heartbeatFailureTest redis = do
-    queueReqs redis someRequests
-    mvar <- liftIO newEmptyMVar
-    worker <- Async.async $ waitingWorker mvar
-    waitFor upToTenSeconds $ do -- make sure the worker has sent its first heartbeat
-        jqs <- getJobQueueStatus redis
-        length (jqsWorkers jqs) `shouldBe` 1
-    liftIO $ Async.cancel worker
-    waitFor upToTenSeconds $ do -- wait for a heartbeat failure
-        jqs <- getJobQueueStatus redis
-        length (jqsHeartbeatFailures jqs) `shouldBe` 1
-    liftIO $ putMVar mvar ()
+heartbeatFailureTest redis = withRequests redis someRequests $
+    fmap (either absurd id) $ Async.race failingWorker $
+        waitFor upToTenSeconds $ do -- wait for a heartbeat failure
+            jqs <- getJobQueueStatus redis
+            length (jqsHeartbeatFailures jqs) `shouldBe` 1
+            length (jqsWorkers jqs) `shouldBe` 0
 
 completeJobTest :: MonadConnect m => Redis -> m ()
-completeJobTest redis = do
-    queueReqs redis someRequests
+completeJobTest redis = withRequests redis someRequests $ do
     mvar <- liftIO newEmptyMVar
-    Async.race_
+    either absurd id <$> Async.race
         (waitingWorker mvar)
         (do liftIO $ putMVar mvar ()  -- the worker should finish the job now.
             waitFor upToTenSeconds $ do
                 stats' <- getAllRequestStats redis
                 length (filter (isJust . rsComputeFinishTime . snd) stats')
-                    `shouldBe` 1
-        )
+                    `shouldBe` 1)
 
 clearFailuresTest :: MonadConnect m => Redis -> m ()
-clearFailuresTest redis = do
-    queueReqs redis someRequests
-    clearHeartbeatFailures redis
-    jqs <- getJobQueueStatus redis
-    length (jqsHeartbeatFailures jqs) `shouldBe` 0
+clearFailuresTest redis = withRequests redis someRequests $
+    -- get a heartbeat failure, so that 'clearHeartbeatFailures' actually does something.
+    fmap (either absurd id) $ Async.race failingWorker $ do
+        waitFor upToTenSeconds $ do -- wait for a heartbeat failure
+            jqs <- getJobQueueStatus redis
+            length (jqsHeartbeatFailures jqs) `shouldBe` 1
+        clearHeartbeatFailures redis
+        waitFor upToTenSeconds $ do
+            jqs <- getJobQueueStatus redis
+            length (jqsHeartbeatFailures jqs) `shouldBe` 0
 
 spec :: Spec
 spec = do
