@@ -134,23 +134,25 @@ spec = do
           worker =
             runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing 5) nmsma $
               \mh _reqId () -> do
-                liftIO (threadDelay (5 * 1000 * 1000))
-                DontReenqueue <$> getNumSlaves mh
+                nSlaves <- waitFor (upToNSeconds 15) $ do
+                  n <- getNumSlaves mh
+                  n `shouldBe` (workersToSpawn - 1)
+                  return n
+                return $ DontReenqueue nSlaves
           workersToSpawn = 10
           client :: forall m. (MonadConnect m) => m ()
           client = withJobClient jqc $ \(jc :: JobClient Int) -> do
             rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
             submitRequest jc rid ()
-            Just slaves <- waitForResponse_ jc rid
-            unless (slaves == workersToSpawn - 1) $ do
-              fail ("Expecting " ++ show (workersToSpawn - 1) ++ ", but got " ++ show slaves)
-      fmap (either absurd id) $ Async.race
-        (NE.head <$> Async.mapConcurrently (\_ -> worker) (NE.fromList [(1::Int)..workersToSpawn]))
+            void $ waitForResponse_ jc rid
+      either absurd id <$> Async.race
+        (NE.head <$> Async.mapConcurrently (const worker) (NE.fromList [(1::Int)..workersToSpawn]))
         (do
           client
           -- Check that there are no masters anymore
-          wcis <- getWorkerRequests r
-          wcis `shouldBe` [])
+          waitFor (upToNSeconds 15) $ do
+            wcis <- getWorkerRequests r
+            wcis `shouldBe` [])
     stressfulTest $
       redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
     flakyTest $ stressfulTest $ redisIt_ "fullfills all requests (long, few)" $ do

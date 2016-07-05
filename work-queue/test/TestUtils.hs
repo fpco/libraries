@@ -140,7 +140,7 @@ flakyTest m = do
 --
 -- This allows us, for example, to test that heartbeat failures are
 -- detected, without waiting a fixed amount of time.
-waitFor :: forall m . (MonadIO m, MonadMask m) => RetryPolicy -> m () -> m ()
+waitFor :: forall m a. (MonadIO m, MonadMask m) => RetryPolicy -> m a -> m a
 waitFor policy expectation =
     recovering policy [handler] expectation
   where
