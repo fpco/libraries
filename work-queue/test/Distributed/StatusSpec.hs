@@ -39,10 +39,10 @@ startClient (rid, req) = Async.async . runWithoutLogs . withJobClient testJobQue
 
 -- | This worker completes as soon as the 'MVar' is not empty.
 waitingWorker :: MVar () -> IO (Async.Async ())
-waitingWorker mvar = Async.async . runWithoutLogs . jobWorker testJobQueueConfig $ waitingWorkerFunc mvar
+waitingWorker mvar = Async.async . runWithoutLogs . jobWorkerWithHeartbeats testJobQueueConfig $ waitingWorkerFunc mvar
 
-waitingWorkerFunc :: MVar () -> Redis -> WorkerId -> RequestId -> Request -> (LoggingT IO) (Reenqueue Response)
-waitingWorkerFunc mvar _ _ _ _ = do
+waitingWorkerFunc :: MVar () -> Redis -> RequestId -> Request -> (LoggingT IO) (Reenqueue Response)
+waitingWorkerFunc mvar _ _ _ = do
     _ <- liftIO $ takeMVar mvar
     return (DontReenqueue "Done")
 
