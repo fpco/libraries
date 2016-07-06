@@ -1,10 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ParallelListComp #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -21,33 +17,32 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Distributed.StatefulSpec (spec) where
 
-import ClassyPrelude
-import Data.Store (Store)
-import Test.Hspec hiding (shouldBe)
-import qualified Test.Hspec
-import FP.Redis (MonadConnect)
-import Control.Concurrent (threadDelay)
-import qualified Test.QuickCheck as QC
-import Control.DeepSeq (NFData)
-import qualified Data.HashMap.Strict as HMS
-import System.Random (randomRIO)
-import Data.Store.TypeHash (mkManyHasTypeHash)
-import Distributed.JobQueue.Worker
-import Distributed.JobQueue.Client
-import qualified Data.Conduit.Network as CN
+import           ClassyPrelude
+import           Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import           Control.DeepSeq (NFData)
+import           Control.Monad.State (modify, execState)
+import qualified Data.Conduit.Network as CN
 import           Data.Foldable (foldl)
+import qualified Data.HashMap.Strict as HMS
+import qualified Data.List.NonEmpty as NE
+import           Data.Store (Store)
+import           Data.Store.TypeHash (mkManyHasTypeHash)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
-import Distributed.Types
-import qualified Data.List.NonEmpty as NE
-import Control.Monad.State (modify, execState)
 import           Data.Void (Void, absurd)
-
-import TestUtils
-import Distributed.Stateful
-import Distributed.Stateful.Master
-import Distributed.RequestSlaves
+import           Distributed.JobQueue.Client
+import           Distributed.JobQueue.Worker
+import           Distributed.RequestSlaves
+import           Distributed.Stateful
+import           Distributed.Stateful.Master
+import           Distributed.Types
+import           FP.Redis (MonadConnect)
+import           System.Random (randomRIO)
+import qualified Test.Hspec
+import           Test.Hspec hiding (shouldBe)
+import qualified Test.QuickCheck as QC
+import           TestUtils
 
 shouldBe :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
 shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
@@ -69,7 +64,7 @@ testUpdate ::
 testUpdate mh inputs = do
   prevStates <- getStates mh
   outputs <- update mh () inputs
-  forM_ (HMS.toList outputs) $ \(oldStateId, stateOutputs) -> do
+  forM_ (HMS.toList outputs) $ \(oldStateId, stateOutputs) ->
     case HMS.lookup oldStateId inputs of
       Nothing -> stateOutputs `shouldBe` mempty
       Just stateInputs -> do
