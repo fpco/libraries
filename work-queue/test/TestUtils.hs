@@ -18,7 +18,6 @@ module TestUtils
     , KillRandomly(..)
     , killRandomly
     , stressfulTest
-    , flakyTest
     , waitFor
     , upToNSeconds
     , upToTenSeconds
@@ -121,14 +120,6 @@ killRandomly KillRandomly{..} action = if krRetries < 1
 stressfulTest :: SpecM a () -> SpecM a ()
 stressfulTest m = do
     mbS <- runIO (lookupEnv "STRESSFUL")
-    case mbS of
-        Just "1" -> m
-        _ -> return ()
-
--- | Only runs the test if we have FLAKY=1 in the env
-flakyTest :: SpecM a () -> SpecM a ()
-flakyTest m = do
-    mbS <- runIO (lookupEnv "FLAKY")
     case mbS of
         Just "1" -> m
         _ -> return ()
