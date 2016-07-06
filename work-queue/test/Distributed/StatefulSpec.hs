@@ -36,12 +36,13 @@ import Distributed.JobQueue.Worker
 import Distributed.JobQueue.Client
 import qualified Data.Conduit.Network as CN
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import Data.Void (absurd)
+import           Data.Foldable (foldl)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import Distributed.Types
 import qualified Data.List.NonEmpty as NE
 import Control.Monad.State (modify, execState)
+import           Data.Void (Void, absurd)
 
 import TestUtils
 import Distributed.Stateful
@@ -145,8 +146,7 @@ spec = do
             rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
             submitRequest jc rid ()
             void $ waitForResponse_ jc rid
-      either absurd id <$> Async.race
-        (NE.head <$> Async.mapConcurrently (const worker) (NE.fromList [(1::Int)..workersToSpawn]))
+      withNWorkers workersToSpawn worker
         (do
           client
           -- Check that there are no masters anymore
@@ -155,7 +155,7 @@ spec = do
             wcis `shouldBe` [])
     stressfulTest $
       redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
-    flakyTest $ stressfulTest $ redisIt_ "fullfills all requests (long, few)" $ do
+    stressfulTest $ redisIt_ "fullfills all requests (long, few)" $ do
       (numSlavesAtStartup, numSlavesAtShutdown) <- fullfillsAllRequests (Just (10, 500)) 10 10 30
       let increased = flip execState (0 :: Int) $
             forM_ (HMS.toList numSlavesAtStartup) $ \(reqId, startup) -> do
@@ -191,10 +191,15 @@ fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do
         submitRequest jc rid ()
         Just () <- waitForResponse_ jc rid
         return ()
-  fmap (either absurd id) $ Async.race
-    (NE.head <$> Async.mapConcurrently (\_ -> worker) (NE.fromList [(1::Int)..numWorkers]))
+  withNWorkers numWorkers worker
     (void (Async.mapConcurrently requestLoop [(1::Int)..numClients]))
   -- Check that we sometimes gained slaves while executing
   numSlavesAtStartup <- readIORef numSlavesAtStartupRef
   numSlavesAtShutdown <- readIORef numSlavesAtShutdownRef
   return (numSlavesAtStartup, numSlavesAtShutdown)
+
+withNWorkers :: MonadConnect m => Int -> m Void -> m () -> m ()
+withNWorkers n worker cont =
+    foldl (\x _ -> either id absurd <$> Async.race x worker)
+    cont
+    (NE.fromList [(1::Int)..n])
