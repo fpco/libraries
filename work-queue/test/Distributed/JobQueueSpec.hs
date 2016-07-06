@@ -53,7 +53,7 @@ instance Store Response
 $(mkManyHasTypeHash [[t|Request|], [t|Response|]])
 
 jobWorker_ :: (MonadConnect m) => (Request -> m (Reenqueue Response)) -> m void
-jobWorker_ work = jobWorker testJobQueueConfig (\_r _wid _rid -> work)
+jobWorker_ work = jobWorkerWithHeartbeats testJobQueueConfig (\_r _wid -> work)
 
 processRequest :: (MonadConnect m) => Request -> m (Reenqueue Response)
 processRequest Request{..} = do
@@ -66,7 +66,7 @@ testJobWorkerOnStartWork onStartWork = jobWorker_ $ \req -> do
     processRequest req
 
 testJobWorker :: (MonadConnect m) => m void
-testJobWorker = jobWorker testJobQueueConfig $ \_r _wid _rid Request{..} -> do
+testJobWorker = jobWorkerWithHeartbeats testJobQueueConfig $ \_r _wid Request{..} -> do
     liftIO (threadDelay requestDelay)
     return requestResponse
 

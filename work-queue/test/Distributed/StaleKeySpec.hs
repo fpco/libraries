@@ -47,8 +47,8 @@ jqc = testJobQueueConfig { jqcHeartbeatConfig = heartbeatConfig
                          , jqcCheckStaleKeysInterval = Seconds 2
                          }
 
-workerFunc :: MonadConnect m => Redis -> WorkerId -> RequestId -> Request -> m (Reenqueue Response)
-workerFunc _ _ _ _ = do
+workerFunc :: MonadConnect m => Redis -> RequestId -> Request -> m (Reenqueue Response)
+workerFunc _ _ _ = do
     -- the worker should never finish in this test, for two reasons:
     --
     -- - We want to have enough time for the job to be rescheduled by
@@ -62,7 +62,7 @@ workerFunc _ _ _ _ = do
     return $ DontReenqueue "done"
 
 myWorker :: MonadConnect m => m void
-myWorker = jobWorker jqc workerFunc
+myWorker = jobWorkerWithHeartbeats jqc workerFunc
 
 requestId :: RequestId
 requestId = RequestId "myRequest"

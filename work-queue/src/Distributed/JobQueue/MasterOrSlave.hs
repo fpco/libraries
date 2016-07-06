@@ -44,14 +44,15 @@ data MasterOrSlave = Idle | Slave | Master
 runMasterOrSlave :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
+    -> WorkerId
     -> (Redis -> NonEmpty WorkerConnectInfo -> m ())
     -- ^ Slave function. The slave function should try to connect to the master
     -- with 'connectToAMaster', which will do the right thing with the list of
     -- candidate masters.
-    -> (Redis -> WorkerId -> RequestId -> request -> m (Reenqueue response))
+    -> (Redis -> RequestId -> request -> m (Reenqueue response))
     -- ^ Master function.
     -> m void
-runMasterOrSlave config slaveFunc masterFunc = do
+runMasterOrSlave config wid slaveFunc masterFunc = do
     stateVar <- liftIO (newTVarIO Idle)
     fmap (either id id) $ Async.race
         (handleSlaveRequests stateVar) (handleMasterRequests stateVar)
@@ -74,11 +75,11 @@ runMasterOrSlave config slaveFunc masterFunc = do
 
     handleMasterRequests :: TVar MasterOrSlave -> m void
     handleMasterRequests stateVar = do
-        jobWorkerWait config (waitToBeIdle stateVar) $ \redis wid rid request -> do
+        jobWorkerWait config wid (waitToBeIdle stateVar) $ \redis rid request -> do
             -- If you couldn't transition to master, re-enqueue.
             mbRes <- transitionIdleTo stateVar Master $ do
                 $logInfo ("Transitioned to master")
-                masterFunc redis wid rid request
+                masterFunc redis rid request
             case mbRes of
                 Nothing -> do
                     $logDebug ("Tried to transition to master, but couldn't. Request " ++ tshow rid ++ " will be re-enqueued.")

@@ -27,6 +27,7 @@ module Distributed.JobQueue.Worker
     ( JobQueueConfig(..)
     , defaultJobQueueConfig
     , jobWorker
+    , jobWorkerWithHeartbeats
     , Reenqueue(..)
     , jobWorkerWait
     , getWorkerId
@@ -70,40 +71,52 @@ import Data.Typeable (typeOf)
 jobWorker :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
-    -> (Redis -> WorkerId -> RequestId -> request -> m (Reenqueue response))
+    -> WorkerId
+    -> (Redis -> RequestId -> request -> m (Reenqueue response))
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m void
-jobWorker config f = jobWorkerWait config (return ()) f
+jobWorker config wid f = jobWorkerWait config wid (return ()) f
+
+jobWorkerWithHeartbeats ::
+       (MonadConnect m, Sendable request, Sendable response)
+    => JobQueueConfig
+    -> (Redis -> RequestId -> request -> m (Reenqueue response))
+    -- ^ This function is run by the worker, for every request it
+    -- receives.
+    -> m void
+jobWorkerWithHeartbeats config f = do
+    wid <- getWorkerId
+    $logInfo "Starting heartbeats"
+    withRedis (jqcRedisConfig config) $ \r -> withHeartbeats (jqcHeartbeatConfig config) r wid $ do
+        $logInfo "Initial heartbeat sent"
+        jobWorker config wid f
 
 -- | Exactly like 'jobWorker', but also allows to delay the loop using the second argument.
 jobWorkerWait :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
+    -> WorkerId
     -> m ()
     -- ^ The worker has a loop that keeps popping requests. This action
     -- will be called at the beginning of every loop iteration, and can
     -- be useful to "limit" the loop (e.g. have some timer in between,
     -- or wait for the worker to be free of processing requests if we
     -- are doing something else too).
-    -> (Redis -> WorkerId -> RequestId -> request -> m (Reenqueue response))
+    -> (Redis -> RequestId -> request -> m (Reenqueue response))
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m void
-jobWorkerWait config@JobQueueConfig{..} wait f = do
-    wid <- getWorkerId
+jobWorkerWait config@JobQueueConfig{..} wid wait f = do
     let withTag = withLogTag (LogTag ("worker-" ++ tshow (unWorkerId wid)))
     withTag $ withRedis jqcRedisConfig $ \r -> do
-        $logInfo "Starting heartbeats"
-        withHeartbeats jqcHeartbeatConfig r wid $ do
-            $logInfo "Initial heartbeat sent, starting worker"
-            withSubscribedNotifyChannel
-                (rcConnectInfo jqcRedisConfig)
-                jqcRequestNotificationFailsafeTimeout
-                (requestChannel r)
-                (\waitForReq -> do
-                    -- writeIORef everConnectedRef True
-                    jobWorkerThread config r wid waitForReq (f r wid) wait)
+        withSubscribedNotifyChannel
+            (rcConnectInfo jqcRedisConfig)
+            jqcRequestNotificationFailsafeTimeout
+            (requestChannel r)
+            (\waitForReq -> do
+                -- writeIORef everConnectedRef True
+                jobWorkerThread config r wid waitForReq (f r) wait)
 
 -- | A specialised 'Maybe' to indicate the result of a job: If the job
 -- successfull produced a result @a@, it will yield it via
