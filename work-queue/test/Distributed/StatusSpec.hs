@@ -4,25 +4,26 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Distributed.StatusSpec (spec) where
 
-import           Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.MVar
 import           Control.Monad
 import           Control.Monad.IO.Class
-import           Control.Monad.Logger
 import           Data.ByteString (ByteString)
 import           Data.ByteString.Char8 (pack)
 import           Data.Maybe
 import           Data.Store.TypeHash (mkManyHasTypeHash)
+import           Data.Void
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Client
 import           Distributed.JobQueue.Status
 import           Distributed.JobQueue.Worker
 import           Distributed.Redis
 import           Distributed.Types
-import           FP.Redis (MonadConnect, Seconds (..))
+import           FP.Redis (Seconds (..), MonadConnect)
 import           Test.Hspec (Spec)
 import           Test.Hspec.Expectations.Lifted
 import           TestUtils
@@ -32,91 +33,109 @@ $(mkManyHasTypeHash [[t| ByteString |]])
 type Request = ByteString
 type Response = ByteString
 
-startClient :: (RequestId, Request) -> IO (Async.Async ())
-startClient (rid, req) = Async.async . runWithoutLogs . withJobClient testJobQueueConfig $ \jc -> do
-    submitRequest jc rid req
-    void (waitForResponse_ jc rid :: LoggingT IO (Maybe Response))
-
 -- | This worker completes as soon as the 'MVar' is not empty.
-waitingWorker :: MVar () -> IO (Async.Async ())
-waitingWorker mvar = Async.async . runWithoutLogs . jobWorkerWithHeartbeats testJobQueueConfig $ waitingWorkerFunc mvar
+waitingWorker :: MonadConnect m => MVar () -> m void
+waitingWorker mvar = jobWorkerWithHeartbeats testJobQueueConfig $ waitingWorkerFunc mvar
 
-waitingWorkerFunc :: MVar () -> Redis -> RequestId -> Request -> (LoggingT IO) (Reenqueue Response)
+waitingWorkerFunc :: MonadIO m => MVar () -> Redis -> RequestId -> Request -> m (Reenqueue Response)
 waitingWorkerFunc mvar _ _ _ = do
     _ <- liftIO $ takeMVar mvar
     return (DontReenqueue "Done")
 
-runWithoutLogs :: LoggingT IO a -> IO a
-runWithoutLogs = runStdoutLoggingT . filterLogger (\_ _ -> False)
+-- | This 'JobQueueConfig' will cause heartbeat failures, since
+-- 'hcSenderIvl' is larger than 'hcCheckerIvl'.
+failingJqc :: JobQueueConfig
+failingJqc = testJobQueueConfig
+    { jqcHeartbeatConfig = HeartbeatConfig { hcSenderIvl = Seconds 3600
+                                           , hcCheckerIvl = Seconds 2 }}
 
-waitABit :: MonadIO m => m ()
-waitABit = liftIO . threadDelay $
-    4 * 1000 * 1000 * (fromIntegral . unSeconds $ testHeartbeatCheckIvl)
+-- | A worker that will fail its heartbeat
+failingWorker :: MonadConnect m => m void
+failingWorker = jobWorkerWithHeartbeats failingJqc failingWorkerFunc
 
+-- | The worker function of the 'failingWorker'.
+--
+-- It simply does not terminate.
+failingWorkerFunc :: MonadConnect m => Redis -> RequestId -> Request -> m (Reenqueue Response)
+failingWorkerFunc _ _ _ = forever (threadDelay maxBound) >> return (DontReenqueue "done")
+
+-- | Simple client that submits a request and waits for the result.
+startClient :: forall m . MonadConnect m => (RequestId, Request) -> m ()
+startClient (rid, req) = withJobClient testJobQueueConfig $ \jc -> do
+    submitRequest jc rid req
+    void (waitForResponse_ jc rid :: m (Maybe Response))
+
+-- | Some requests.
 someRequests :: [(RequestId, ByteString)]
 someRequests = [(RequestId . pack . show $ n, pack . show $ n) | n <- [0..10 :: Int]]
 
-queueReqs :: MonadConnect m => [(RequestId, Request)] -> m ()
-queueReqs reqs = liftIO $ do
-    mapM_ startClient reqs
-
-failHeartbeat :: MonadConnect m => m ()
-failHeartbeat = do
-    mvar <- liftIO newEmptyMVar
-    worker <- liftIO $ waitingWorker mvar
-    waitABit
-    liftIO $ Async.cancel worker
-    waitABit
+-- | Start some clients that each enqueue a request, wait until all
+-- requests are in the database, and then perform a test.
+--
+-- All the tests require at least one active client for stuff like
+-- heartbeat checks, as well as to set the redis schema.
+withRequests :: (MonadConnect m) => Redis -> [(RequestId, Request)] -> m () -> m ()
+withRequests redis reqs cont =
+    foldl (\x req -> either id id <$> Async.race x (startClient req))
+        (waitForHUnitPass (upToNSeconds 15) $ do
+                reqs' <- getAllRequests redis
+                reqs' `shouldMatchList` map fst reqs
+                cont)
+        reqs
 
 queueRequestsTest :: MonadConnect m => Redis -> m ()
-queueRequestsTest redis = do
-    queueReqs someRequests
-    waitABit
-    -- check that both getAllRequests and the list of pending requests match the submitted jobs
-    jqs <- getJobQueueStatus redis
-    jqsPending jqs `shouldMatchList` map fst someRequests
-    allReqs <- getAllRequests redis
-    allReqs `shouldMatchList` map fst someRequests
+queueRequestsTest redis = withRequests redis someRequests $
+    waitForHUnitPass upToTenSeconds $ do
+    -- check that the list of pending requests match the submitted jobs
+        jqs <- getJobQueueStatus redis
+        jqsPending jqs `shouldMatchList` map fst someRequests
 
 addWorkerTest :: MonadConnect m => Redis -> m ()
-addWorkerTest redis = do
-    queueReqs someRequests
+addWorkerTest redis = withRequests redis someRequests $ do
     mvar <- liftIO newEmptyMVar
-    _ <- liftIO $ waitingWorker mvar
-    waitABit
-    jqs' <- getJobQueueStatus redis
-    length (jqsWorkers jqs') `shouldBe` 1
-    length (jqsPending jqs') `shouldBe` length someRequests - 1
+    either absurd id <$> Async.race
+        (waitingWorker mvar)
+        (do waitForHUnitPass upToTenSeconds $ do
+                jqs' <- getJobQueueStatus redis
+                length (jqsWorkers jqs') `shouldBe` 1
+                length (jqsPending jqs') `shouldBe` length someRequests - 1
+            liftIO $ putMVar mvar ())
 
 heartbeatFailureTest :: MonadConnect m => Redis -> m ()
-heartbeatFailureTest redis = do
-    queueReqs someRequests
-    failHeartbeat
-    jqs' <- getJobQueueStatus redis
-    length (jqsHeartbeatFailures jqs') `shouldBe` 1
+heartbeatFailureTest redis = withRequests redis someRequests $
+    fmap (either absurd id) $ Async.race failingWorker $
+        waitForHUnitPass upToTenSeconds $ do -- wait for a heartbeat failure
+            jqs <- getJobQueueStatus redis
+            length (jqsHeartbeatFailures jqs) `shouldBe` 1
+            length (jqsWorkers jqs) `shouldBe` 0
 
 completeJobTest :: MonadConnect m => Redis -> m ()
-completeJobTest redis = do
-    queueReqs someRequests
+completeJobTest redis = withRequests redis someRequests $ do
     mvar <- liftIO newEmptyMVar
-    _ <- liftIO $ waitingWorker mvar
-    liftIO $ putMVar mvar () -- the worker should finish the job now.
-    waitABit
-    stats' <- getAllRequestStats redis
-    length (filter (isJust . rsComputeFinishTime . snd) stats')
-        `shouldBe` 1
+    either absurd id <$> Async.race
+        (waitingWorker mvar)
+        (do liftIO $ putMVar mvar ()  -- the worker should finish the job now.
+            waitForHUnitPass upToTenSeconds $ do
+                stats' <- getAllRequestStats redis
+                length (filter (isJust . rsComputeFinishTime . snd) stats')
+                    `shouldBe` 1)
 
 clearFailuresTest :: MonadConnect m => Redis -> m ()
-clearFailuresTest redis = do
-    queueReqs someRequests
-    clearHeartbeatFailures redis
-    jqs <- getJobQueueStatus redis
-    length (jqsHeartbeatFailures jqs) `shouldBe` 0
+clearFailuresTest redis = withRequests redis someRequests $
+    -- get a heartbeat failure, so that 'clearHeartbeatFailures' actually does something.
+    fmap (either absurd id) $ Async.race failingWorker $ do
+        waitForHUnitPass upToTenSeconds $ do -- wait for a heartbeat failure
+            jqs <- getJobQueueStatus redis
+            length (jqsHeartbeatFailures jqs) `shouldBe` 1
+        clearHeartbeatFailures redis
+        waitForHUnitPass upToTenSeconds $ do
+            jqs <- getJobQueueStatus redis
+            length (jqsHeartbeatFailures jqs) `shouldBe` 0
 
 spec :: Spec
 spec = do
-    flakyTest $ redisIt "reports queued requests" queueRequestsTest
-    flakyTest $ redisIt "reports added worker and enqueued job" addWorkerTest
-    flakyTest $ redisIt "reports heartbeat failure" heartbeatFailureTest
-    flakyTest $ redisIt "reports completed jobs" completeJobTest
-    flakyTest $ redisIt "clearing the list of heartbeat failures works" clearFailuresTest
+    redisIt "reports queued requests" queueRequestsTest
+    redisIt "reports added worker and enqueued job" addWorkerTest
+    redisIt "reports heartbeat failure" heartbeatFailureTest
+    redisIt "reports completed jobs" completeJobTest
+    redisIt "clearing the list of heartbeat failures works" clearFailuresTest

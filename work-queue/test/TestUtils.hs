@@ -18,22 +18,30 @@ module TestUtils
     , KillRandomly(..)
     , killRandomly
     , stressfulTest
-    , flakyTest
+    , waitForHUnitPass
+    , upToNSeconds
+    , upToTenSeconds
+    , raceAgainstVoids
     ) where
 
-import           ClassyPrelude hiding (keys)
+import           ClassyPrelude hiding (keys, (<>))
+import           Control.Concurrent (threadDelay)
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import           Control.Monad.Catch (Handler (..))
+import           Control.Monad.Logger
+import           Control.Retry
+import           Data.Foldable (foldl)
+import qualified Data.Text as T
+import           Data.Void (absurd, Void)
+import           Distributed.Heartbeat
+import           Distributed.JobQueue.Worker
+import           FP.Redis
+import           System.Environment (lookupEnv)
+import           System.Random (randomRIO)
+import           Test.HUnit.Lang (HUnitFailure (..))
 import           Test.Hspec (Spec, it)
 import           Test.Hspec.Core.Spec (SpecM, runIO)
-import           FP.Redis
-import           Control.Monad.Logger
-import qualified Data.Text as T
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import           System.Random (randomRIO)
-import           Control.Concurrent (threadDelay)
 import qualified Test.QuickCheck as QC
-import           Distributed.JobQueue.Worker
-import           Distributed.Heartbeat
-import           System.Environment (lookupEnv)
 
 import           Distributed.Redis
 
@@ -119,10 +127,39 @@ stressfulTest m = do
         Just "1" -> m
         _ -> return ()
 
--- | Only runs the test if we have FLAKY=1 in the env
-flakyTest :: SpecM a () -> SpecM a ()
-flakyTest m = do
-    mbS <- runIO (lookupEnv "FLAKY")
-    case mbS of
-        Just "1" -> m
-        _ -> return ()
+-- | This function allows us to make HUnit assertions that should
+-- become true, after some time.
+--
+-- If the assertion fails, it will retry, until it passes.  The
+-- 'RetryPolicy' can be chosen to limit the number of retries.
+--
+-- This allows us, for example, to test that heartbeat failures are
+-- detected, without waiting a fixed amount of time.
+waitForHUnitPass :: forall m a. (MonadIO m, MonadMask m) => RetryPolicy -> m a -> m a
+waitForHUnitPass policy expectation =
+    recovering policy [handler] expectation
+  where
+    handler :: Int -> Handler m Bool
+    handler _ = Handler $ \(HUnitFailure _) -> return True
+
+-- | Wiat for up to @n@ seconds, in steps of 1/10th of a second.
+upToNSeconds :: Int -> RetryPolicy
+upToNSeconds n = constantDelay 100000 <> limitRetries (n * 10)
+
+upToTenSeconds :: RetryPolicy
+upToTenSeconds = upToNSeconds 10
+
+-- | Perform an action concurrently with some non-terminating actions
+-- that will be killed when the action finishes.
+--
+-- This can be used to spawn workers for a test, making sure they are
+-- all killed at the end of the test.
+raceAgainstVoids :: MonadConnect m
+                    => m a
+                    -- ^ Action to perform.
+                    -> [m Void]
+                    -- ^ Non-terminating actions that will run
+                    -- concurrently to the first action, and will all
+                    -- be killed when the first action terminates.
+                    -> m a
+raceAgainstVoids = foldl (\x v -> either id absurd <$> Async.race x v)

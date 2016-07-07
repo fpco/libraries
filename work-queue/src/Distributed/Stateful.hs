@@ -132,7 +132,7 @@ runPureStatefulSlave update_ cont = do
         }
 
 -- | Run a computation, where the slaves run as separate threads
--- within the same process, and communication id performed via
+-- within the same process, and communication is performed via
 -- 'TMChan's.
 runSimplePureStateful :: forall m context input state output a.
        (MonadConnect m, NFData state, NFData output, Store state)
@@ -162,7 +162,7 @@ nmStatefulConn ad = StatefulConn
 -- and receiving data.
 runNMStatefulSlave ::
        (MonadConnect m, NFData state, Store state, NFData output, Store output, Store context, Store input)
-    => (context -> input -> state -> m (state, output))
+    => Update m state context input output
     -> NMApp (SlaveResp state output) (SlaveReq state context input) m ()
 runNMStatefulSlave update_ ad = runSlave SlaveArgs
     { saUpdate = update_

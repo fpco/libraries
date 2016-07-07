@@ -24,7 +24,6 @@ import Control.Concurrent (threadDelay)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID.V4
 import Data.Void (absurd)
-import qualified Data.List.NonEmpty as NE
 import qualified Data.ByteString.Char8 as BSC8
 import qualified Data.HashSet as HS
 import qualified Control.Concurrent.STM as STM
@@ -195,9 +194,9 @@ spec = do
                 rid <- submitTestRequest jc req
                 resp' <- waitForResponse_ jc rid
                 resp' `shouldBe` Just resp
-        fmap (either absurd id) $ Async.race
-            (NE.head <$> Async.mapConcurrently (\_ -> testJobWorker) (NE.fromList [1..workers]))
-            (void (Async.mapConcurrently client [1..clients]))
+        raceAgainstVoids
+            (mapConcurrently_ client [1..clients])
+            (replicate workers testJobWorker)
     stressfulTest $ redisIt_ "Withstands chaos" chaosTest
 
 chaosTest :: forall m. (MonadConnect m) => m ()
@@ -261,7 +260,7 @@ chaosTest = do
                     maybe () absurd <$> timeout phaseOneLifespan jw
                     randomThreadDelay (maxPause * 1000)
                 killRandomly phaseTwoKillRandomly jw
-        NE.head <$> Async.mapConcurrently runChaosWorker (NE.fromList [1..numWorkers])
+        raceAgainstVoids (runChaosWorker 1) [runChaosWorker i | i <- [2..numWorkers]]
 
     runChaosClients :: m ()
     runChaosClients = do

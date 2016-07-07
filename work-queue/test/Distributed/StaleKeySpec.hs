@@ -9,11 +9,9 @@
 {-# LANGUAGE DataKinds #-}
 module Distributed.StaleKeySpec (spec) where
 
-import ClassyPrelude hiding (keys, (<>))
+import ClassyPrelude hiding (keys)
 import Control.Concurrent.Async.Lifted.Safe
 import Control.Concurrent.Lifted (threadDelay)
-import Control.Monad.Catch (Handler (..))
-import Control.Retry
 import Data.Store.TypeHash (mkHasTypeHash)
 import Data.Void
 import Distributed.Heartbeat
@@ -23,7 +21,6 @@ import Distributed.JobQueue.Worker
 import Distributed.Redis
 import Distributed.Types
 import FP.Redis (Seconds(..), MonadConnect)
-import Test.HUnit.Lang (HUnitFailure (..))
 import Test.Hspec (Spec)
 import Test.Hspec.Expectations.Lifted
 import TestUtils
@@ -76,32 +73,22 @@ myClient = withJobClient jqc $ \jq -> do
         Nothing -> fail "myClient got 'Nothing' when waiting for the response!"
         Just _ -> fail "myClient got a response, which should never happen since the worker function never returns"
 
-waitFor :: forall m . (MonadIO m, MonadMask m) => RetryPolicy -> m () -> m ()
-waitFor policy expectation =
-    recovering policy [handler] expectation
-  where
-    handler :: Int -> Handler m Bool
-    handler _ = Handler $ \(HUnitFailure _) -> return True
-
-upToTenSeconds :: RetryPolicy
-upToTenSeconds = constantDelay 100000 <> limitRetries 100
-
 waitForHeartbeatFailure :: MonadConnect m => Redis -> m ()
-waitForHeartbeatFailure redis = waitFor upToTenSeconds $ do
+waitForHeartbeatFailure redis = waitForHUnitPass upToTenSeconds $ do
     liveWorkers <- activeOrUnhandledWorkers redis
     liveWorkers `shouldBe` [] -- no active workers
     failedWorkers <- deadWorkers redis
     length failedWorkers `shouldBe` 1 -- 1 heartbeat failure
 
 waitForJobStarted :: MonadConnect m => Redis -> m ()
-waitForJobStarted redis = waitFor upToTenSeconds $ do
+waitForJobStarted redis = waitForHUnitPass upToTenSeconds $ do
     allRequests <- getAllRequests redis
     allRequests `shouldBe` [requestId]
     jqs <- getJobQueueStatus redis
     jqsPending jqs `shouldBe` [] -- there should be no job enqueued
 
 waitForJobReenqueued :: MonadConnect m => Redis -> m ()
-waitForJobReenqueued redis = waitFor upToTenSeconds $ do
+waitForJobReenqueued redis = waitForHUnitPass upToTenSeconds $ do
     allRequestStats <- getAllRequestStats redis
     map fst allRequestStats `shouldBe` [requestId]
     jqs <- getJobQueueStatus redis

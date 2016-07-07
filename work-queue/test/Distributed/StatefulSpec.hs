@@ -1,10 +1,6 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ParallelListComp #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -21,32 +17,29 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Distributed.StatefulSpec (spec) where
 
-import ClassyPrelude
-import Data.Store (Store)
-import Test.Hspec hiding (shouldBe)
-import qualified Test.Hspec
-import FP.Redis (MonadConnect)
-import Control.Concurrent (threadDelay)
-import qualified Test.QuickCheck as QC
-import Control.DeepSeq (NFData)
-import qualified Data.HashMap.Strict as HMS
-import System.Random (randomRIO)
-import Data.Store.TypeHash (mkManyHasTypeHash)
-import Distributed.JobQueue.Worker
-import Distributed.JobQueue.Client
-import qualified Data.Conduit.Network as CN
+import           ClassyPrelude
+import           Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
-import Data.Void (absurd)
+import           Control.DeepSeq (NFData)
+import           Control.Monad.State (modify, execState)
+import qualified Data.Conduit.Network as CN
+import qualified Data.HashMap.Strict as HMS
+import           Data.Store (Store)
+import           Data.Store.TypeHash (mkManyHasTypeHash)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
-import Distributed.Types
-import qualified Data.List.NonEmpty as NE
-import Control.Monad.State (modify, execState)
-
-import TestUtils
-import Distributed.Stateful
-import Distributed.Stateful.Master
-import Distributed.RequestSlaves
+import           Distributed.JobQueue.Client
+import           Distributed.JobQueue.Worker
+import           Distributed.RequestSlaves
+import           Distributed.Stateful
+import           Distributed.Stateful.Master
+import           Distributed.Types
+import           FP.Redis (MonadConnect)
+import           System.Random (randomRIO)
+import qualified Test.Hspec
+import           Test.Hspec hiding (shouldBe)
+import qualified Test.QuickCheck as QC
+import           TestUtils
 
 shouldBe :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
 shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
@@ -68,7 +61,7 @@ testUpdate ::
 testUpdate mh inputs = do
   prevStates <- getStates mh
   outputs <- update mh () inputs
-  forM_ (HMS.toList outputs) $ \(oldStateId, stateOutputs) -> do
+  forM_ (HMS.toList outputs) $ \(oldStateId, stateOutputs) ->
     case HMS.lookup oldStateId inputs of
       Nothing -> stateOutputs `shouldBe` mempty
       Just stateInputs -> do
@@ -134,26 +127,28 @@ spec = do
           worker =
             runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing 5) nmsma $
               \mh _reqId () -> do
-                liftIO (threadDelay (5 * 1000 * 1000))
-                DontReenqueue <$> getNumSlaves mh
+                nSlaves <- waitForHUnitPass (upToNSeconds 15) $ do
+                  n <- getNumSlaves mh
+                  n `shouldBe` (workersToSpawn - 1)
+                  return n
+                return $ DontReenqueue nSlaves
           workersToSpawn = 10
           client :: forall m. (MonadConnect m) => m ()
           client = withJobClient jqc $ \(jc :: JobClient Int) -> do
             rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
             submitRequest jc rid ()
-            Just slaves <- waitForResponse_ jc rid
-            unless (slaves == workersToSpawn - 1) $ do
-              fail ("Expecting " ++ show (workersToSpawn - 1) ++ ", but got " ++ show slaves)
-      fmap (either absurd id) $ Async.race
-        (NE.head <$> Async.mapConcurrently (\_ -> worker) (NE.fromList [(1::Int)..workersToSpawn]))
+            void $ waitForResponse_ jc rid
+      raceAgainstVoids
         (do
           client
           -- Check that there are no masters anymore
-          wcis <- getWorkerRequests r
-          wcis `shouldBe` [])
+          waitForHUnitPass (upToNSeconds 15) $ do
+            wcis <- getWorkerRequests r
+            wcis `shouldBe` [])
+        (replicate workersToSpawn worker)
     stressfulTest $
       redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
-    flakyTest $ stressfulTest $ redisIt_ "fullfills all requests (long, few)" $ do
+    stressfulTest $ redisIt_ "fullfills all requests (long, few)" $ do
       (numSlavesAtStartup, numSlavesAtShutdown) <- fullfillsAllRequests (Just (10, 500)) 10 10 30
       let increased = flip execState (0 :: Int) $
             forM_ (HMS.toList numSlavesAtStartup) $ \(reqId, startup) -> do
@@ -189,9 +184,9 @@ fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do
         submitRequest jc rid ()
         Just () <- waitForResponse_ jc rid
         return ()
-  fmap (either absurd id) $ Async.race
-    (NE.head <$> Async.mapConcurrently (\_ -> worker) (NE.fromList [(1::Int)..numWorkers]))
+  raceAgainstVoids
     (void (Async.mapConcurrently requestLoop [(1::Int)..numClients]))
+    (replicate numWorkers worker)
   -- Check that we sometimes gained slaves while executing
   numSlavesAtStartup <- readIORef numSlavesAtStartupRef
   numSlavesAtShutdown <- readIORef numSlavesAtShutdownRef
