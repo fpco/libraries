@@ -74,21 +74,21 @@ myClient = withJobClient jqc $ \jq -> do
         Just _ -> fail "myClient got a response, which should never happen since the worker function never returns"
 
 waitForHeartbeatFailure :: MonadConnect m => Redis -> m ()
-waitForHeartbeatFailure redis = waitForHUnitPass upToTenSeconds $ do
+waitForHeartbeatFailure redis = waitForHUnitPass upToAMinute $ do
     liveWorkers <- activeOrUnhandledWorkers redis
     liveWorkers `shouldBe` [] -- no active workers
     failedWorkers <- deadWorkers redis
     length failedWorkers `shouldBe` 1 -- 1 heartbeat failure
 
 waitForJobStarted :: MonadConnect m => Redis -> m ()
-waitForJobStarted redis = waitForHUnitPass upToTenSeconds $ do
+waitForJobStarted redis = waitForHUnitPass upToAMinute $ do
     allRequests <- getAllRequests redis
     allRequests `shouldBe` [requestId]
     jqs <- getJobQueueStatus redis
     jqsPending jqs `shouldBe` [] -- there should be no job enqueued
 
 waitForJobReenqueued :: MonadConnect m => Redis -> m ()
-waitForJobReenqueued redis = waitForHUnitPass upToTenSeconds $ do
+waitForJobReenqueued redis = waitForHUnitPass upToAMinute $ do
     allRequestStats <- getAllRequestStats redis
     map fst allRequestStats `shouldBe` [requestId]
     jqs <- getJobQueueStatus redis

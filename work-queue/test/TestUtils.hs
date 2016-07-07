@@ -20,7 +20,7 @@ module TestUtils
     , stressfulTest
     , waitForHUnitPass
     , upToNSeconds
-    , upToTenSeconds
+    , upToAMinute
     , raceAgainstVoids
     ) where
 
@@ -146,8 +146,8 @@ waitForHUnitPass policy expectation =
 upToNSeconds :: Int -> RetryPolicy
 upToNSeconds n = constantDelay 100000 <> limitRetries (n * 10)
 
-upToTenSeconds :: RetryPolicy
-upToTenSeconds = upToNSeconds 10
+upToAMinute :: RetryPolicy
+upToAMinute = upToNSeconds 60
 
 -- | Perform an action concurrently with some non-terminating actions
 -- that will be killed when the action finishes.
