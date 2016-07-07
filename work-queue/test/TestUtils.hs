@@ -18,7 +18,7 @@ module TestUtils
     , KillRandomly(..)
     , killRandomly
     , stressfulTest
-    , waitFor
+    , waitForHUnitPass
     , upToNSeconds
     , upToTenSeconds
     , raceAgainstVoids
@@ -127,15 +127,16 @@ stressfulTest m = do
         Just "1" -> m
         _ -> return ()
 
--- | This function allows us to make assertions that should become true, after some time.
+-- | This function allows us to make HUnit assertions that should
+-- become true, after some time.
 --
 -- If the assertion fails, it will retry, until it passes.  The
 -- 'RetryPolicy' can be chosen to limit the number of retries.
 --
 -- This allows us, for example, to test that heartbeat failures are
 -- detected, without waiting a fixed amount of time.
-waitFor :: forall m a. (MonadIO m, MonadMask m) => RetryPolicy -> m a -> m a
-waitFor policy expectation =
+waitForHUnitPass :: forall m a. (MonadIO m, MonadMask m) => RetryPolicy -> m a -> m a
+waitForHUnitPass policy expectation =
     recovering policy [handler] expectation
   where
     handler :: Int -> Handler m Bool

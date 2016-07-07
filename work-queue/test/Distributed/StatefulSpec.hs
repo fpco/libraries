@@ -127,7 +127,7 @@ spec = do
           worker =
             runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing 5) nmsma $
               \mh _reqId () -> do
-                nSlaves <- waitFor (upToNSeconds 15) $ do
+                nSlaves <- waitForHUnitPass (upToNSeconds 15) $ do
                   n <- getNumSlaves mh
                   n `shouldBe` (workersToSpawn - 1)
                   return n
@@ -142,7 +142,7 @@ spec = do
         (do
           client
           -- Check that there are no masters anymore
-          waitFor (upToNSeconds 15) $ do
+          waitForHUnitPass (upToNSeconds 15) $ do
             wcis <- getWorkerRequests r
             wcis `shouldBe` [])
         (replicate workersToSpawn worker)
