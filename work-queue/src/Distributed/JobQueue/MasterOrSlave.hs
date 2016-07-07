@@ -44,42 +44,42 @@ data MasterOrSlave = Idle | Slave | Master
 runMasterOrSlave :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
-    -> WorkerId
-    -> (Redis -> NonEmpty WorkerConnectInfo -> m ())
+    -> Redis
+    -> Heartbeating
+    -> (NonEmpty WorkerConnectInfo -> m ())
     -- ^ Slave function. The slave function should try to connect to the master
     -- with 'connectToAMaster', which will do the right thing with the list of
     -- candidate masters.
-    -> (Redis -> RequestId -> request -> m (Reenqueue response))
+    -> (RequestId -> request -> m (Reenqueue response))
     -- ^ Master function.
     -> m void
-runMasterOrSlave config wid slaveFunc masterFunc = do
+runMasterOrSlave config redis wid slaveFunc masterFunc = do
     stateVar <- liftIO (newTVarIO Idle)
     fmap (either id id) $ Async.race
         (handleSlaveRequests stateVar) (handleMasterRequests stateVar)
   where
     handleSlaveRequests :: TVar MasterOrSlave -> m void
     handleSlaveRequests stateVar =
-        withRedis (jqcRedisConfig config) $ \redis ->
-            withSlaveRequestsWait redis (jqcSlaveRequestsNotificationFailsafeTimeout config) (activeOrUnhandledWorkers redis) (waitToBeIdle stateVar) $ \wcis -> do
-                -- If it can't transition to slave, that's fine: all the
-                -- other slave candidates will get the connection request anyway.
-                -- In fact, this node itself will get it again, since
-                -- 'withSubscribedNotifyChannel' gets every request at a
-                -- timeout.
-                mb <- transitionIdleTo stateVar Slave $ do
-                    $logInfo "Transitioned to slave"
-                    slaveFunc redis wcis
-                case mb of
-                    Nothing -> $logDebug ("Tried to transition to slave, but couldn't. Will not run slave function with connections " ++ tshow wcis)
-                    Just () -> return ()
+        withSlaveRequestsWait redis (jqcSlaveRequestsNotificationFailsafeTimeout config) (activeOrUnhandledWorkers redis) (waitToBeIdle stateVar) $ \wcis -> do
+            -- If it can't transition to slave, that's fine: all the
+            -- other slave candidates will get the connection request anyway.
+            -- In fact, this node itself will get it again, since
+            -- 'withSubscribedNotifyChannel' gets every request at a
+            -- timeout.
+            mb <- transitionIdleTo stateVar Slave $ do
+                $logInfo "Transitioned to slave"
+                slaveFunc wcis
+            case mb of
+                Nothing -> $logDebug ("Tried to transition to slave, but couldn't. Will not run slave function with connections " ++ tshow wcis)
+                Just () -> return ()
 
     handleMasterRequests :: TVar MasterOrSlave -> m void
     handleMasterRequests stateVar = do
-        jobWorkerWait config wid (waitToBeIdle stateVar) $ \redis rid request -> do
+        jobWorkerWait config redis wid (waitToBeIdle stateVar) $ \rid request -> do
             -- If you couldn't transition to master, re-enqueue.
             mbRes <- transitionIdleTo stateVar Master $ do
                 $logInfo ("Transitioned to master")
-                masterFunc redis rid request
+                masterFunc rid request
             case mbRes of
                 Nothing -> do
                     $logDebug ("Tried to transition to master, but couldn't. Request " ++ tshow rid ++ " will be re-enqueued.")

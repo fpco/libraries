@@ -72,14 +72,14 @@ import           FP.Redis (MonadConnect)
 import           Data.Store (Store)
 import           Control.Concurrent.STM.TMChan
 import           Data.Streaming.NetworkMessage
-import           Control.Monad.Logger (logError, logWarn, logDebug, logInfo)
+import           Control.Monad.Logger (logError, logWarn, logDebug)
 import           Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.STM as STM
 import qualified Data.Conduit.Network as CN
 import           Control.Monad.Trans.Control (control)
 import           Data.Void (absurd)
 import           Data.Store.TypeHash (HasTypeHash)
-import           Distributed.Redis (Redis)
+import           Distributed.Redis (Redis, withRedis)
 import           Distributed.RequestSlaves
 import qualified Data.Streaming.Network.Internal as CN
 import           Distributed.JobQueue.Worker
@@ -308,8 +308,7 @@ runRequestedStatefulSlave r failsafeTimeout update_ =
 runRequestingStatefulMaster :: forall m state output context input b.
        (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input)
     => Redis
-    -> HeartbeatConfig
-    -> WorkerId
+    -> Heartbeating
     -> CN.ServerSettings
     -- ^ The settings used to create the server. You can use 0 as port number to have
     -- it automatically assigned
@@ -322,51 +321,48 @@ runRequestingStatefulMaster :: forall m state output context input b.
     -> NMStatefulMasterArgs
     -> (MasterHandle m state context input output -> m b)
     -> m (Maybe b)
-runRequestingStatefulMaster r heartbeats wid ss0 host mbPort ma nmsma cont = do
-    $logInfo "Starting heartbeats"
-    withHeartbeats heartbeats r wid $ do
-        $logInfo "Initial heartbeat sent"
-        nmSettings <- defaultNMSettings
-        (ss, getPort) <- liftIO (getPortAfterBind ss0)
-        whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
-        let acceptConns :: forall void.
-                NMApp (SlaveReq state context input) (SlaveResp state output) m () -> m void
-            acceptConns contSlaveConnect =
-                CN.runGeneralTCPServer ss $ \ad -> do
-                    -- This is just to get the exceptions in the logs rather than on the
-                    -- terminal: this is run in a separate thread anyway, and so they'd be
-                    -- lost forever otherwise.
-                    -- In other words, the semantics of the program are not affected.
-                    let whenSlaveConnects nm = do
-                            join (readMVar whenSlaveConnectsVar)
-                            contSlaveConnect nm
-                    mbExc <- tryAny (runNMApp nmSettings whenSlaveConnects ad)
-                    case mbExc of
-                        Left err ->
-                            $logWarn ("requestingStatefulMaster: got exception in slave handler " ++ tshow err)
-                        Right () -> return ()
-        keepRequestingSlaves :: MVar () <- newEmptyMVar
-        let runRequestsSlave = do
-                -- This is used to get the port if we need it, but also to wait
-                -- for the server to be up.
-                port <- liftIO getPort
-                $logDebug ("Master starting on " ++ tshow (CN.serverHost ss, port))
-                let wci = WorkerConnectInfo host (fromMaybe port mbPort)
-                requestSlaves r wid wci $ \wsc -> do
-                    putMVar whenSlaveConnectsVar wsc
-                    takeMVar keepRequestingSlaves
-        let stopRequestingSlaves = tryPutMVar keepRequestingSlaves ()
-        runNMStatefulMaster ma nmsma
-            (\nma -> fmap fst $ Async.concurrently
-                (finally (acceptConns nma) stopRequestingSlaves)
-                runRequestsSlave)
-            (\mh maxSlavesReached ->
-                Async.withAsync (cont mh) $ \contAsync ->
-                Async.withAsync (maxSlavesReached >> stopRequestingSlaves) $ \maxSlavesAsync -> do
-                  contOrMaxSlaves <- Async.waitEither contAsync maxSlavesAsync
-                  case contOrMaxSlaves of
-                    Left x -> return x
-                    Right _ -> Async.wait contAsync)
+runRequestingStatefulMaster r wid ss0 host mbPort ma nmsma cont = do
+    nmSettings <- defaultNMSettings
+    (ss, getPort) <- liftIO (getPortAfterBind ss0)
+    whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
+    let acceptConns :: forall void.
+            NMApp (SlaveReq state context input) (SlaveResp state output) m () -> m void
+        acceptConns contSlaveConnect =
+            CN.runGeneralTCPServer ss $ \ad -> do
+                -- This is just to get the exceptions in the logs rather than on the
+                -- terminal: this is run in a separate thread anyway, and so they'd be
+                -- lost forever otherwise.
+                -- In other words, the semantics of the program are not affected.
+                let whenSlaveConnects nm = do
+                        join (readMVar whenSlaveConnectsVar)
+                        contSlaveConnect nm
+                mbExc <- tryAny (runNMApp nmSettings whenSlaveConnects ad)
+                case mbExc of
+                    Left err ->
+                        $logWarn ("requestingStatefulMaster: got exception in slave handler " ++ tshow err)
+                    Right () -> return ()
+    keepRequestingSlaves :: MVar () <- newEmptyMVar
+    let runRequestsSlave = do
+            -- This is used to get the port if we need it, but also to wait
+            -- for the server to be up.
+            port <- liftIO getPort
+            $logDebug ("Master starting on " ++ tshow (CN.serverHost ss, port))
+            let wci = WorkerConnectInfo host (fromMaybe port mbPort)
+            requestSlaves r (heartbeatingWorkerId wid) wci $ \wsc -> do
+                putMVar whenSlaveConnectsVar wsc
+                takeMVar keepRequestingSlaves
+    let stopRequestingSlaves = tryPutMVar keepRequestingSlaves ()
+    runNMStatefulMaster ma nmsma
+        (\nma -> fmap fst $ Async.concurrently
+            (finally (acceptConns nma) stopRequestingSlaves)
+            runRequestsSlave)
+        (\mh maxSlavesReached ->
+            Async.withAsync (cont mh) $ \contAsync ->
+            Async.withAsync (maxSlavesReached >> stopRequestingSlaves) $ \maxSlavesAsync -> do
+              contOrMaxSlaves <- Async.waitEither contAsync maxSlavesAsync
+              case contOrMaxSlaves of
+                Left x -> return x
+                Right _ -> Async.wait contAsync)
 
 -- | This function creates a job queue worker node to contribute to a
 -- distributed stateful computation.
@@ -388,12 +384,13 @@ runJobQueueStatefulWorker ::
     -> NMStatefulMasterArgs
     -> (MasterHandle m state context input output -> RequestId -> request -> m (Reenqueue response))
     -> m void
-runJobQueueStatefulWorker jqc ss host mbPort ma nmsma cont = do
-    wid <- getWorkerId
-    runMasterOrSlave jqc wid
-        (\_r wcis -> connectToAMaster (runNMStatefulSlave (maUpdate ma)) wcis)
-        (\r reqId req -> do
-          mbResp <- runRequestingStatefulMaster r (jqcHeartbeatConfig jqc) wid ss host mbPort ma nmsma (\mh -> cont mh reqId req)
-          case mbResp of
-            Nothing -> liftIO (fail "Timed out waiting for slaves to connect")
-            Just resp -> return resp)
+runJobQueueStatefulWorker jqc ss host mbPort ma nmsma cont =
+    withRedis (jqcRedisConfig jqc) $ \redis ->
+    withHeartbeats (jqcHeartbeatConfig jqc) redis $ \wid -> do
+        runMasterOrSlave jqc redis wid
+            (\wcis -> connectToAMaster (runNMStatefulSlave (maUpdate ma)) wcis)
+            (\reqId req -> do
+              mbResp <- runRequestingStatefulMaster redis wid ss host mbPort ma nmsma (\mh -> cont mh reqId req)
+              case mbResp of
+                Nothing -> liftIO (fail "Timed out waiting for slaves to connect")
+                Just resp -> return resp)

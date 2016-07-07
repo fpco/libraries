@@ -33,6 +33,7 @@ import Distributed.JobQueue.Client
 import Distributed.JobQueue.Worker
 import TestUtils
 import Distributed.Types
+import Distributed.Redis (withRedis)
 
 -- * Utils
 -----------------------------------------------------------------------
@@ -52,7 +53,7 @@ instance Store Response
 $(mkManyHasTypeHash [[t|Request|], [t|Response|]])
 
 jobWorker_ :: (MonadConnect m) => (Request -> m (Reenqueue Response)) -> m void
-jobWorker_ work = jobWorkerWithHeartbeats testJobQueueConfig (\_r _wid -> work)
+jobWorker_ work = withRedis (jqcRedisConfig testJobQueueConfig) $ \r -> jobWorkerWithHeartbeats testJobQueueConfig r (\_wid -> work)
 
 processRequest :: (MonadConnect m) => Request -> m (Reenqueue Response)
 processRequest Request{..} = do
@@ -65,7 +66,7 @@ testJobWorkerOnStartWork onStartWork = jobWorker_ $ \req -> do
     processRequest req
 
 testJobWorker :: (MonadConnect m) => m void
-testJobWorker = jobWorkerWithHeartbeats testJobQueueConfig $ \_r _wid Request{..} -> do
+testJobWorker = withRedis (jqcRedisConfig testJobQueueConfig) $ \r -> jobWorkerWithHeartbeats testJobQueueConfig r $ \_wid Request{..} -> do
     liftIO (threadDelay requestDelay)
     return requestResponse
 

@@ -31,7 +31,7 @@ heartbeatConfig = HeartbeatConfig
     , hcCheckerIvl = Seconds 1
     }
 
-withHeartbeats_ :: (MonadConnect m) => Redis -> WorkerId -> m a -> m a
+withHeartbeats_ :: (MonadConnect m) => Redis -> (Heartbeating -> m a) -> m a
 withHeartbeats_ = withHeartbeats heartbeatConfig
 
 withCheckHeartbeats_ :: (MonadConnect m) => Redis -> (NonEmpty WorkerId -> m () -> m ()) -> m a -> m a
@@ -78,15 +78,19 @@ checkDeadWorkerStatus r wid = do
 detectDeadWorker :: (MonadConnect m) => Redis -> Int -> m ()
 detectDeadWorker redis dieAfter = do
     stopChecking :: MVar () <- newEmptyMVar
-    let wid = WorkerId "0"
-    Async.withAsync (withHeartbeats_ redis wid (liftIO (threadDelay dieAfter))) $ \worker -> do
-        withCheckHeartbeats_ redis
-            (\wids markHandled -> do
-                expectWorkers [wid] (toList wids)
-                Async.cancel worker
-                markHandled
-                putMVar stopChecking ())
-            (takeMVar stopChecking)
+    widVar :: MVar WorkerId <- newEmptyMVar
+    Async.withAsync
+        (withHeartbeats_ redis (\hbting -> putMVar widVar (heartbeatingWorkerId hbting) >> liftIO (threadDelay dieAfter)))
+        (\worker -> do
+            wid <- readMVar widVar
+            withCheckHeartbeats_ redis
+                (\wids markHandled -> do
+                    expectWorkers [wid] (toList wids)
+                    Async.cancel worker
+                    markHandled
+                    putMVar stopChecking ())
+                (takeMVar stopChecking))
+    wid <- readMVar widVar
     checkNoWorkers redis
     checkDeadWorker redis wid
     setRedisSchemaVersion redis -- we don't have a client that sets the scheme
@@ -101,9 +105,10 @@ spec = do
     -- that it'll often fail with less than 5 secs...
     redisIt "Detects dead worker (long)" (\redis -> detectDeadWorker redis (5 * 1000 * 1000))
     redisIt "Keeps detecting dead workers if they're not handled" $ \redis -> do
-        let wid = WorkerId "0"
+        widVar :: MVar WorkerId <- newEmptyMVar
         handleCalls :: TVar Int <- liftIO (newTVarIO 0)
-        withHeartbeats_ redis wid (return ())
+        withHeartbeats_ redis (putMVar widVar . heartbeatingWorkerId)
+        wid <- takeMVar widVar
         withCheckHeartbeats_ redis
             (\wids markHandled -> do
                 expectWorkers [wid] (toList wids)

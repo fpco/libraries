@@ -34,10 +34,10 @@ mainClient = runStdoutLoggingT $
     liftIO $ print (mResponse :: Maybe Response)
 
 mainWorker :: IO ()
-mainWorker = runStdoutLoggingT $ jobWorkerWithHeartbeats jqc workerFunc
+mainWorker = runStdoutLoggingT $ withRedis (jqcRedisConfig jqc) $ \r -> jobWorkerWithHeartbeats jqc r workerFunc
 
-workerFunc :: Redis -> RequestId -> Request -> (LoggingT IO) (Reenqueue Response)
-workerFunc _ _ request = do
+workerFunc :: RequestId -> Request -> (LoggingT IO) (Reenqueue Response)
+workerFunc _ request = do
     liftIO $ threadDelay (60 * 1000 * 1000) -- wait a minute
     return (DontReenqueue $ "Done with " <> request)
 

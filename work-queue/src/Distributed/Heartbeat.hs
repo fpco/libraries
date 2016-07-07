@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE GADTs #-}
 {-|
 Module: Distributed.Heartbeat
 Description: Keep track of failed workers by via heartbeats.
@@ -21,6 +22,8 @@ module Distributed.Heartbeat
       HeartbeatConfig(..)
     , defaultHeartbeatConfig
       -- * Sending and checking heartbeats
+    , Heartbeating
+    , heartbeatingWorkerId
     , checkHeartbeats
     , withCheckHeartbeats
     , withHeartbeats
@@ -32,7 +35,10 @@ module Distributed.Heartbeat
     , lastHeartbeatFailureForWorker
       -- * Clear list of heartbeat failures
     , clearHeartbeatFailures
+      -- * WorkerId utils
+    , uniqueWorkerId
     ) where
+
 
 import ClassyPrelude
 import Control.Concurrent.Lifted (threadDelay)
@@ -45,12 +51,23 @@ import FP.Redis
 import FP.ThreadFileLogger
 import Control.Concurrent.Async.Lifted (race)
 import Data.Void (absurd)
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID
 
 import Distributed.Redis
 import Distributed.Types
 
 -- TODO: add warnings when the checkor timeout rate is too low
 -- compared to send rate.
+
+uniqueWorkerId :: MonadIO m => m WorkerId
+uniqueWorkerId = liftIO $
+    WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom
+
+newtype Heartbeating = Heartbeating WorkerId
+
+heartbeatingWorkerId :: Heartbeating -> WorkerId
+heartbeatingWorkerId (Heartbeating wid) = wid
 
 -- | Configuration of heartbeats, used by both the checker and sender.
 data HeartbeatConfig = HeartbeatConfig
@@ -260,15 +277,18 @@ withCheckHeartbeats conf redis handle' cont =
 -- | Periodically sends heartbeats, and makes sure that the worker is
 -- in the set of active workers.
 withHeartbeats
-    :: MonadConnect m => HeartbeatConfig -> Redis -> WorkerId -> m a -> m a
-withHeartbeats config r wid cont = do
-    sendHeartbeat
-    fmap (either id absurd) $ race cont $ forever $ do
+    :: MonadConnect m => HeartbeatConfig -> Redis -> (Heartbeating -> m a) -> m a
+withHeartbeats config r cont = do
+    $logInfo "Starting heartbeats"
+    wid <- uniqueWorkerId
+    sendHeartbeat wid
+    $logInfo "Initial heartbeat sent"
+    fmap (either id absurd) $ race (cont (Heartbeating wid)) $ forever $ do
         let Seconds ivl = hcSenderIvl config
         liftIO $ threadDelay ((fromIntegral ivl `max` 1) * 1000 * 1000)
-        sendHeartbeat
+        sendHeartbeat wid
   where
-    sendHeartbeat = do
+    sendHeartbeat wid = do
         -- We need the current time here only for displaying the time
         -- of the last heartbeat in the hpc-manager.  For the
         -- heartbeat mechanism itself, a fixed string would work just
