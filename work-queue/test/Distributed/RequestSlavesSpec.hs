@@ -20,10 +20,10 @@ import           Data.Store.TypeHash
 import           FP.Redis
 import           Data.Store (Store)
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import           Data.Foldable (foldl)
 import           Data.Void (absurd)
 import qualified Data.Map.Strict as Map
 import qualified Control.Concurrent.STM as STM
-import qualified Data.List.NonEmpty as NE
 import           Control.Concurrent (threadDelay)
 import           Control.Monad.Logger
 import qualified Data.Conduit.Network as CN
@@ -143,16 +143,16 @@ spec = do
     redisIt "Echo with many slaves" $ \r -> do
         let numSlaves = 10
         wids <- newWorkerIdsVar
-        fmap (either (absurd . NE.head) id) $ Async.race
-            (Async.mapConcurrently (\x -> runEchoSlave r wids (SlaveId x) 0) (NE.fromList [1..numSlaves]))
+        foldl (\x y -> either id absurd <$> Async.race x (runEchoSlave r wids (SlaveId y) 0))
             (runMasterCollectResults r wids (MasterId 0) numSlaves)
+            [1..numSlaves]
     redisIt "Echo with many masters and many slaves (short)" $ \r -> do
         let numSlaves :: Int = 10
         let numMasters :: Int = 5
         wids <- newWorkerIdsVar
-        fmap (either (absurd . NE.head) id) $ Async.race
-            (Async.mapConcurrently (\x -> runEchoSlave r wids (SlaveId x) 0) (NE.fromList [1..numSlaves]))
+        foldl (\x y -> either id absurd <$> Async.race x (runEchoSlave r wids (SlaveId y) 0))
             (mapConcurrently_ (\mid -> runMasterCollectResults r wids (MasterId mid) numSlaves) [1..numMasters])
+            [1..numSlaves]
     stressfulTest $ redisIt "Echo with many masters and many slaves (long)" $ \r -> do
         let numSlaves :: Int = 10
         let numMasters :: Int = 5
@@ -162,9 +162,9 @@ spec = do
                 , krMaxTimeout = 1000
                 }
         wids <- newWorkerIdsVar
-        fmap (either (absurd . NE.head) id) $ Async.race
-            (Async.mapConcurrently (\x -> killRandomly_ (runEchoSlave r wids (SlaveId x) 500)) (NE.fromList [1..numSlaves]))
+        foldl (\x y -> either id absurd <$> Async.race x (runEchoSlave r wids (SlaveId y) 500))
             (mapConcurrently_ (\mid -> killRandomly_ (runMasterCollectResults r wids (MasterId mid) numSlaves)) [1..numMasters])
+            [1..numSlaves]
     redisIt "Candidate slaves notice and remove inactive masters, while master is alive" $ \r -> do
         let whenSlaveConnects _nm = fail "Got an unexpected connection on master"
         hasMasterStarted :: MVar () <- newEmptyMVar
