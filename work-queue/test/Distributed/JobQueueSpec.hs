@@ -157,7 +157,7 @@ spec = do
     redisIt_ "Can cancel request" $ do
         let resp = Response "test"
         let req = Request
-                { requestDelay = 120 * 1000 * 1000
+                { requestDelay = 500 * 1000 * 1000
                 , requestResponse = DontReenqueue resp
                 }
         workStartedRef :: IORef Int <- newIORef 0
