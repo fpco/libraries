@@ -21,6 +21,7 @@ module TestUtils
     , waitFor
     , upToNSeconds
     , upToTenSeconds
+    , raceAgainstVoids
     ) where
 
 import           ClassyPrelude hiding (keys, (<>))
@@ -29,7 +30,9 @@ import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Control.Monad.Catch (Handler (..))
 import           Control.Monad.Logger
 import           Control.Retry
+import           Data.Foldable (foldl)
 import qualified Data.Text as T
+import           Data.Void (absurd, Void)
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Worker
 import           FP.Redis
@@ -145,3 +148,17 @@ upToNSeconds n = constantDelay 100000 <> limitRetries (n * 10)
 upToTenSeconds :: RetryPolicy
 upToTenSeconds = upToNSeconds 10
 
+-- | Perform an action concurrently with some non-terminating actions
+-- that will be killed when the action finishes.
+--
+-- This can be used to spawn workers for a test, making sure they are
+-- all killed at the end of the test.
+raceAgainstVoids :: MonadConnect m
+                    => m a
+                    -- ^ Action to perform.
+                    -> [m Void]
+                    -- ^ Non-terminating actions that will run
+                    -- concurrently to the first action, and will all
+                    -- be killed when the first action terminates.
+                    -> m a
+raceAgainstVoids = foldl (\x v -> either id absurd <$> Async.race x v)

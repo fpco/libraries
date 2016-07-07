@@ -23,14 +23,11 @@ import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Control.DeepSeq (NFData)
 import           Control.Monad.State (modify, execState)
 import qualified Data.Conduit.Network as CN
-import           Data.Foldable (foldl)
 import qualified Data.HashMap.Strict as HMS
-import qualified Data.List.NonEmpty as NE
 import           Data.Store (Store)
 import           Data.Store.TypeHash (mkManyHasTypeHash)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
-import           Data.Void (Void, absurd)
 import           Distributed.JobQueue.Client
 import           Distributed.JobQueue.Worker
 import           Distributed.RequestSlaves
@@ -141,13 +138,14 @@ spec = do
             rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
             submitRequest jc rid ()
             void $ waitForResponse_ jc rid
-      withNWorkers workersToSpawn worker
+      raceAgainstVoids
         (do
           client
           -- Check that there are no masters anymore
           waitFor (upToNSeconds 15) $ do
             wcis <- getWorkerRequests r
             wcis `shouldBe` [])
+        (replicate workersToSpawn worker)
     stressfulTest $
       redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
     stressfulTest $ redisIt_ "fullfills all requests (long, few)" $ do
@@ -186,15 +184,10 @@ fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do
         submitRequest jc rid ()
         Just () <- waitForResponse_ jc rid
         return ()
-  withNWorkers numWorkers worker
+  raceAgainstVoids
     (void (Async.mapConcurrently requestLoop [(1::Int)..numClients]))
+    (replicate numWorkers worker)
   -- Check that we sometimes gained slaves while executing
   numSlavesAtStartup <- readIORef numSlavesAtStartupRef
   numSlavesAtShutdown <- readIORef numSlavesAtShutdownRef
   return (numSlavesAtStartup, numSlavesAtShutdown)
-
-withNWorkers :: MonadConnect m => Int -> m Void -> m () -> m ()
-withNWorkers n worker cont =
-    foldl (\x _ -> either id absurd <$> Async.race x worker)
-    cont
-    (NE.fromList [(1::Int)..n])
