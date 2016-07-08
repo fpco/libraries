@@ -27,7 +27,6 @@ import           Control.Concurrent (threadDelay)
 import           Data.Void (absurd)
 import           Data.Store.TypeHash (mkManyHasTypeHash)
 import           Data.Store.TypeHash.Orphans ()
-import qualified Data.Store as S
 
 import           TestUtils
 

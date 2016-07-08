@@ -73,7 +73,7 @@ instance Store WorkerConnectInfoWithWorkerId
 requestSlaves
     :: (MonadConnect m)
     => Redis
-    -> WorkerId -- ^ The 'WorkerId' of the master.
+    -> WorkerId
     -> WorkerConnectInfo
     -- ^ This worker's connection information.
     -> (m () -> m a)

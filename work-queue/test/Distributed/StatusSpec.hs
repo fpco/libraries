@@ -35,10 +35,10 @@ type Response = ByteString
 
 -- | This worker completes as soon as the 'MVar' is not empty.
 waitingWorker :: MonadConnect m => MVar () -> m void
-waitingWorker mvar = jobWorkerWithHeartbeats testJobQueueConfig $ waitingWorkerFunc mvar
+waitingWorker mvar = withRedis (jqcRedisConfig testJobQueueConfig) $ \r -> jobWorkerWithHeartbeats testJobQueueConfig r $ waitingWorkerFunc mvar
 
-waitingWorkerFunc :: MonadIO m => MVar () -> Redis -> RequestId -> Request -> m (Reenqueue Response)
-waitingWorkerFunc mvar _ _ _ = do
+waitingWorkerFunc :: MonadIO m => MVar () -> RequestId -> Request -> m (Reenqueue Response)
+waitingWorkerFunc mvar _ _ = do
     _ <- liftIO $ takeMVar mvar
     return (DontReenqueue "Done")
 
@@ -51,13 +51,13 @@ failingJqc = testJobQueueConfig
 
 -- | A worker that will fail its heartbeat
 failingWorker :: MonadConnect m => m void
-failingWorker = jobWorkerWithHeartbeats failingJqc failingWorkerFunc
+failingWorker = withRedis (jqcRedisConfig failingJqc) $ \r -> jobWorkerWithHeartbeats failingJqc r failingWorkerFunc
 
 -- | The worker function of the 'failingWorker'.
 --
 -- It simply does not terminate.
-failingWorkerFunc :: MonadConnect m => Redis -> RequestId -> Request -> m (Reenqueue Response)
-failingWorkerFunc _ _ _ = forever (threadDelay maxBound) >> return (DontReenqueue "done")
+failingWorkerFunc :: MonadConnect m => RequestId -> Request -> m (Reenqueue Response)
+failingWorkerFunc _ _ = forever (threadDelay maxBound) >> return (DontReenqueue "done")
 
 -- | Simple client that submits a request and waits for the result.
 startClient :: forall m . MonadConnect m => (RequestId, Request) -> m ()

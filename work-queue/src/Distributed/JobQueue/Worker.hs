@@ -30,7 +30,6 @@ module Distributed.JobQueue.Worker
     , jobWorkerWithHeartbeats
     , Reenqueue(..)
     , jobWorkerWait
-    , getWorkerId
     ) where
 
 import ClassyPrelude
@@ -41,14 +40,11 @@ import Data.Proxy
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Streaming.NetworkMessage
 import Data.Store.TypeHash
-import Data.UUID as UUID
-import Data.UUID.V4 as UUID
 import Distributed.Heartbeat
 import Distributed.JobQueue.Internal
 import Distributed.Redis
 import Distributed.Types
 import FP.Redis
-import FP.ThreadFileLogger
 import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Data.Store (encode, Store)
 import Data.Typeable (typeOf)
@@ -71,52 +67,49 @@ import Data.Typeable (typeOf)
 jobWorker :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
-    -> WorkerId
-    -> (Redis -> RequestId -> request -> m (Reenqueue response))
+    -> Redis
+    -> Heartbeating
+    -> (RequestId -> request -> m (Reenqueue response))
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m void
-jobWorker config wid f = jobWorkerWait config wid (return ()) f
+jobWorker config redis hb f = jobWorkerWait config redis hb (return ()) f
 
 jobWorkerWithHeartbeats ::
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
-    -> (Redis -> RequestId -> request -> m (Reenqueue response))
+    -> Redis
+    -> (RequestId -> request -> m (Reenqueue response))
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m void
-jobWorkerWithHeartbeats config f = do
-    wid <- getWorkerId
-    $logInfo "Starting heartbeats"
-    withRedis (jqcRedisConfig config) $ \r -> withHeartbeats (jqcHeartbeatConfig config) r wid $ do
-        $logInfo "Initial heartbeat sent"
-        jobWorker config wid f
+jobWorkerWithHeartbeats config redis f = do
+    withHeartbeats (jqcHeartbeatConfig config) redis (\hb -> jobWorker config redis hb f)
 
 -- | Exactly like 'jobWorker', but also allows to delay the loop using the second argument.
 jobWorkerWait :: forall m request response void.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
-    -> WorkerId
+    -> Redis
+    -> Heartbeating
     -> m ()
     -- ^ The worker has a loop that keeps popping requests. This action
     -- will be called at the beginning of every loop iteration, and can
     -- be useful to "limit" the loop (e.g. have some timer in between,
     -- or wait for the worker to be free of processing requests if we
     -- are doing something else too).
-    -> (Redis -> RequestId -> request -> m (Reenqueue response))
+    -> (RequestId -> request -> m (Reenqueue response))
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m void
-jobWorkerWait config@JobQueueConfig{..} wid wait f = do
-    let withTag = withLogTag (LogTag ("worker-" ++ tshow (unWorkerId wid)))
-    withTag $ withRedis jqcRedisConfig $ \r -> do
-        withSubscribedNotifyChannel
-            (rcConnectInfo jqcRedisConfig)
-            jqcRequestNotificationFailsafeTimeout
-            (requestChannel r)
-            (\waitForReq -> do
-                -- writeIORef everConnectedRef True
-                jobWorkerThread config r wid waitForReq (f r) wait)
+jobWorkerWait config@JobQueueConfig{..} r (heartbeatingWorkerId -> wid) wait f = do
+    withSubscribedNotifyChannel
+        (rcConnectInfo jqcRedisConfig)
+        jqcRequestNotificationFailsafeTimeout
+        (requestChannel r)
+        (\waitForReq -> do
+            -- writeIORef everConnectedRef True
+            jobWorkerThread config r wid waitForReq f wait)
 
 -- | A specialised 'Maybe' to indicate the result of a job: If the job
 -- successfull produced a result @a@, it will yield it via
@@ -243,7 +236,7 @@ reenqueueRequest r (WorkerId wid) (RequestId rid) = do
 -- successfully sent, this also removes the request data, as it's no
 -- longer needed.
 -- REVIEW TODO: These "the request is done" tasks are not atomic. Is this a problem?
-sendResponse :: 
+sendResponse ::
        MonadConnect m
     => Redis
     -> Seconds
@@ -315,7 +308,3 @@ wrapException ex =
         (fromException -> Just err) -> err
         (fromException -> Just err) -> NetworkMessageException err
         _ -> OtherException (tshow (typeOf ex)) (tshow ex)
-
-getWorkerId :: MonadIO m => m WorkerId
-getWorkerId = liftIO $
-    WorkerId . UUID.toASCIIBytes <$> UUID.nextRandom
