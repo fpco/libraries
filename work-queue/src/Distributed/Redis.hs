@@ -141,7 +141,7 @@ newtype NotifyChannel = NotifyChannel Channel
 -- action will be performed, regardless of whether a notification
 -- arrived or not.
 --
--- 
+--
 withSubscribedNotifyChannel :: forall m a.
        (MonadConnect m)
     => ConnectInfo

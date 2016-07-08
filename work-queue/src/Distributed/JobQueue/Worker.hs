@@ -73,7 +73,7 @@ jobWorker :: forall m request response void.
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m void
-jobWorker config redis wid f = jobWorkerWait config redis wid (return ()) f
+jobWorker config redis hb f = jobWorkerWait config redis hb (return ()) f
 
 jobWorkerWithHeartbeats ::
        (MonadConnect m, Sendable request, Sendable response)
@@ -84,7 +84,7 @@ jobWorkerWithHeartbeats ::
     -- receives.
     -> m void
 jobWorkerWithHeartbeats config redis f = do
-    withHeartbeats (jqcHeartbeatConfig config) redis (\wid -> jobWorker config redis wid f)
+    withHeartbeats (jqcHeartbeatConfig config) redis (\hb -> jobWorker config redis hb f)
 
 -- | Exactly like 'jobWorker', but also allows to delay the loop using the second argument.
 jobWorkerWait :: forall m request response void.
@@ -236,7 +236,7 @@ reenqueueRequest r (WorkerId wid) (RequestId rid) = do
 -- successfully sent, this also removes the request data, as it's no
 -- longer needed.
 -- REVIEW TODO: These "the request is done" tasks are not atomic. Is this a problem?
-sendResponse :: 
+sendResponse ::
        MonadConnect m
     => Redis
     -> Seconds

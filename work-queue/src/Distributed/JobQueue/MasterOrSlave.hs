@@ -53,7 +53,7 @@ runMasterOrSlave :: forall m request response void.
     -> (RequestId -> request -> m (Reenqueue response))
     -- ^ Master function.
     -> m void
-runMasterOrSlave config redis wid slaveFunc masterFunc = do
+runMasterOrSlave config redis hb slaveFunc masterFunc = do
     stateVar <- liftIO (newTVarIO Idle)
     fmap (either id id) $ Async.race
         (handleSlaveRequests stateVar) (handleMasterRequests stateVar)
@@ -75,7 +75,7 @@ runMasterOrSlave config redis wid slaveFunc masterFunc = do
 
     handleMasterRequests :: TVar MasterOrSlave -> m void
     handleMasterRequests stateVar = do
-        jobWorkerWait config redis wid (waitToBeIdle stateVar) $ \rid request -> do
+        jobWorkerWait config redis hb (waitToBeIdle stateVar) $ \rid request -> do
             -- If you couldn't transition to master, re-enqueue.
             mbRes <- transitionIdleTo stateVar Master $ do
                 $logInfo ("Transitioned to master")

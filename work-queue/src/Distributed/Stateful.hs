@@ -8,6 +8,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ViewPatterns #-}
 {-|
 Module: Distributed.Stateful
 Description: Distribute stateful computations.
@@ -321,7 +322,7 @@ runRequestingStatefulMaster :: forall m state output context input b.
     -> NMStatefulMasterArgs
     -> (MasterHandle m state context input output -> m b)
     -> m (Maybe b)
-runRequestingStatefulMaster r wid ss0 host mbPort ma nmsma cont = do
+runRequestingStatefulMaster r (heartbeatingWorkerId -> wid) ss0 host mbPort ma nmsma cont = do
     nmSettings <- defaultNMSettings
     (ss, getPort) <- liftIO (getPortAfterBind ss0)
     whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
@@ -348,7 +349,7 @@ runRequestingStatefulMaster r wid ss0 host mbPort ma nmsma cont = do
             port <- liftIO getPort
             $logDebug ("Master starting on " ++ tshow (CN.serverHost ss, port))
             let wci = WorkerConnectInfo host (fromMaybe port mbPort)
-            requestSlaves r (heartbeatingWorkerId wid) wci $ \wsc -> do
+            requestSlaves r wid wci $ \wsc -> do
                 putMVar whenSlaveConnectsVar wsc
                 takeMVar keepRequestingSlaves
     let stopRequestingSlaves = tryPutMVar keepRequestingSlaves ()
@@ -386,11 +387,11 @@ runJobQueueStatefulWorker ::
     -> m void
 runJobQueueStatefulWorker jqc ss host mbPort ma nmsma cont =
     withRedis (jqcRedisConfig jqc) $ \redis ->
-    withHeartbeats (jqcHeartbeatConfig jqc) redis $ \wid -> do
-        runMasterOrSlave jqc redis wid
+    withHeartbeats (jqcHeartbeatConfig jqc) redis $ \hb -> do
+        runMasterOrSlave jqc redis hb
             (\wcis -> connectToAMaster (runNMStatefulSlave (maUpdate ma)) wcis)
             (\reqId req -> do
-              mbResp <- runRequestingStatefulMaster redis wid ss host mbPort ma nmsma (\mh -> cont mh reqId req)
+              mbResp <- runRequestingStatefulMaster redis hb ss host mbPort ma nmsma (\mh -> cont mh reqId req)
               case mbResp of
                 Nothing -> liftIO (fail "Timed out waiting for slaves to connect")
                 Just resp -> return resp)
