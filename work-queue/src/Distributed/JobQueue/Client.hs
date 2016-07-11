@@ -47,7 +47,7 @@ import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.Store.TypeHash
 import           Data.Typeable (Proxy(..))
 import           Distributed.Heartbeat (checkHeartbeats)
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Distributed.JobQueue.Internal
 import           Distributed.JobQueue.StaleKeys
 import           Distributed.Redis

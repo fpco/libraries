@@ -7,7 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module Distributed.StatusSpec (spec) where
 
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.MVar
 import           Control.Monad

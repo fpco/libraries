@@ -20,7 +20,6 @@ Flag enable
 library
   exposed-modules:     FP.ThreadFileLogger
   build-depends:       base
-                     , async
                      , bytestring
                      , classy-prelude
                      , containers

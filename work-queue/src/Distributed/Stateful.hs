@@ -64,7 +64,7 @@ module Distributed.Stateful
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Distributed.Heartbeat
 import           Distributed.Stateful.Slave
 import           Distributed.Stateful.Internal

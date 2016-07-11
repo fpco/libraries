@@ -44,7 +44,7 @@ module Distributed.Stateful.Master
     ) where
 
 import           ClassyPrelude
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Control.Monad.Logger (MonadLogger, logWarn, logInfo, logDebug)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS

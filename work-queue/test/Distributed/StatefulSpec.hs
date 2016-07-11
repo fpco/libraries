@@ -19,7 +19,7 @@ module Distributed.StatefulSpec (spec) where
 
 import           ClassyPrelude
 import           Control.Concurrent (threadDelay)
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Control.DeepSeq (NFData)
 import           Control.Monad.State (modify, execState)
 import qualified Data.Conduit.Network as CN

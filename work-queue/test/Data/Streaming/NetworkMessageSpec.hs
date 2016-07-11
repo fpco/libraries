@@ -20,7 +20,7 @@ import qualified Data.Conduit.Network as CN
 import           Data.Streaming.NetworkMessage
 import           Test.Hspec hiding (shouldBe)
 import qualified Test.Hspec
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           FP.Redis (MonadConnect)
 import           Control.Monad.Trans.Control (control)
 import           Control.Concurrent (threadDelay)

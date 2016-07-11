@@ -26,7 +26,7 @@ module TestUtils
 
 import           ClassyPrelude hiding (keys, (<>))
 import           Control.Concurrent (threadDelay)
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Control.Monad.Catch (Handler (..))
 import           Control.Monad.Logger
 import           Control.Retry
