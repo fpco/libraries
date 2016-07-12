@@ -34,3 +34,13 @@ library
 
 
                      
+test-suite test-mesosync
+    default-language: Haskell2010
+    type:       exitcode-stdio-1.0
+    hs-source-dirs: test
+    main-is:    test-mesosync.hs
+    build-depends: base >= 4.3 && < 4.10,
+                   mesosync,
+                   test-framework,
+                   test-framework-hunit,
+                   HUnit
