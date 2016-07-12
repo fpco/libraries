@@ -27,7 +27,11 @@ import           Control.Monad
 import           Data.IORef
 
 cancel :: Async a -> IO ()
-cancel x = A.cancel x <* A.waitCatch x
+cancel = uninterruptibleMask_ . interruptibleCancel
+
+interruptibleCancel :: Async a -> IO ()
+interruptibleCancel x = A.cancel x <* A.waitCatch x
+{-# INLINABLE interruptibleCancel #-}
 
 cancelWith :: Exception e => Async a -> e -> IO ()
 cancelWith x e = A.cancelWith x e <* A.waitCatch x
@@ -100,11 +104,12 @@ concurrently' left right collect = do
         let stop = do
                 -- kill right before left, to match the semantics of
                 -- the version using withAsync. (#27)
-                uninterruptibleMask_ (killThread rid >> killThread lid)
+                uninterruptibleMask_ $ do
+                    killThread rid >> killThread lid
 
-                -- ensure the children are really dead
-                count' <- readIORef count
-                replicateM_ count' (takeMVar done)
+                    -- ensure the children are really dead
+                    count' <- readIORef count
+                    replicateM_ count' (takeMVar done)
         r <- restore (collect takeDone) `onException` stop
         stop
         return r
