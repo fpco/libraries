@@ -19,8 +19,8 @@ cabal-version:       >=1.10
 
 library
   exposed-modules:   Control.Concurrent.Mesosync
-                   , Control.Concurrent.Mesosync.Lifted
                    , Control.Concurrent.Mesosync.Lifted.Safe
+  other-modules:     Control.Concurrent.Mesosync.Lifted
   hs-source-dirs:    src
   build-depends:     base >= 4.7
                    , lifted-async
