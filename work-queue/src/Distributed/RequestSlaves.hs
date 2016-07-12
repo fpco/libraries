@@ -51,7 +51,7 @@ import Data.Streaming.NetworkMessage
 import qualified Data.Conduit.Network as CN
 import qualified Data.Streaming.Network.Internal as CN
 import Control.Monad.Trans.Control (control)
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import Data.Void (absurd)
 import Control.Exception (BlockedIndefinitelyOnMVar)
 

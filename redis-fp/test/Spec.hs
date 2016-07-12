@@ -8,7 +8,7 @@
 {-# LANGUAGE TupleSections #-}
 
 import ClassyPrelude
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import Control.Concurrent.Lifted (threadDelay, fork, killThread)
 import Control.Concurrent.STM (check)
 import Control.Exception (throw)

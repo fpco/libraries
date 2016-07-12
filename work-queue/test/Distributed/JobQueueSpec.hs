@@ -16,7 +16,7 @@ module Distributed.JobQueueSpec (spec) where
 
 import ClassyPrelude
 import Data.Store (Store)
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Test.Hspec hiding (shouldBe)
 import qualified Test.Hspec
 import FP.Redis (MonadConnect, Seconds(..))

@@ -49,7 +49,7 @@ import qualified Data.List.NonEmpty as NE
 import Data.Time.Clock.POSIX
 import FP.Redis
 import FP.ThreadFileLogger
-import Control.Concurrent.Async.Lifted (race)
+import Control.Concurrent.Mesosync.Lifted.Safe (race)
 import Data.Void (absurd)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID

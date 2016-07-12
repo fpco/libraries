@@ -19,7 +19,7 @@ import           Test.Hspec
 import           Data.Store.TypeHash
 import           FP.Redis
 import           Data.Store (Store)
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Data.Void (absurd, Void)
 import qualified Data.Map.Strict as Map
 import qualified Control.Concurrent.STM as STM

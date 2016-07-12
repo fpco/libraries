@@ -8,7 +8,7 @@ module Distributed.HeartbeatSpec (spec) where
 
 import           ClassyPrelude hiding (keys)
 import           FP.Redis (Seconds(..))
-import qualified Control.Concurrent.Async.Lifted.Safe as Async
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           FP.Redis (MonadConnect)
 import qualified Control.Concurrent.STM as STM
 import           Control.Concurrent (threadDelay)
