@@ -53,6 +53,9 @@ runSlave :: forall state context input output m.
 runSlave SlaveArgs{..} = do
     let recv = scRead saConn
     let send = scWrite saConn
+        -- We're only catching 'SlaveException's here, since they
+        -- indicate that something was wrong about the request, and
+        -- should be sent back to the master.
         handler :: SlaveException -> m ()
         handler err = do
             send (SRespError (pack (show err)))
@@ -69,6 +72,8 @@ runSlave SlaveArgs{..} = do
     go recv send states = do
       req <- recv
       debug (displayReq req)
+      -- WARNING: All exceptions thrown here should be of type
+      -- 'SlaveException', as only those will be catched.
       (output, mbStates) <- case req of
           SReqResetState states' -> return (SRespResetState, (Just states'))
           SReqGetStates -> return (SRespGetStates states, (Just states))
