@@ -63,7 +63,7 @@
     <tr>
       <th>
         <input type=checkbox #select-all-pending>
-      <th>Run time
+      <th>Time since enqueued
       <th>Re-enqueue count
       <th>RequestID
     $forall (start, reenq, rid) <- pending
