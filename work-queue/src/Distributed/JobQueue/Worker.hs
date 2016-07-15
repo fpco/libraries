@@ -170,7 +170,6 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
                     RequestShouldBeReenqueued -> do
                         $logInfo (gotX "reenqueue")
                         reenqueueRequest r wid rid
-                        addRequestEvent r rid (RequestWorkReenqueuedByWorker wid)
                     GotResponse res -> do
                         case res of
                             Left err -> $logWarn (gotX ("exception: " ++ tshow err))
@@ -237,6 +236,7 @@ reenqueueRequest ::
     => Redis -> WorkerId -> RequestId -> m ()
 reenqueueRequest r (WorkerId wid) rid = do
     checkPoppedActiveKey (WorkerId wid) rid =<< run r (rpoplpush (activeKey r (WorkerId wid)) (requestsKey r))
+    addRequestEvent r rid (RequestWorkReenqueuedByWorker (WorkerId wid))
 
 -- | Send a response for a particular request. Once the response is
 -- successfully sent, this also removes the request data, as it's no
