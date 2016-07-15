@@ -95,7 +95,7 @@ requestSlaves r wid wci0 cont = do
                 else do
                     removed <- run r (zrem (workerRequestsKey r) (encoded :| []))
                     if  | removed == 0 ->
-                            throwIO (InternalConnectRequestException ("Got no removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests. This can happen if the removal function is called twice"))
+                            $logWarn ("Got no removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests. This can happen if the request has already been deleted due to a temporary heartbeat failure of the master.")
                         | removed == 1 ->
                             return ()
                         | True ->
