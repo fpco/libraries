@@ -159,6 +159,8 @@ submitRequest JobClient{..} rid request = do
             , jrBody = S.encode request
             }
     $logDebugS "sendRequest" $ "Pushing request " <> tshow rid
+    -- NOTE: It's crucial for the body to be added _before_ the request id in the requests
+    -- list, since the worker will just drop the request id if the body is missing.
     added <- run jcRedis (set (requestDataKey jcRedis rid) encoded [EX (jqcRequestExpiry jcConfig), NX])
     if not added
         then $logWarnS "submitRequest" $

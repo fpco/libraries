@@ -145,9 +145,12 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
         mbReqBs <- receiveRequest r wid rid
         case mbReqBs of
             Nothing -> do
-                $logWarn (workerMsg ("Failed getting the content of request " ++ tshow rid ++ ". This can happen if the request is cancelled."))
-                -- In this case the best we can do is try to re-enqueue: we need to clear the current active key anyway.
-                reenqueueRequest r wid rid
+                $logInfo (workerMsg ("Failed getting the content of request " ++ tshow rid ++ ". This can happen if the request is expired or cancelled. The request will be dropped."))
+                -- In this case the best we can do is to just drop the request id we got. This is mostly to
+                -- mitigate against the case of a stale request id being reenqueued forever. This can
+                -- happen, for example, if a worker dies at the wrong moment. If the request data has expired,
+                -- we will never be able to process the request anyway, so we might as well drop it.
+                checkPoppedActiveKey wid rid =<< run r (rpop (activeKey r wid))
             Just reqBs -> do
                 $logInfo (workerMsg ("Got contents of request " ++ tshow rid))
                 mbResp :: WorkerResult response <- case checkRequest (Proxy :: Proxy response) rid reqBs of
@@ -220,17 +223,20 @@ checkRequest _proxy rid req = do
             }
     decodeOrErr "jobWorker" jrBody
 
-reenqueueRequest ::
-       (MonadConnect m)
-    => Redis -> WorkerId -> RequestId -> m ()
-reenqueueRequest r (WorkerId wid) (RequestId rid) = do
-    mbRid <- run r (rpoplpush (activeKey r (WorkerId wid)) (requestsKey r))
+checkPoppedActiveKey :: (MonadConnect m) => WorkerId -> RequestId -> Maybe ByteString -> m ()
+checkPoppedActiveKey (WorkerId wid) (RequestId rid) mbRid = do
     case mbRid of
         Nothing -> do
             $logWarn ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got nothing. This means that the worker has been detected as dead by a client.")
         Just rid' ->
             unless (rid == rid') $
                 throwM (InternalJobQueueException ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got " ++ tshow rid'))
+
+reenqueueRequest ::
+       (MonadConnect m)
+    => Redis -> WorkerId -> RequestId -> m ()
+reenqueueRequest r (WorkerId wid) rid = do
+    checkPoppedActiveKey (WorkerId wid) rid =<< run r (rpoplpush (activeKey r (WorkerId wid)) (requestsKey r))
 
 -- | Send a response for a particular request. Once the response is
 -- successfully sent, this also removes the request data, as it's no
