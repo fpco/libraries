@@ -10,7 +10,7 @@
   <tr>
     <th>Request ID
     <th>Enqueue time
-    <th>Re-enqueue count
+    <th title="Re-enqueue count by worker/after heartbeat failures/after stale key detection">Re-enqueue count
     <th>Most recent compute start
     <th>Most recent compute finish
     <th>Compute time
@@ -22,7 +22,8 @@
       <td>
         $maybe x <- rsEnqueueTime r
           #{show x}
-      <td>#{show (rsReenqueueCount r)}
+      <td title="Re-enqueue count by worker/after heartbeat failures/after stale key detection">
+          #{show (rsReenqueueByWorkerCount r)}/#{show (rsReenqueueByHeartbeatCount r)}/#{show (rsReenqueueByStaleKeyCount r)}
       <td>
         $maybe x <- rsComputeStartTime r
           #{show x}
