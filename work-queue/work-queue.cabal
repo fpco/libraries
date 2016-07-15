@@ -89,6 +89,7 @@ test-suite wq-test
   main-is:             Main.hs
   other-modules:       TestUtils
                      , Distributed.HeartbeatSpec
+                     , Distributed.JobQueueSpec
                      , Distributed.RequestSlavesSpec
                      , Distributed.StaleKeySpec
                      , Distributed.StatefulSpec
