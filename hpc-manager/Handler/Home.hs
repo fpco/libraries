@@ -113,9 +113,18 @@ getAndRenderRequest start r k = do
         Nothing -> return ("?", "?", shownId)
         Just rs -> return
             ( maybe "Missing?!?" (tshow . (start `diffUTCTime`)) (rsEnqueueTime rs)
-            , tshow (rsReenqueueCount rs)
+            , reenqueueText
             , shownId
             )
+          where reenqueueText = unwords
+                    [tshow (  rsReenqueueByWorkerCount rs
+                            + rsReenqueueByHeartbeatCount rs
+                            + rsReenqueueByStaleKeyCount rs)
+                    , "("
+                    ++        tshow (rsReenqueueByWorkerCount rs)
+                    ++ "/" ++ tshow (rsReenqueueByHeartbeatCount rs)
+                    ++ "/" ++ tshow (rsReenqueueByStaleKeyCount rs)
+                    ++ ")"]
 
 postStatusR :: Handler Html
 postStatusR = do

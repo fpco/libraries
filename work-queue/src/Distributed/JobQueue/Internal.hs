@@ -119,6 +119,8 @@ data RequestEvent
     = RequestEnqueued
     | RequestWorkStarted !WorkerId
     | RequestWorkReenqueuedByWorker !WorkerId
+    | RequestWorkReenqueuedAfterHeartbeatFailure !WorkerId
+    | RequestWorkReenqueuedAsStale !WorkerId
     | RequestWorkFinished !WorkerId
     | RequestResponseRead
     deriving (Generic, Show, Typeable)

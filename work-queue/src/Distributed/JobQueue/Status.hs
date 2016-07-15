@@ -103,7 +103,9 @@ getWorkerRequest r wid = do
 -- | Stats of an individual request.
 data RequestStats = RequestStats
     { rsEnqueueTime :: Maybe UTCTime
-    , rsReenqueueCount :: Int
+    , rsReenqueueByWorkerCount :: Int
+    , rsReenqueueByHeartbeatCount :: Int
+    , rsReenqueueByStaleKeyCount :: Int
     , rsComputeStartTime :: Maybe UTCTime
     , rsComputeFinishTime :: Maybe UTCTime
     , rsComputeTime :: Maybe NominalDiffTime
@@ -121,7 +123,9 @@ getRequestStats r k = do
         _ -> return $ Just RequestStats {..}
           where
             rsEnqueueTime = lastMay [x | (x, RequestEnqueued) <- evs]
-            rsReenqueueCount = max 0 (length [() | (_, RequestWorkStarted _) <- evs] - 1)
+            rsReenqueueByWorkerCount = length [() | (_, RequestWorkReenqueuedByWorker _) <- evs]
+            rsReenqueueByHeartbeatCount = length [() | (_, RequestWorkReenqueuedAfterHeartbeatFailure _) <- evs]
+            rsReenqueueByStaleKeyCount = length [() | (_, RequestWorkReenqueuedAsStale _) <- evs]
             rsComputeStartTime = lastMay [x | (x, RequestWorkStarted _) <- evs]
             rsComputeFinishTime = lastMay [x | (x, RequestWorkFinished _) <- evs]
             rsComputeTime = diffUTCTime <$> rsComputeFinishTime <*> rsComputeStartTime

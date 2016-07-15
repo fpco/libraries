@@ -65,6 +65,8 @@ checkStaleKeys config r = logNest "checkStaleKeys" $ forever $ do
         mbRid <- run r (rpoplpush (activeKey r wid) (requestsKey r))
         case mbRid of
             Nothing -> $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and does not have a job."
-            Just rid -> $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and " <> tshow rid <> " was re-enqueued."
+            Just rid -> do
+                addRequestEvent r (RequestId rid) (RequestWorkReenqueuedAsStale wid)
+                $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and " <> tshow rid <> " was re-enqueued."
     threadDelay (1000000 * (fromIntegral . unSeconds . jqcCheckStaleKeysInterval $ config))
     checkStaleKeys config r

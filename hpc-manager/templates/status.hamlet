@@ -36,7 +36,7 @@
       <th>
         <input type=checkbox #select-all-workers>
       <th>Run time
-      <th>Re-enqueue count
+      <th title="Total re-enqueue count (by worker/after heartbeat failures/after stale key detection)">Re-enqueue count
       <th>WorkerId
       <th>RequestID(s)
     $forall (wid, w) <- workers
@@ -46,7 +46,7 @@
             <td>
               <input type=checkbox .select-workers name=jqr:#{rid} value=wid:#{wid}>
             <td>#{start}
-            <td>#{reenq}
+            <td title="Total re-enqueue count (by worker/after heartbeat failures/after stale key detection)">#{reenq}
             <td>#{wid}
             <td>#{rid}
           $of Right msg
@@ -64,14 +64,14 @@
       <th>
         <input type=checkbox #select-all-pending>
       <th>Time since enqueued
-      <th>Re-enqueue count
+      <th title="Total re-enqueue count (by worker/after heartbeat failures/after stale key detection)">Re-enqueue count
       <th>RequestID
     $forall (start, reenq, rid) <- pending
       <tr>
         <td>
           <input type=checkbox .select-pending name=jqr:#{rid} value=t>
         <td>#{start}
-        <td>#{reenq}
+        <td title="Total re-enqueue count (by worker/after heartbeat failures/after stale key detection)">#{reenq}
         <td>#{rid}
 
   <h2>Heartbeat Failures
