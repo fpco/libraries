@@ -82,10 +82,11 @@ waitForHeartbeatFailure redis = waitForHUnitPass upToAMinute $ do
 
 waitForJobStarted :: MonadConnect m => Redis -> m ()
 waitForJobStarted redis = waitForHUnitPass upToAMinute $ do
-    allRequests <- getAllRequests redis
-    allRequests `shouldBe` [requestId]
-    jqs <- getJobQueueStatus redis
-    jqsPending jqs `shouldBe` [] -- there should be no job enqueued
+    requestEvents <- getRequestEvents redis requestId
+    requestEvents `shouldSatisfy`
+        (isJust . find (\(_, rEvent) -> case rEvent of
+                               RequestWorkStarted _ -> True
+                               _ -> False))
 
 waitForJobReenqueued :: MonadConnect m => Redis -> m ()
 waitForJobReenqueued redis = waitForHUnitPass upToAMinute $ do
