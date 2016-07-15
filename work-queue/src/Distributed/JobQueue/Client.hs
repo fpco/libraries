@@ -314,5 +314,6 @@ handleWorkerFailure r wid = do
         Nothing -> do
             $logWarnS "JobQueue" $ tshow wid <> " failed its heartbeat, but didn't have an item to re-enqueue."
         Just rid -> do
+            addRequestEvent r (RequestId rid) (RequestWorkReenqueuedAsStale wid)
             $logWarnS "JobQueue" $ tshow wid <> " failed its heartbeat, and " <> tshow rid <> " was re-enqueued."
     return (isJust mbRid)

@@ -90,10 +90,11 @@ waitForJobStarted redis = waitForHUnitPass upToAMinute $ do
 
 waitForJobReenqueued :: MonadConnect m => Redis -> m ()
 waitForJobReenqueued redis = waitForHUnitPass upToAMinute $ do
-    allRequestStats <- getAllRequestStats redis
-    map fst allRequestStats `shouldBe` [requestId]
-    jqs <- getJobQueueStatus redis
-    jqsPending jqs `shouldBe` [requestId] -- the job should be enqueued again
+    requestEvents <- getRequestEvents redis requestId
+    requestEvents `shouldSatisfy`
+        (isJust . find (\(_, rEvent) -> case rEvent of
+                               RequestWorkReenqueuedAsStale _ -> True
+                               _ -> False))
 
 
 -- | Test that `checkStaleKeys`, as run by a jobClientThread, actually works.
