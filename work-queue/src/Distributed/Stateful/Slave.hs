@@ -19,8 +19,7 @@ module Distributed.Stateful.Slave
   ) where
 
 import           ClassyPrelude
-import           Control.DeepSeq (force, NFData)
-import           Control.Exception.Lifted (evaluate)
+import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger (logDebugNS)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -54,7 +53,14 @@ runSlave :: forall state context input output m.
 runSlave SlaveArgs{..} = do
     let recv = scRead saConn
     let send = scWrite saConn
-    go recv send mempty
+        -- We're only catching 'SlaveException's here, since they
+        -- indicate that something was wrong about the request, and
+        -- should be sent back to the master.
+        handler :: SlaveException -> m ()
+        handler err = do
+            send (SRespError (pack (show err)))
+            throwAndLog err
+    go recv send mempty `catch` handler
   where
     throw = throwAndLog
     debug msg = logDebugNS "Distributed.Stateful.Slave" msg
@@ -66,8 +72,9 @@ runSlave SlaveArgs{..} = do
     go recv send states = do
       req <- recv
       debug (displayReq req)
-      eres <- tryAny ((do
-        res <- case req of
+      -- WARNING: All exceptions thrown here should be of type
+      -- 'SlaveException', as only those will be catched.
+      (output, mbStates) <- case req of
           SReqResetState states' -> return (SRespResetState, (Just states'))
           SReqGetStates -> return (SRespGetStates states, (Just states))
           SReqAddStates newStates0 -> do
@@ -92,14 +99,8 @@ runSlave SlaveArgs{..} = do
             return (SRespUpdate outputs, Just states')
           SReqQuit -> do
             return (SRespQuit, Nothing)
-        evaluate (force res)) :: m (SlaveResp state output, Maybe (HMS.HashMap StateId state)))
-      case eres of
-        Right (output, mbStates) -> do
-          send output
-          debug (displayResp output)
-          case mbStates of
+      send output
+      debug (displayResp output)
+      case mbStates of
             Nothing -> return ()
             Just states' -> go recv send states'
-        Left (err :: SomeException) -> do
-          send (SRespError (pack (show err)))
-          throwAndLog err
