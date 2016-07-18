@@ -166,7 +166,9 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
                             Right (Right (DontReenqueue res)) -> return (GotResponse (Right res))
                 let gotX msg = workerMsg ("Request " ++ tshow rid ++ " got " ++ msg)
                 case mbResp of
-                    RequestGotCancelled -> $logInfo (gotX "cancel")
+                    RequestGotCancelled -> do
+                        $logInfo (gotX "cancel")
+                        removeActiveRequest r wid rid
                     RequestShouldBeReenqueued -> do
                         $logInfo (gotX "reenqueue")
                         reenqueueRequest r wid rid
@@ -238,6 +240,51 @@ reenqueueRequest r (WorkerId wid) rid = do
     checkPoppedActiveKey (WorkerId wid) rid =<< run r (rpoplpush (activeKey r (WorkerId wid)) (requestsKey r))
     addRequestEvent r rid (RequestWorkReenqueuedByWorker (WorkerId wid))
 
+
+-- | Remove a worker's active request.
+--
+-- This function
+--
+-- - Clears the worker's 'activeKey'.
+--
+-- - checks that the 'activeKey' held at most 1 'RequestId' (zero is
+--   also possible, if the job had been re-enqueued after a heartbeat
+--   failure).
+--
+-- - Clears the 'RequestId' and the corresponding body from
+--   'requestsKey' and 'requestDataKey', respectively.
+--
+-- It is called after a request has successfully finished, or has been
+-- canceled.
+removeActiveRequest :: MonadConnect m => Redis -> WorkerId -> RequestId -> m ()
+removeActiveRequest r wid rid = do
+    let ak = activeKey r wid
+    removed <- run r (lrem ak 1 (unRequestId rid))
+    if  | removed == 1 ->
+            return ()
+        | removed == 0 ->
+            $logWarn $
+                tshow rid <>
+                " isn't a member of active queue (" <>
+                tshow ak <>
+                "), likely indicating that a heartbeat failure happened, causing it to be erroneously re-enqueued.  This doesn't affect correctness, but could mean that redundant work is performed."
+        | True ->
+            throwM (InternalJobQueueException ("Expecting 0 or 1 removals from active key " ++ tshow ak ++ ", but got " ++ tshow removed))
+    -- Check no active requests are present. This is just for safety.
+    remaining <- run r (llen ak)
+    unless (remaining == 0) $
+        throwM (InternalJobQueueException ("Expecting 0 active requests for active key " ++ tshow ak ++ ", but got " ++ tshow remaining))
+    -- Remove the request data, as it's no longer needed.  We don't
+    -- check if the removal succeeds, since there might be contention
+    -- in processing the request when a worker is detected to be dead
+    -- when it shouldn't be.
+    run_ r (del (unVKey (requestDataKey r rid) :| []))
+    -- Also remove from the requestsKey: it might be that the request has been
+    -- erroneously reenqueued.
+    removed' <- run r (lrem (requestsKey r) 0 (unRequestId rid))
+    when (removed' > 0) $
+        $logWarn ("Expecting no request " <> tshow rid <> " in requestsKey, but found " ++ tshow removed ++ ". This can happen with spurious heartbeat failures.")
+
 -- | Send a response for a particular request. Once the response is
 -- successfully sent, this also removes the request data, as it's no
 -- longer needed.
@@ -256,35 +303,7 @@ sendResponse r expiry wid k x = do
     run_ r (publish (responseChannel r) (unRequestId k))
     -- Remove the RequestId associated with this response, from the
     -- list of in-progress requests.
-    --
-    -- Note that we expect this list to either be empty or to contain
-    -- exactly this request id.
-    let ak = activeKey r wid
-    removed <- run r (lrem ak 1 (unRequestId k))
-    if  | removed == 1 ->
-            return ()
-        | removed == 0 ->
-            $logWarn $
-                tshow k <>
-                " isn't a member of active queue (" <>
-                tshow ak <>
-                "), likely indicating that a heartbeat failure happened, causing it to be erroneously re-enqueued.  This doesn't affect correctness, but could mean that redundant work is performed."
-        | True ->
-            throwM (InternalJobQueueException ("Expecting 0 or 1 removals from active key " ++ tshow ak ++ ", but got " ++ tshow removed))
-    -- Check no active requests are present. This is just for safety.
-    remaining <- run r (llen ak)
-    unless (remaining == 0) $
-        throwM (InternalJobQueueException ("Expecting 0 active requests for active key " ++ tshow ak ++ ", but got " ++ tshow remaining))
-    -- Remove the request data, as it's no longer needed.  We don't
-    -- check if the removal succeeds, since there might be contention
-    -- in processing the request when a worker is detected to be dead
-    -- when it shouldn't be.
-    run_ r (del (unVKey (requestDataKey r k) :| []))
-    -- Also remove from the requestsKey: it might be that the request has been
-    -- erroneously reenqueued.
-    removed' <- run r (lrem (requestsKey r) 0 (unRequestId k))
-    when (removed' > 0) $
-        $logWarn ("Expecting no request " <> tshow k <> " in requestsKey, but found " ++ tshow removed ++ ". This can happen with spurious heartbeat failures.")
+    removeActiveRequest r wid k
     -- Store when the response was stored.
     responseTime <- liftIO getPOSIXTime
     void $ setRedisTime r (responseTimeKey r k) responseTime [EX expiry]
