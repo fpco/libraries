@@ -123,6 +123,7 @@ instance (Store a) => Store (Reenqueue a)
 
 data WorkerResult response
     = RequestGotCancelled
+    | RequestExpired
     | RequestShouldBeReenqueued
     | GotResponse (Either DistributedException response)
 
@@ -159,10 +160,10 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
                     Left err -> return (GotResponse (Left err))
                     Right req -> do
                         $logDebug (workerMsg ("Starting to work on request " ++ tshow ridBs))
-                        cancelledOrResp :: Either () (Either SomeException (Reenqueue response)) <-
-                            Async.race (watchForCancel r rid jqcCancelCheckIvl) (tryAny (f rid req))
+                        cancelledOrResp :: Either (WorkerResult response) (Either SomeException (Reenqueue response)) <-
+                            Async.race (watchForCancelOrExpiry r rid jqcCancelCheckIvl) (tryAny (f rid req))
                         case cancelledOrResp of
-                            Left () -> return RequestGotCancelled
+                            Left got -> return got
                             Right (Left err) -> return (GotResponse (Left (wrapException err)))
                             Right (Right Reenqueue) -> return RequestShouldBeReenqueued
                             Right (Right (DontReenqueue res)) -> return (GotResponse (Right res))
@@ -170,6 +171,9 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
                 case mbResp of
                     RequestGotCancelled -> do
                         $logInfo (gotX "cancel")
+                        removeActiveRequest r wid rid
+                    RequestExpired -> do
+                        $logInfo (gotX "expired")
                         removeActiveRequest r wid rid
                     RequestShouldBeReenqueued -> do
                         $logInfo (gotX "reenqueue")
@@ -312,22 +316,40 @@ sendResponse r expiry wid k x = do
     responseTime <- liftIO getPOSIXTime
     void $ setRedisTime r (responseTimeKey r k) responseTime [EX expiry]
 
-watchForCancel :: forall m. (MonadConnect m) => Redis -> RequestId -> Seconds -> m ()
+watchForCancelOrExpiry :: forall m response. (MonadConnect m) => Redis -> RequestId -> Seconds -> m (WorkerResult response)
+watchForCancelOrExpiry r rid ivl =
+    either id id <$> Async.race (watchForCancel r rid ivl) (watchForExpiry r rid ivl)
+
+watchForCancel :: forall m response. (MonadConnect m) => Redis -> RequestId -> Seconds -> m (WorkerResult response)
 watchForCancel r k ivl = loop
   where
-    loop :: m ()
+    loop :: m (WorkerResult response)
     loop = do
         $logDebug "Checking for cancel"
         mres <- run r (get (cancelKey r k))
         case mres of
             Just res
-                | res == cancelValue -> return ()
+                | res == cancelValue -> return RequestGotCancelled
                 | otherwise -> liftIO $ throwIO $ InternalJobQueueException
                     "Didn't get expected value at cancelKey."
             Nothing -> do
                 $logDebug "No cancel, waiting"
                 liftIO $ threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl))
                 loop
+
+watchForExpiry :: forall m response. (MonadConnect m) => Redis -> RequestId -> Seconds -> m (WorkerResult response)
+watchForExpiry r rid ivl = loop
+  where
+    loop :: m (WorkerResult response)
+    loop = do
+        $logDebug $ "Checking for expiry of " ++ tshow rid
+        jobStillThere <- run r . exists . unVKey $ requestDataKey r rid
+        if jobStillThere
+            then do
+                $logDebug "Not expired, waiting"
+                liftIO (threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl)))
+                loop
+            else return RequestExpired
 
 -- * Utilities
 
