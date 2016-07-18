@@ -36,6 +36,7 @@ module Distributed.RequestSlaves
     , acceptSlaveConnections
       -- * Exported for Testing/debugging
     , getWorkerRequests
+    , workerRequestsKey
     ) where
 
 import ClassyPrelude

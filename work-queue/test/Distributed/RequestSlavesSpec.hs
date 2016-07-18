@@ -164,7 +164,7 @@ spec = do
         raceAgainstVoids
             (mapConcurrently_ (\mid -> killRandomly_ (runMasterCollectResults r wids (MasterId mid) numSlaves)) [1..numMasters])
             [runEchoSlave r wids (SlaveId x) 500 | x <- [1..numSlaves]]
-    redisIt "Candidate slaves notice and remove inactive masters, while master is alive" $ \r -> do
+    redisIt "Candidate slaves notice inactive master, do not connect, but leave request intact." $ \r -> do
         let whenSlaveConnects _nm = fail "Got an unexpected connection on master"
         hasMasterStarted :: MVar () <- newEmptyMVar
         let master = do
@@ -182,8 +182,10 @@ spec = do
                 fmap (either absurd id) $ Async.race
                     -- Start the slave
                     (runEchoSlave r wids (SlaveId 0) 0)
-                    (do -- Short delay to make sure that the slave has a chance to see the connection
-                        -- request and delete it
-                        liftIO $ threadDelay (1 * 1000 * 1000)
+                    (waitForHUnitPass upToAMinute $ do
+                        liftIO . threadDelay $ 1000 * 1000
                         reqs <- getWorkerRequests r
-                        liftIO $ reqs `shouldBe` []))
+                        liftIO $ length reqs `shouldBe` 1 -- request for slaves is still there
+                        reqsWithASlave <- run r (zrangebyscore (workerRequestsKey r) 1 (1/0) False)
+                        liftIO $ reqsWithASlave `shouldBe` [] -- but the slave did not connect
+                    ))
