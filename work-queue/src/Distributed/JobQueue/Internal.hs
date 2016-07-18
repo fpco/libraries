@@ -10,7 +10,7 @@ import ClassyPrelude
 import Control.Monad.Logger (logWarn, logInfo)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
-import Data.List.NonEmpty
+import Data.List.NonEmpty hiding (unwords)
 import Data.Store (Store, encode)
 import Distributed.Redis
 import Distributed.Types
@@ -113,6 +113,19 @@ checkRedisSchemaVersion r = do
         { actualRedisSchemaVersion = v
         , expectedRedisSchemaVersion = redisSchemaVersion
         }
+
+-- | Make sure that the 'activeKey' of a given worker does not have
+-- more than one element.
+--
+-- This invariant should be checked very time an item is added to an
+-- 'activeKey'.
+checkActiveKey :: MonadConnect m => Redis -> WorkerId -> m ()
+checkActiveKey r wid = do
+    nRequests <- run r $ llen (activeKey r wid)
+    unless (nRequests <= 1) $ liftIO . throwIO . InternalJobQueueException $
+        unwords ["Request list should always have length 0 or 1, but has length"
+                , pack . show $ nRequests
+                ]
 
 -- | Request Events
 data RequestEvent

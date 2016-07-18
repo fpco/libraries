@@ -139,6 +139,7 @@ jobWorkerThread :: forall request response m void.
 jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
     wait
     mbRidbs <- run r (rpoplpush (requestsKey r) (activeKey r wid))
+    checkActiveKey r wid
     forM_ mbRidbs $ \ridBs -> do
         let rid = RequestId ridBs
         $logInfo (workerMsg ("Receiving request " ++ tshow rid))
