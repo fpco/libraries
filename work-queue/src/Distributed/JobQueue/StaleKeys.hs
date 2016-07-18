@@ -63,6 +63,7 @@ checkStaleKeys config r = logNest "checkStaleKeys" $ forever $ do
     let staleKeys = HashSet.toList $ workersWithJobs `HashSet.difference` liveWorkers
     forM_ staleKeys $ \wid -> do
         mbRid <- run r (rpoplpush (activeKey r wid) (requestsKey r))
+        checkActiveKey r wid
         case mbRid of
             Nothing -> $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and does not have a job."
             Just rid -> do
