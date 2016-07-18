@@ -164,7 +164,12 @@ withSlaveRequestsWait redis failsafeTimeout getLiveWorkers wait f = do
             wait
             reqs <- getWorkerRequestsWithWorkerIds redis
             liveWorkers <- HashSet.fromList <$> getLiveWorkers
-            let validReqs = filter (\x -> HashSet.member (wciwwiWorkerId x) liveWorkers) reqs
+            let (validReqs, invalidReqs) =
+                    partition (\x -> HashSet.member (wciwwiWorkerId x) liveWorkers) reqs
+            case NE.nonEmpty invalidReqs of
+                 Nothing -> return ()
+                 Just invalidReqs' ->
+                     $logWarn ("Ignoring " ++ tshow invalidReqs' ++ " slave requests, since the workers failed their heartbeat.")
             case NE.nonEmpty validReqs of
                 Nothing -> do
                     $logDebug ("Tried to get masters to connect to but got none")

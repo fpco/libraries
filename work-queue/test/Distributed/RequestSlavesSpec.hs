@@ -182,8 +182,8 @@ spec = do
                 fmap (either absurd id) $ Async.race
                     -- Start the slave
                     (runEchoSlave r wids (SlaveId 0) 0)
-                    (waitForHUnitPass upToAMinute $ do
-                        liftIO . threadDelay $ 1000 * 1000
+                    (do
+                        liftIO . threadDelay $ 2 * 1000 * 1000
                         reqs <- getWorkerRequests r
                         liftIO $ length reqs `shouldBe` 1 -- request for slaves is still there
                         reqsWithASlave <- run r (zrangebyscore (workerRequestsKey r) 1 (1/0) False)
