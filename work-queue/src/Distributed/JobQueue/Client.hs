@@ -310,6 +310,7 @@ handleWorkerFailure r wid = do
     -- but we cannot do it (the worker might still be alive and adding a request to
     -- the activeKey.)
     mbRid <- run r (rpoplpush (activeKey r wid) (requestsKey r))
+    checkActiveKey r wid
     case mbRid of
         Nothing -> do
             $logWarnS "JobQueue" $ tshow wid <> " failed its heartbeat, but didn't have an item to re-enqueue."

@@ -152,6 +152,7 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
                 -- happen, for example, if a worker dies at the wrong moment. If the request data has expired,
                 -- we will never be able to process the request anyway, so we might as well drop it.
                 checkPoppedActiveKey wid rid =<< run r (rpop (activeKey r wid))
+                checkActiveKey r wid
             Just reqBs -> do
                 $logInfo (workerMsg ("Got contents of request " ++ tshow rid))
                 mbResp :: WorkerResult response <- case checkRequest (Proxy :: Proxy response) rid reqBs of
@@ -239,6 +240,7 @@ reenqueueRequest ::
     => Redis -> WorkerId -> RequestId -> m ()
 reenqueueRequest r (WorkerId wid) rid = do
     checkPoppedActiveKey (WorkerId wid) rid =<< run r (rpoplpush (activeKey r (WorkerId wid)) (requestsKey r))
+    checkActiveKey r (WorkerId wid)
     addRequestEvent r rid (RequestWorkReenqueuedByWorker (WorkerId wid))
 
 
@@ -261,6 +263,7 @@ removeActiveRequest :: MonadConnect m => Redis -> WorkerId -> RequestId -> m ()
 removeActiveRequest r wid rid = do
     let ak = activeKey r wid
     removed <- run r (lrem ak 1 (unRequestId rid))
+    checkActiveKey r wid
     if  | removed == 1 ->
             return ()
         | removed == 0 ->
