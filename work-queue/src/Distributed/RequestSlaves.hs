@@ -36,6 +36,7 @@ module Distributed.RequestSlaves
     , acceptSlaveConnections
       -- * Exported for Testing/debugging
     , getWorkerRequests
+    , workerRequestsKey
     ) where
 
 import ClassyPrelude
@@ -166,12 +167,9 @@ withSlaveRequestsWait redis failsafeTimeout getLiveWorkers wait f = do
             let (validReqs, invalidReqs) =
                     partition (\x -> HashSet.member (wciwwiWorkerId x) liveWorkers) reqs
             case NE.nonEmpty invalidReqs of
-                Nothing -> return ()
-                Just invalidReqs' -> do
-                    $logWarn ("Removing " ++ tshow invalidReqs' ++ " slave requests, since the workers are dead.")
-                    n <- run redis $ zrem (workerRequestsKey redis) (encode <$> invalidReqs')
-                    when (n /= fromIntegral (NE.length invalidReqs')) $
-                        $logWarn $ "Trying to remove slave requests from " ++ pack (show (NE.length invalidReqs')) ++ " dead masters, removed only " ++ pack (show n) ++ ". Probably another slave has removed the rest already."
+                 Nothing -> return ()
+                 Just invalidReqs' ->
+                     $logWarn ("Ignoring " ++ tshow invalidReqs' ++ " slave requests, since the workers failed their heartbeat.")
             case NE.nonEmpty validReqs of
                 Nothing -> do
                     $logDebug ("Tried to get masters to connect to but got none")
