@@ -222,7 +222,7 @@ waitForResponse jc@JobClient{..} rid cont = do
                 if reqExists
                     then delayLoop
                     else do
-                        let err = "Was waiting on request " <> tshow rid <> ", but it disappeared. This is possible if the caching duration for responses is very low, please increase it to at least 500 milliseconds."
+                        let err = "Was waiting on request " <> tshow rid <> ", but it disappeared. This is possible if the caching duration for requests is too low and the request expired while waiting for it."
                         $logWarn err
                         return (Left (InternalJobQueueException err))
 
