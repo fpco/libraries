@@ -112,7 +112,7 @@ data RequestStats = RequestStats
     , rsTotalTime :: Maybe NominalDiffTime
     , rsFetchCount :: Int
     -- ^ number of times the response has been read by clients.
-    }
+    } deriving Show
 
 -- | Retrieve stats for an individual request.
 getRequestStats :: MonadConnect m => Redis -> RequestId -> m (Maybe RequestStats)
