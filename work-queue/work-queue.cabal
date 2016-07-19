@@ -119,7 +119,6 @@ test-suite wq-test
                      , hspec
                      , hspec-core
                      , hspec-expectations
-                     , hspec-expectations-lifted
                      , HUnit
                      , lifted-base
                      , monad-control

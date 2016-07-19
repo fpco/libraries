@@ -36,13 +36,9 @@ import           Distributed.Stateful.Master
 import           Distributed.Types
 import           FP.Redis (MonadConnect)
 import           System.Random (randomRIO)
-import qualified Test.Hspec
-import           Test.Hspec hiding (shouldBe)
+import           Test.Hspec
 import qualified Test.QuickCheck as QC
 import           TestUtils
-
-shouldBe :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
-shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
 
 newtype State = State [Input] -- All the inputs up to now
   deriving (QC.CoArbitrary, QC.Arbitrary, Show, Store, Eq, Ord, NFData)
@@ -63,11 +59,11 @@ testUpdate mh inputs = do
   outputs <- update mh () inputs
   forM_ (HMS.toList outputs) $ \(oldStateId, stateOutputs) ->
     case HMS.lookup oldStateId inputs of
-      Nothing -> stateOutputs `shouldBe` mempty
+      Nothing -> liftIO $ stateOutputs `shouldBe` mempty
       Just stateInputs -> do
         Just (State inputs_) <- return (HMS.lookup oldStateId prevStates)
         let expectedOutputs = [Output (input : inputs_) | input <- stateInputs]
-        sort (HMS.elems stateOutputs) `shouldBe`  sort expectedOutputs
+        liftIO $ sort (HMS.elems stateOutputs) `shouldBe`  sort expectedOutputs
 
 type Runner m = forall a.
        MasterArgs m State () Input Output
@@ -129,7 +125,7 @@ spec = do
               \mh _reqId () -> do
                 nSlaves <- waitForHUnitPass upToAMinute $ do
                   n <- getNumSlaves mh
-                  n `shouldBe` (workersToSpawn - 1)
+                  liftIO $ n `shouldBe` (workersToSpawn - 1)
                   return n
                 return $ DontReenqueue nSlaves
           workersToSpawn = 10
@@ -144,7 +140,7 @@ spec = do
           -- Check that there are no masters anymore
           waitForHUnitPass upToAMinute $ do
             wcis <- getWorkerRequests r
-            wcis `shouldBe` [])
+            liftIO $ wcis `shouldBe` [])
         (replicate workersToSpawn worker)
     stressfulTest $
       redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
