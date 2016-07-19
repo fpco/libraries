@@ -120,10 +120,10 @@ spec = do
       let ss = CN.serverSettings 0 "*"
       let nmsma = NMStatefulMasterArgs
             { nmsmaMinimumSlaves = Nothing
-            , nmsmaMaximumSlaves = Nothing
-            , nmsmaSlavesWaitingTime = 1000 * 1000
+            , nmsmaMaximumSlaves = Just (workersToSpawn - 1)
+            , nmsmaSlavesWaitingTime = 30 * 1000 * 1000
             }
-      let worker :: forall void m. (MonadConnect m) => m void
+          worker :: forall void m. (MonadConnect m) => m void
           worker =
             runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing 5) nmsma $
               \mh _reqId () -> do
