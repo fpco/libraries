@@ -19,8 +19,8 @@ import Data.Store (Store)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Test.Hspec hiding (shouldBe)
 import qualified Test.Hspec
-import FP.Redis (MonadConnect, Seconds(..))
-import Control.Concurrent (threadDelay)
+import FP.Redis (MonadConnect, Seconds(..), exists, VKey (..))
+import Control.Concurrent.Lifted (threadDelay)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID.V4
 import Data.Void (absurd)
@@ -30,10 +30,12 @@ import qualified Control.Concurrent.STM as STM
 
 import Data.Store.TypeHash (mkManyHasTypeHash)
 import Distributed.JobQueue.Client
+import Distributed.JobQueue.Internal
+import Distributed.JobQueue.Status
 import Distributed.JobQueue.Worker
 import TestUtils
 import Distributed.Types
-import Distributed.Redis (withRedis)
+import Distributed.Redis (Redis, withRedis, run)
 
 -- * Utils
 -----------------------------------------------------------------------
@@ -57,7 +59,7 @@ jobWorker_ work = withRedis (jqcRedisConfig testJobQueueConfig) $ \r -> jobWorke
 
 processRequest :: (MonadConnect m) => Request -> m (Reenqueue Response)
 processRequest Request{..} = do
-    liftIO (threadDelay requestDelay)
+    threadDelay requestDelay
     return requestResponse
 
 testJobWorkerOnStartWork :: (MonadConnect m) => m () -> m void
@@ -67,7 +69,7 @@ testJobWorkerOnStartWork onStartWork = jobWorker_ $ \req -> do
 
 testJobWorker :: (MonadConnect m) => m void
 testJobWorker = withRedis (jqcRedisConfig testJobQueueConfig) $ \r -> jobWorkerWithHeartbeats testJobQueueConfig r $ \_wid Request{..} -> do
-    liftIO (threadDelay requestDelay)
+    threadDelay requestDelay
     return requestResponse
 
 withTestJobClient :: (MonadConnect m) => (JobClient Response -> m a) -> m a
@@ -90,10 +92,25 @@ runWorkerAndClient cont =
     fmap (either absurd id) (Async.race testJobWorker (withTestJobClient cont))
 
 timeout :: (MonadConnect m) => Int -> m a -> m (Maybe a)
-timeout n m = fmap (either (const Nothing) Just) (Async.race (liftIO (threadDelay n)) m)
+timeout n m = fmap (either (const Nothing) Just) (Async.race (threadDelay n) m)
 
 mapConcurrently_ :: (MonadConnect m, Traversable t) => (a -> m ()) -> t a -> m ()
 mapConcurrently_ f x = void (Async.mapConcurrently f x)
+
+-- * Worker and client such that the job will expire while the worker
+-- is handling it: small 'jqcRequestExpiry', and an infinite delay in
+-- the worker
+
+timeoutJobQueueConfig :: JobQueueConfig
+timeoutJobQueueConfig = testJobQueueConfig { jqcRequestExpiry = Seconds 1 }
+
+timeoutJobWorker :: MonadConnect m => m void
+timeoutJobWorker = withRedis (jqcRedisConfig timeoutJobQueueConfig) $ \r -> jobWorkerWithHeartbeats timeoutJobQueueConfig r $ \_wid (_r :: Request) -> do
+    _ <- forever $ threadDelay maxBound
+    return (DontReenqueue (Response "We'll never get here."))
+
+withTimeoutClient :: (MonadConnect m) => (JobClient Response -> m a) -> m a
+withTimeoutClient = withJobClient timeoutJobQueueConfig
 
 -- * Tests
 -----------------------------------------------------------------------
@@ -204,6 +221,37 @@ spec = do
             (mapConcurrently_ client [1..clients])
             (replicate workers testJobWorker)
     stressfulTest $ redisIt_ "Withstands chaos" chaosTest
+    redisIt "Stops working on expired jobs" expiredTest
+
+expiredTest :: forall m . MonadConnect m => Redis -> m ()
+expiredTest r = either absurd id <$> Async.race timeoutJobWorker (withTimeoutClient $ \jc -> do
+    rid <- submitTestRequest jc $ Request 0 (DontReenqueue $ Response "unused")
+    jobStarted rid
+    jobExpired rid
+    )
+  where
+    jobStarted :: RequestId -> m ()
+    jobStarted rid = waitForHUnitPass upToAMinute $ do
+        stats <- getRequestStats r rid
+        liftIO $ stats `shouldSatisfy` (\case
+            Nothing -> False
+            Just s -> isJust $ rsComputeStartTime s
+            )
+    jobExpired :: RequestId -> m ()
+    jobExpired rid = waitForHUnitPass upToAMinute $ do
+        -- the worker does not work on the job anymore
+        workers <- jqsWorkers <$> getJobQueueStatus r
+        length workers `shouldBe` 1
+        wsRequest (unsafeHead workers) `shouldBe` Nothing -- unsafeHead is safe here, since the length is known.
+        -- but neither did the job finish
+        rStats <- getRequestStats r rid
+        liftIO $ rStats `shouldSatisfy` (\case
+            Nothing -> False
+            Just s -> isNothing $ rsComputeFinishTime s
+            )
+        -- and the request data has expired, too
+        jobStillThere <- run r . exists . unVKey $ requestDataKey r rid
+        jobStillThere `shouldBe` False
 
 chaosTest :: forall m. (MonadConnect m) => m ()
 chaosTest = do
