@@ -17,7 +17,7 @@ module Distributed.JobQueueSpec (spec) where
 import ClassyPrelude
 import Data.Store (Store)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
-import           Test.Hspec
+import           Test.Hspec hiding (shouldBe, shouldSatisfy)
 import FP.Redis (MonadConnect, Seconds(..), exists, VKey (..))
 import Control.Concurrent.Lifted (threadDelay)
 import qualified Data.UUID as UUID
@@ -121,7 +121,7 @@ spec = do
                 , requestResponse = DontReenqueue resp
                 }
         resp' <- runWorkerAndClient (\jc -> waitForResponse_ jc =<< submitTestRequest jc req)
-        liftIO $ resp' `shouldBe` Just resp
+        resp' `shouldBe` Just resp
     redisIt_ "Doesn't yield a value when there are no workers" $ do
         let resp = Response "test"
         let req = Request
@@ -131,7 +131,7 @@ spec = do
         mbResp :: Maybe (Maybe Response) <-
             withTestJobClient $ \jc -> do
                 timeout (1 * 1000 * 1000) (waitForResponse_ jc =<< submitTestRequest jc req)
-        liftIO $ mbResp `shouldBe` Nothing
+        mbResp `shouldBe` Nothing
     redisIt_ "Don't lose data when worker fails" $ do
         let resp = Response "test"
         let req = Request
@@ -144,9 +144,9 @@ spec = do
             (do maybe () absurd <$> timeout (2 * 1000 * 1000) (testJobWorkerOnStartWork onStartWork)
                 testJobWorkerOnStartWork onStartWork)
             (withTestJobClient (\jc -> waitForResponse_ jc =<< submitTestRequest jc req))
-        liftIO $ resp' `shouldBe` Just resp
+        resp' `shouldBe` Just resp
         workStarted <- readIORef workCountRef
-        liftIO $ workStarted `shouldBe` 2
+        workStarted `shouldBe` 2
     redisIt_ "Reenqueue requests" $ do
         let resp = Response "test"
         let req = Request
@@ -164,9 +164,9 @@ spec = do
                 modifyIORef workCountRef (+1)
                 return res)
             (withTestJobClient (\jc -> waitForResponse_ jc =<< submitTestRequest jc req))
-        liftIO $ resp' `shouldBe` Just resp
+        resp' `shouldBe` Just resp
         workCount <- readIORef workCountRef
-        liftIO $ workCount `shouldBe` 2
+        workCount `shouldBe` 2
     redisIt_ "Can cancel request" $ do
         let resp = Response "test"
         let req = Request
@@ -189,16 +189,16 @@ spec = do
                     -- wait for the worker to actually start the job
                     waitForHUnitPass upToAMinute $ do
                         workStarted <- readIORef workStartedRef
-                        liftIO $ workStarted `shouldBe` 1
+                        workStarted `shouldBe` 1
                     -- now, cancel the request
                     cancelRequest (Seconds 50) (jcRedis jc) rid
                     waitForResponse_ jc rid
                 -- we should get an empty response
-                liftIO $ resp' `shouldBe` Nothing
+                resp' `shouldBe` Nothing
                 -- and the worker should have abandoned the work
                 -- before reaching the second 'atomicModifyIORef'.
                 workEnded <- readIORef workEndedRef
-                liftIO $ workEnded `shouldBe` 0)
+                workEnded `shouldBe` 0)
     -- Type mismatch
     -- Submitting the same req twice computes once
     -- Waiting on non-existant response gets you nothing
@@ -212,7 +212,7 @@ spec = do
                 let req = Request{requestDelay = 10, requestResponse = DontReenqueue resp}
                 rid <- submitTestRequest jc req
                 resp' <- waitForResponse_ jc rid
-                liftIO $ resp' `shouldBe` Just resp
+                resp' `shouldBe` Just resp
         raceAgainstVoids
             (mapConcurrently_ client [1..clients])
             (replicate workers testJobWorker)
@@ -229,7 +229,7 @@ expiredTest r = either absurd id <$> Async.race timeoutJobWorker (withTimeoutCli
     jobStarted :: RequestId -> m ()
     jobStarted rid = waitForHUnitPass upToAMinute $ do
         stats <- getRequestStats r rid
-        liftIO $ stats `shouldSatisfy` (\case
+        stats `shouldSatisfy` (\case
             Nothing -> False
             Just s -> isJust $ rsComputeStartTime s
             )
@@ -237,17 +237,17 @@ expiredTest r = either absurd id <$> Async.race timeoutJobWorker (withTimeoutCli
     jobExpired rid = waitForHUnitPass upToAMinute $ do
         -- the worker does not work on the job anymore
         workers <- jqsWorkers <$> getJobQueueStatus r
-        liftIO $ length workers `shouldBe` 1
-        liftIO $ wsRequest (unsafeHead workers) `shouldBe` Nothing -- unsafeHead is safe here, since the length is known.
+        length workers `shouldBe` 1
+        wsRequest (unsafeHead workers) `shouldBe` Nothing -- unsafeHead is safe here, since the length is known.
         -- but neither did the job finish
         rStats <- getRequestStats r rid
-        liftIO $ rStats `shouldSatisfy` (\case
+        rStats `shouldSatisfy` (\case
             Nothing -> False
             Just s -> isNothing $ rsComputeFinishTime s
             )
         -- and the request data has expired, too
         jobStillThere <- run r . exists . unVKey $ requestDataKey r rid
-        liftIO $ jobStillThere `shouldBe` False
+        jobStillThere `shouldBe` False
 
 chaosTest :: forall m. (MonadConnect m) => m ()
 chaosTest = do
@@ -358,6 +358,6 @@ chaosTest = do
                         | clientId_ <- [1..numClients]
                         , reqN <- [1..reqsPerClient]
                         ]
-                liftIO $ resps `shouldMatchList` expectedResps
+                sort resps `shouldBe` sort expectedResps
         mapConcurrently_ runChaosClient [1..numClients]
 

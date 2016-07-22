@@ -15,7 +15,7 @@
 module Distributed.RequestSlavesSpec (spec) where
 
 import           ClassyPrelude
-import           Test.Hspec
+import           Test.Hspec hiding (shouldBe)
 import           Data.Store.TypeHash
 import           FP.Redis
 import           Data.Store (Store)
@@ -185,7 +185,7 @@ spec = do
                     (do
                         liftIO . threadDelay $ 2 * 1000 * 1000
                         reqs <- getWorkerRequests r
-                        liftIO $ length reqs `shouldBe` 1 -- request for slaves is still there
+                        length reqs `shouldBe` 1 -- request for slaves is still there
                         reqsWithASlave <- run r (zrangebyscore (workerRequestsKey r) 1 (1/0) False)
-                        liftIO $ reqsWithASlave `shouldBe` [] -- but the slave did not connect
+                        reqsWithASlave `shouldBe` [] -- but the slave did not connect
                     ))

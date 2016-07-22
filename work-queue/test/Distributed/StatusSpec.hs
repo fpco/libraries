@@ -25,7 +25,6 @@ import           Distributed.Redis
 import           Distributed.Types
 import           FP.Redis (Seconds (..), MonadConnect)
 import           Test.Hspec (Spec)
-import           Test.Hspec.Expectations
 import           TestUtils
 
 $(mkManyHasTypeHash [[t| ByteString |]])
@@ -79,7 +78,7 @@ withRequests redis reqs cont =
     foldl (\x req -> either id id <$> Async.race x (startClient req))
         (waitForHUnitPass upToAMinute $ do
                 reqs' <- getAllRequests redis
-                liftIO $ reqs' `shouldMatchList` map fst reqs
+                reqs' `shouldMatchList` map fst reqs
                 cont)
         reqs
 
@@ -88,7 +87,7 @@ queueRequestsTest redis = withRequests redis someRequests $
     waitForHUnitPass upToAMinute $ do
     -- check that the list of pending requests match the submitted jobs
         jqs <- getJobQueueStatus redis
-        liftIO $ jqsPending jqs `shouldMatchList` map fst someRequests
+        jqsPending jqs `shouldMatchList` map fst someRequests
 
 addWorkerTest :: MonadConnect m => Redis -> m ()
 addWorkerTest redis = withRequests redis someRequests $ do
@@ -97,8 +96,8 @@ addWorkerTest redis = withRequests redis someRequests $ do
         (waitingWorker mvar)
         (do waitForHUnitPass upToAMinute $ do
                 jqs' <- getJobQueueStatus redis
-                liftIO $ length (jqsWorkers jqs') `shouldBe` 1
-                liftIO $ length (jqsPending jqs') `shouldBe` length someRequests - 1
+                length (jqsWorkers jqs') `shouldBe` 1
+                length (jqsPending jqs') `shouldBe` (length someRequests - 1)
             liftIO $ putMVar mvar ())
 
 heartbeatFailureTest :: MonadConnect m => Redis -> m ()
@@ -106,8 +105,8 @@ heartbeatFailureTest redis = withRequests redis someRequests $
     fmap (either absurd id) $ Async.race failingWorker $
         waitForHUnitPass upToAMinute $ do -- wait for a heartbeat failure
             jqs <- getJobQueueStatus redis
-            liftIO $ length (jqsHeartbeatFailures jqs) `shouldBe` 1
-            liftIO $ length (jqsWorkers jqs) `shouldBe` 0
+            length (jqsHeartbeatFailures jqs) `shouldBe` 1
+            length (jqsWorkers jqs) `shouldBe` 0
 
 completeJobTest :: MonadConnect m => Redis -> m ()
 completeJobTest redis = withRequests redis someRequests $ do
@@ -117,8 +116,8 @@ completeJobTest redis = withRequests redis someRequests $ do
         (do liftIO $ putMVar mvar ()  -- the worker should finish the job now.
             waitForHUnitPass upToAMinute $ do
                 stats' <- getAllRequestStats redis
-                liftIO $
-                    length (filter (isJust . rsComputeFinishTime . snd) stats') `shouldBe` 1)
+                length (filter (isJust . rsComputeFinishTime . snd) stats')
+                    `shouldBe` 1)
 
 clearFailuresTest :: MonadConnect m => Redis -> m ()
 clearFailuresTest redis = withRequests redis someRequests $
@@ -126,11 +125,11 @@ clearFailuresTest redis = withRequests redis someRequests $
     fmap (either absurd id) $ Async.race failingWorker $ do
         waitForHUnitPass upToAMinute $ do -- wait for a heartbeat failure
             jqs <- getJobQueueStatus redis
-            liftIO $ length (jqsHeartbeatFailures jqs) `shouldBe` 1
+            length (jqsHeartbeatFailures jqs) `shouldBe` 1
         clearHeartbeatFailures redis
         waitForHUnitPass upToAMinute $ do
             jqs <- getJobQueueStatus redis
-            liftIO $ length (jqsHeartbeatFailures jqs) `shouldBe` 0
+            length (jqsHeartbeatFailures jqs) `shouldBe` 0
 
 spec :: Spec
 spec = do

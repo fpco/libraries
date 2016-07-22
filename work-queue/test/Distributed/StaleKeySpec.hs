@@ -22,7 +22,6 @@ import Distributed.Redis
 import Distributed.Types
 import FP.Redis (Seconds(..), MonadConnect)
 import Test.Hspec (Spec)
-import Test.Hspec.Expectations
 import TestUtils
 
 $(mkHasTypeHash =<< [t| ByteString |])
@@ -76,14 +75,14 @@ myClient = withJobClient jqc $ \jq -> do
 waitForHeartbeatFailure :: MonadConnect m => Redis -> m ()
 waitForHeartbeatFailure redis = waitForHUnitPass upToAMinute $ do
     liveWorkers <- activeOrUnhandledWorkers redis
-    liftIO $ liveWorkers `shouldBe` [] -- no active workers
+    liveWorkers `shouldBe` [] -- no active workers
     failedWorkers <- deadWorkers redis
-    liftIO $ length failedWorkers `shouldBe` 1 -- 1 heartbeat failure
+    length failedWorkers `shouldBe` 1 -- 1 heartbeat failure
 
 waitForJobStarted :: MonadConnect m => Redis -> m ()
 waitForJobStarted redis = waitForHUnitPass upToAMinute $ do
     requestEvents <- getRequestEvents redis requestId
-    liftIO $ requestEvents `shouldSatisfy`
+    requestEvents `shouldSatisfy`
         (isJust . find (\(_, rEvent) -> case rEvent of
                                RequestWorkStarted _ -> True
                                _ -> False))
@@ -91,7 +90,7 @@ waitForJobStarted redis = waitForHUnitPass upToAMinute $ do
 waitForJobReenqueued :: MonadConnect m => Redis -> m ()
 waitForJobReenqueued redis = waitForHUnitPass upToAMinute $ do
     requestEvents <- getRequestEvents redis requestId
-    liftIO $ requestEvents `shouldSatisfy`
+    requestEvents `shouldSatisfy`
         (isJust . find (\(_, rEvent) -> case rEvent of
                                RequestWorkReenqueuedAsStale _ -> True
                                _ -> False))

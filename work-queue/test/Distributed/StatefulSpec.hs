@@ -36,7 +36,7 @@ import           Distributed.Stateful.Master
 import           Distributed.Types
 import           FP.Redis (MonadConnect)
 import           System.Random (randomRIO)
-import           Test.Hspec
+import           Test.Hspec hiding (shouldBe)
 import qualified Test.QuickCheck as QC
 import           TestUtils
 
@@ -59,11 +59,11 @@ testUpdate mh inputs = do
   outputs <- update mh () inputs
   forM_ (HMS.toList outputs) $ \(oldStateId, stateOutputs) ->
     case HMS.lookup oldStateId inputs of
-      Nothing -> liftIO $ stateOutputs `shouldBe` mempty
+      Nothing -> stateOutputs `shouldBe` mempty
       Just stateInputs -> do
         Just (State inputs_) <- return (HMS.lookup oldStateId prevStates)
         let expectedOutputs = [Output (input : inputs_) | input <- stateInputs]
-        liftIO $ sort (HMS.elems stateOutputs) `shouldBe`  sort expectedOutputs
+        sort (HMS.elems stateOutputs) `shouldBe`  sort expectedOutputs
 
 type Runner m = forall a.
        MasterArgs m State () Input Output
@@ -125,7 +125,7 @@ spec = do
               \mh _reqId () -> do
                 nSlaves <- waitForHUnitPass upToAMinute $ do
                   n <- getNumSlaves mh
-                  liftIO $ n `shouldBe` (workersToSpawn - 1)
+                  n `shouldBe` (workersToSpawn - 1)
                   return n
                 return $ DontReenqueue nSlaves
           workersToSpawn = 10
@@ -140,7 +140,7 @@ spec = do
           -- Check that there are no masters anymore
           waitForHUnitPass upToAMinute $ do
             wcis <- getWorkerRequests r
-            liftIO $ wcis `shouldBe` [])
+            wcis `shouldBe` [])
         (replicate workersToSpawn worker)
     stressfulTest $
       redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
