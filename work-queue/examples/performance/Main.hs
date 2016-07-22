@@ -12,6 +12,7 @@
 
 import           Control.DeepSeq
 import           Control.Exception (evaluate)
+import           Control.Monad (forM)
 import           Control.Monad.IO.Class
 import           Control.Monad.Logger
 import           Control.Monad.Random
@@ -20,6 +21,7 @@ import           Data.ByteString (ByteString)
 import           Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
+import           Data.List (foldl')
 import           Data.Store (Store)
 import           Data.Store.Streaming
 import           Data.Store.TypeHash (mkManyHasTypeHash)
@@ -45,6 +47,9 @@ $(mkManyHasTypeHash [ [t| ByteString |]
                     , [t| Request |]
                     ])
 
+vlength :: Int
+vlength = 100
+
 roundtrip :: forall a m . (MonadConnect m, Store a) => a -> m a
 roundtrip x = BB.with (Just $ 64 * 1024) $ \bb -> do
     BB.copyByteString bb (encodeMessage . Message $ x)
@@ -56,12 +61,15 @@ roundtrip x = BB.with (Just $ 64 * 1024) $ \bb -> do
 -- distributed particle filter.
 myUpdate :: MonadConnect m => Update m State Context Input Output
 myUpdate context input (!v1, !v2) = do
-    let prod = V.zipWith (*) v1 v2
-        result = V.sum prod
-        v1' = V.map (*V.sum input) v1
-        v2' = V.map (*context) $ V.zipWith (/) v1' v2
-    state' <- liftIO . evaluate $ result `deepseq` v1' `deepseq` v2' `deepseq` (v1', v2')
-    return (state', result)
+    foo <- forM [1..100::Double] $ \i -> do
+        let prod = V.zipWith (\x y -> x*y*i) v1 v2
+            result = V.sum prod
+            v1' = V.map (*(i*V.sum input)) v1
+            v2' = V.map (*(context*i)) $ V.zipWith (/) v1' v2
+            state' = (v1', v2')
+--        state' <- liftIO . evaluate $ result `deepseq` v1' `deepseq` v2' `deepseq` (v1', v2')
+        return (state', result)
+    return $! foldl' (\((v1,v2),x) ((v1',v2'),x') -> ((V.zipWith (+) v1 v1',V.zipWith (+) v2 v2'),x+x')) ((V.replicate vlength 0, V.replicate vlength 0),0) foo
 
 
 masterArgs :: MonadConnect m => MasterArgs m State Context Input Output
@@ -78,8 +86,8 @@ myStates =
   where
     go :: RandT StdGen [] State
     go = do
-        v1 <- V.generateM 3000 $ \_ -> getRandomR (0,1)
-        v2 <- V.generateM 3000 $ \_ -> getRandomR (0,1)
+        v1 <- V.generateM vlength $ \_ -> getRandomR (0,1)
+        v2 <- V.generateM vlength $ \_ -> getRandomR (0,1)
         -- v1 `seq` v2 `seq` return $ State v1 v2
         v1 `deepseq` v2 `deepseq` return (v1, v2)
 
@@ -106,7 +114,7 @@ myAction req mh = do
                                 liftIO . putStrLn $ unlines [ "getStateIds: " ++ show (t1 - t0)
                                                             , "update   : " ++ show (t2 - t1)]
                                 return newStates
-                        ) [1..20::Int]
+                        ) [1..5::Int]
     return (sum $ sum <$> (head finalStates :: HashMap StateId (HashMap StateId Output)))
 
 doRequest :: Int -> String -> IO ()
