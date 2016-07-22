@@ -1,6 +1,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -22,6 +23,10 @@ module TestUtils
     , upToNSeconds
     , upToAMinute
     , raceAgainstVoids
+      -- * Lifted expectations (with source locations on errors)
+    , shouldBe
+    , shouldSatisfy
+    , shouldMatchList
     ) where
 
 import           ClassyPrelude hiding (keys, (<>))
@@ -36,10 +41,12 @@ import           Data.Void (absurd, Void)
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Worker
 import           FP.Redis
+import           GHC.Stack (CallStack)
 import           System.Environment (lookupEnv)
 import           System.Random (randomRIO)
 import           Test.HUnit.Lang (HUnitFailure (..))
 import           Test.Hspec (Spec, it)
+import qualified Test.Hspec
 import           Test.Hspec.Core.Spec (SpecM, runIO)
 import qualified Test.QuickCheck as QC
 
@@ -163,3 +170,13 @@ raceAgainstVoids :: MonadConnect m
                     -- be killed when the first action terminates.
                     -> m a
 raceAgainstVoids = foldl (\x v -> either id absurd <$> Async.race x v)
+
+shouldBe :: (?loc :: CallStack) => (Eq a, Show a, MonadIO m) => a -> a -> m ()
+shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
+
+shouldSatisfy :: (?loc :: CallStack) => (Show a, MonadIO m) => a -> (a -> Bool) -> m ()
+shouldSatisfy x p = liftIO (Test.Hspec.shouldSatisfy x p)
+
+shouldMatchList :: (?loc :: CallStack) => (Eq a, Show a, MonadIO m) => [a] -> [a] -> m ()
+shouldMatchList x y = liftIO (Test.Hspec.shouldMatchList x y)
+

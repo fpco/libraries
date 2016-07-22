@@ -22,7 +22,6 @@ import Distributed.Redis
 import Distributed.Types
 import FP.Redis (Seconds(..), MonadConnect)
 import Test.Hspec (Spec)
-import Test.Hspec.Expectations.Lifted
 import TestUtils
 
 $(mkHasTypeHash =<< [t| ByteString |])

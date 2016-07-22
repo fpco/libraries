@@ -25,7 +25,6 @@ import           Distributed.Redis
 import           Distributed.Types
 import           FP.Redis (Seconds (..), MonadConnect)
 import           Test.Hspec (Spec)
-import           Test.Hspec.Expectations.Lifted
 import           TestUtils
 
 $(mkManyHasTypeHash [[t| ByteString |]])
@@ -98,7 +97,7 @@ addWorkerTest redis = withRequests redis someRequests $ do
         (do waitForHUnitPass upToAMinute $ do
                 jqs' <- getJobQueueStatus redis
                 length (jqsWorkers jqs') `shouldBe` 1
-                length (jqsPending jqs') `shouldBe` length someRequests - 1
+                length (jqsPending jqs') `shouldBe` (length someRequests - 1)
             liftIO $ putMVar mvar ())
 
 heartbeatFailureTest :: MonadConnect m => Redis -> m ()

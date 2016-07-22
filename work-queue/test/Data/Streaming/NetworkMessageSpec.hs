@@ -19,7 +19,6 @@ import           Data.Streaming.Network
 import qualified Data.Conduit.Network as CN
 import           Data.Streaming.NetworkMessage
 import           Test.Hspec hiding (shouldBe)
-import qualified Test.Hspec
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           FP.Redis (MonadConnect)
 import           Control.Monad.Trans.Control (control)
@@ -29,9 +28,6 @@ import           Data.Store.TypeHash (mkManyHasTypeHash)
 import           Data.Store.TypeHash.Orphans ()
 
 import           TestUtils
-
-shouldBe :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
-shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
 
 mkManyHasTypeHash
     [[t|Bool|], [t|ByteString|], [t|Maybe Bool|], [t|Int|], [t|LBS.ByteString|]]

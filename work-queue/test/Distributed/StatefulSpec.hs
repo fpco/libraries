@@ -36,13 +36,9 @@ import           Distributed.Stateful.Master
 import           Distributed.Types
 import           FP.Redis (MonadConnect)
 import           System.Random (randomRIO)
-import qualified Test.Hspec
 import           Test.Hspec hiding (shouldBe)
 import qualified Test.QuickCheck as QC
 import           TestUtils
-
-shouldBe :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
-shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
 
 newtype State = State [Input] -- All the inputs up to now
   deriving (QC.CoArbitrary, QC.Arbitrary, Show, Store, Eq, Ord, NFData)

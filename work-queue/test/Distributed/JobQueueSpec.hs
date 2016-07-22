@@ -17,8 +17,7 @@ module Distributed.JobQueueSpec (spec) where
 import ClassyPrelude
 import Data.Store (Store)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
-import           Test.Hspec hiding (shouldBe)
-import qualified Test.Hspec
+import           Test.Hspec hiding (shouldBe, shouldSatisfy)
 import FP.Redis (MonadConnect, Seconds(..), exists, VKey (..))
 import Control.Concurrent.Lifted (threadDelay)
 import qualified Data.UUID as UUID
@@ -83,9 +82,6 @@ submitTestRequest jc req = do
     rid <- getRequestId
     submitRequest jc rid req
     return rid
-
-shouldBe :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
-shouldBe x y = liftIO (Test.Hspec.shouldBe x y)
 
 runWorkerAndClient :: (MonadConnect m) => (JobClient Response -> m a) -> m a
 runWorkerAndClient cont =
@@ -233,7 +229,7 @@ expiredTest r = either absurd id <$> Async.race timeoutJobWorker (withTimeoutCli
     jobStarted :: RequestId -> m ()
     jobStarted rid = waitForHUnitPass upToAMinute $ do
         stats <- getRequestStats r rid
-        liftIO $ stats `shouldSatisfy` (\case
+        stats `shouldSatisfy` (\case
             Nothing -> False
             Just s -> isJust $ rsComputeStartTime s
             )
@@ -245,7 +241,7 @@ expiredTest r = either absurd id <$> Async.race timeoutJobWorker (withTimeoutCli
         wsRequest (unsafeHead workers) `shouldBe` Nothing -- unsafeHead is safe here, since the length is known.
         -- but neither did the job finish
         rStats <- getRequestStats r rid
-        liftIO $ rStats `shouldSatisfy` (\case
+        rStats `shouldSatisfy` (\case
             Nothing -> False
             Just s -> isNothing $ rsComputeFinishTime s
             )
