@@ -205,6 +205,8 @@ executable wq-performance
                      , lifted-base
                      , semigroups
                      , store
+                     , streaming-commons
+                     , mesosync
                      , monad-control
                      , resourcet
                      , criterion
