@@ -108,11 +108,13 @@ setRedisSchemaVersion r = do
 -- | Throws 'MismatchedRedisSchemaVersion' if it's wrong or unset.
 checkRedisSchemaVersion :: MonadConnect m => Redis -> m ()
 checkRedisSchemaVersion r = do
-    v <- fmap (fromMaybe "") $ run r $ get (redisSchemaKey r)
-    when (v /= redisSchemaVersion) $ liftIO $ throwIO MismatchedRedisSchemaVersion
-        { actualRedisSchemaVersion = v
-        , expectedRedisSchemaVersion = redisSchemaVersion
-        }
+    mVersion <- run r $ get (redisSchemaKey r)
+    case mVersion of
+        Nothing -> $logInfo "Redis schema not set.  This probably just means that no client is running yet."
+        Just v -> when (v /= redisSchemaVersion) $ liftIO $ throwIO MismatchedRedisSchemaVersion
+            { actualRedisSchemaVersion = v
+            , expectedRedisSchemaVersion = redisSchemaVersion
+            }
 
 -- | Make sure that the 'activeKey' of a given worker does not have
 -- more than one element.
