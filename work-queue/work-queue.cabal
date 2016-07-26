@@ -182,8 +182,11 @@ executable hpc-example-stateful
                      , hspec-core
   ghc-options:         -Wall -threaded
 
-executable wq-performance
-  main-is:             Main.hs
+-- a simple example using the work-queue. Tries to have an update step
+-- that is similarly in cost to the dpf, but does not resemble a real
+-- problem.
+executable wq-perf-unmotivated
+  main-is:             unmotivated/Main.hs
   hs-source-dirs:      examples/performance
   default-language:    Haskell2010
   build-depends:       base
@@ -223,5 +226,53 @@ executable wq-performance
                      , unordered-containers
                      , random
                      , MonadRandom
+  -- ghc-options:         -Wall -threaded -rtsopts -eventlog
+  ghc-options:         -Wall -threaded -rtsopts -fprof-auto
+
+-- distributed kmeans algorithm, using the work-queue.
+executable wq-perf-kmeans
+  main-is:             kmeans/Main.hs
+  hs-source-dirs:      examples/performance
+  default-language:    Haskell2010
+  build-depends:       base
+                     , classy-prelude
+                     , redis-fp
+                     , work-queue
+                     , stm
+                     , bytestring
+                     , network
+                     , enclosed-exceptions
+                     , unix
+                     , split
+                     , classy-prelude
+                     , system-fileio
+                     , executable-path
+                     , process
+                     , silently
+                     , monad-logger
+                     , redis-fp
+                     , lifted-base
+                     , semigroups
+                     , store
+                     , streaming-commons
+                     , mesosync
+                     , monad-control
+                     , resourcet
+                     , criterion
+                     , thread-file-logger
+                     , directory
+                     , transformers
+                     , time
+                     , hspec-core
+                     , criterion
+                     , conduit-extra
+                     , async
+                     , vector
+                     , deepseq
+                     , unordered-containers
+                     , random
+                     , MonadRandom
+                     , extra
+                     , optparse-applicative
   -- ghc-options:         -Wall -threaded -rtsopts -eventlog
   ghc-options:         -Wall -threaded -rtsopts -fprof-auto

@@ -129,7 +129,7 @@ spawnAndWaitForWorker numSlaves = do
   runProcess program [show numSlaves, "nmSlave"] Nothing Nothing Nothing Nothing Nothing
 
 jqc :: JobQueueConfig
-jqc = defaultJobQueueConfig "performance:"
+jqc = defaultJobQueueConfig "perf:unmotivated:"
 
 performRequest :: IO ()
 performRequest = logErrors $ withJobClient jqc $ \jc -> do
