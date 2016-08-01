@@ -1,7 +1,8 @@
-{-# LANGUAGE ScopedTypeVariables,DeriveDataTypeable #-}
+{-# LANGUAGE ScopedTypeVariables,DeriveDataTypeable, LambdaCase #-}
+{-# OPTIONS_GHC -fno-warn-dodgy-imports #-}
 module Main where
 
-import Test.Framework (defaultMain, testGroup)
+import Test.Framework (Test, defaultMain, testGroup)
 import Test.Framework.Providers.HUnit
 
 import Test.HUnit
@@ -16,8 +17,10 @@ import Data.Maybe
 
 import Prelude hiding (catch)
 
+main :: IO ()
 main = defaultMain tests
 
+tests :: [Test.Framework.Test]
 tests = [
     testCase "async_wait"        async_wait
   , testCase "async_waitCatch"   async_waitCatch
@@ -41,7 +44,8 @@ tests = [
       ]
  ]
 
-value = 42 :: Int
+value :: Int
+value = 42
 
 data TestException = TestException deriving (Eq,Show,Typeable)
 instance Exception TestException
@@ -93,8 +97,7 @@ async_cancel :: Assertion
 async_cancel = do
   a <- async (return value)
   cancelWith a TestException
-  r <- waitCatch a
-  case r of
+  waitCatch a >>= \case
     Left e -> fromException e @?= Just TestException
     Right r -> r @?= value
 
@@ -103,17 +106,17 @@ async_poll = do
   a <- async (threadDelay 1000000)
   r <- poll a
   when (isJust r) $ assertFailure ""
-  r <- poll a   -- poll twice, just to check we don't deadlock
-  when (isJust r) $ assertFailure ""
+  r' <- poll a   -- poll twice, just to check we don't deadlock
+  when (isJust r') $ assertFailure ""
 
 async_poll2 :: Assertion
 async_poll2 = do
   a <- async (return value)
-  wait a
+  void $ wait a
   r <- poll a
   when (isNothing r) $ assertFailure ""
-  r <- poll a   -- poll twice, just to check we don't deadlock
-  when (isNothing r) $ assertFailure ""
+  r' <- poll a   -- poll twice, just to check we don't deadlock
+  when (isNothing r') $ assertFailure ""
 
 withasync_waitCatch_blocked :: Assertion
 withasync_waitCatch_blocked = do

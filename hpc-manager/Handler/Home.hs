@@ -140,8 +140,8 @@ postStatusR = do
     unless (null others') $ invalidArgs (map fst others')
     case map fst cmds of
         ["cancel"] -> do
-            withRedis' config $ \redis ->
-                forM reqs $ \(rid, mwid) ->
+            void $ withRedis' config $ \redis ->
+                forM reqs $ \(rid, _mwid) ->
                     cancelRequest (Seconds 60) redis rid
             let takesAWhile :: Text
                 takesAWhile = "NOTE: it may take a while for computations to cancel, so they will likely still appear as active work items"
