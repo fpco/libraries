@@ -42,7 +42,7 @@ module Distributed.JobQueue.Client
 import           ClassyPrelude
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.STM (retry, orElse)
-import           Control.Monad.Logger
+import           Control.Monad.Logger.JSON.Extra
 import           Data.List.NonEmpty (NonEmpty((:|)))
 import qualified Data.Store as S
 import           Data.Streaming.NetworkMessage (Sendable)
@@ -155,16 +155,16 @@ submitRequest JobClient{..} rid request = do
             , jrSchema = redisSchemaVersion
             , jrBody = S.encode request
             }
-    $logDebugS "sendRequest" $ "Pushing request " <> tshow rid
+    $logDebugSJ "sendRequest" $ "Pushing request " <> tshow rid
     -- NOTE: It's crucial for the body to be added _before_ the request id in the requests
     -- list, since the worker will just drop the request id if the body is missing.
     added <- run jcRedis (set (requestDataKey jcRedis rid) encoded [EX (jqcRequestExpiry jcConfig), NX])
     if not added
-        then $logWarnS "submitRequest" $
+        then $logWarnSJ "submitRequest" $
             "Didn't submit request " <> tshow rid <> " because it already exists in redis."
         else do
             run_ jcRedis (lpush (requestsKey jcRedis) (unRequestId rid :| []))
-            $logDebugS "submitRequest" $ "Notifying about request " <> tshow rid
+            $logDebugSJ "submitRequest" $ "Notifying about request " <> tshow rid
             sendNotify jcRedis (requestChannel jcRedis)
             addRequestEnqueuedEvent jcConfig jcRedis rid
 
@@ -220,7 +220,7 @@ waitForResponse jc@JobClient{..} rid cont = do
                     then delayLoop
                     else do
                         let err = "Was waiting on request " <> tshow rid <> ", but it disappeared. This is possible if the caching duration for requests is too low and the request expired while waiting for it."
-                        $logWarn err
+                        $logWarnJ err
                         return (Left (InternalJobQueueException err))
 
     watcher :: m (Either DistributedException response)
@@ -232,7 +232,7 @@ waitForResponse jc@JobClient{..} rid cont = do
             checkForResponse jc rid
         case mbResp of
             Nothing -> do
-                $logWarn ("Got notification for request " <> tshow rid <> ", but then found no response. This is possible but unlikely, re-subscribing.")
+                $logWarnJ ("Got notification for request " <> tshow rid <> ", but then found no response. This is possible but unlikely, re-subscribing.")
                 watcher
             Just resp -> return resp
       where
@@ -295,7 +295,7 @@ requestHashRequestId = RequestId . Base64.encode . SHA1.hash . S.encode
 -- case the request response might be available.
 cancelRequest :: MonadConnect m => Seconds -> Redis -> RequestId -> m ()
 cancelRequest expiry redis k = do
-    $logInfo ("Cancelling request " ++ tshow k)
+    $logInfoJ ("Cancelling request " ++ tshow k)
     run_ redis (set (cancelKey redis k) cancelValue [EX expiry])
     run_ redis (del (unVKey (requestDataKey redis k) :| []))
     run_ redis (del (unVKey (responseDataKey redis k) :| []))
@@ -323,7 +323,7 @@ handleHeartbeatFailures r inactive cleanup = do
     reenqueuedSome <- or <$> forM inactive (handleWorkerFailure r)
     cleanup
     when reenqueuedSome $ do
-        $logDebugS "JobClient" "Notifying that some requests were re-enqueued"
+        $logDebugSJ "JobClient" ("Notifying that some requests were re-enqueued"::Text)
         sendNotify r (requestChannel r)
 
 handleWorkerFailure :: (MonadConnect m) => Redis -> WorkerId -> m Bool
@@ -335,8 +335,8 @@ handleWorkerFailure r wid = do
     checkActiveKey r wid
     case mbRid of
         Nothing -> do
-            $logWarnS "JobQueue" $ tshow wid <> " failed its heartbeat, but didn't have an item to re-enqueue."
+            $logWarnSJ "JobQueue" $ tshow wid <> " failed its heartbeat, but didn't have an item to re-enqueue."
         Just rid -> do
             addRequestEvent r (RequestId rid) (RequestWorkReenqueuedAfterHeartbeatFailure wid)
-            $logWarnS "JobQueue" $ tshow wid <> " failed its heartbeat, and " <> tshow rid <> " was re-enqueued."
+            $logWarnSJ "JobQueue" $ tshow wid <> " failed its heartbeat, and " <> tshow rid <> " was re-enqueued."
     return (isJust mbRid)

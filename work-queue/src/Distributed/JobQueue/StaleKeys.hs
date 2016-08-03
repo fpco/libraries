@@ -34,7 +34,7 @@ module Distributed.JobQueue.StaleKeys where
 
 import           ClassyPrelude hiding (keys)
 import           Control.Concurrent.Lifted (threadDelay)
-import           Control.Monad.Logger
+import           Control.Monad.Logger.JSON.Extra
 import qualified Data.HashSet as HashSet
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Internal
@@ -65,9 +65,9 @@ checkStaleKeys config r = logNest "checkStaleKeys" $ forever $ do
         mbRid <- run r (rpoplpush (activeKey r wid) (requestsKey r))
         checkActiveKey r wid
         case mbRid of
-            Nothing -> $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and does not have a job."
+            Nothing -> $logWarnSJ "JobQueue" $ tshow wid <> " is not active anymore, and does not have a job."
             Just rid -> do
                 addRequestEvent r (RequestId rid) (RequestWorkReenqueuedAsStale wid)
-                $logWarnS "JobQueue" $ tshow wid <> " is not active anymore, and " <> tshow rid <> " was re-enqueued."
+                $logWarnSJ "JobQueue" $ tshow wid <> " is not active anymore, and " <> tshow rid <> " was re-enqueued."
     threadDelay (1000000 * (fromIntegral . unSeconds . jqcCheckStaleKeysInterval $ config))
     checkStaleKeys config r

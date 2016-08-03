@@ -45,7 +45,7 @@ module Distributed.Stateful.Master
 
 import           ClassyPrelude
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
-import           Control.Monad.Logger (MonadLogger, logWarn, logInfo, logDebug)
+import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -144,8 +144,8 @@ closeMaster (MasterHandle mhv) =
               _ -> Nothing
           case mbErr of
             Left err -> do
-              $logWarn $ pack $ printf
-                "Error while quitting slave %d (this can happen when the master is closed because of an error): %s" slaveId (show err)
+              $logWarnJ (printf
+                "Error while quitting slave %d (this can happen when the master is closed because of an error): %s" slaveId (show err) :: String)
             Right () -> return ()
 
 {-# INLINE readExpect #-}
@@ -276,10 +276,10 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
           let mbStolen = stealSlavesFromSomebody slaveId uss
           case mbStolen of
             Nothing -> do -- We're done for this slave.
-              $logInfo ("Tried to get something to do for slave " ++ tshow (unSlaveId slaveId) ++ ", but couldn't find anything")
+              $logInfoJ ("Tried to get something to do for slave " ++ tshow (unSlaveId slaveId) ++ ", but couldn't find anything")
               return (uss, [])
             Just (uss', stolenFrom, stolenStates) -> do -- Request stolen slaves
-              $logInfo ("Stealing " ++ tshow (HS.size stolenStates) ++ " states from slave " ++ tshow (unSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId slaveId))
+              $logInfoJ ("Stealing " ++ tshow (HS.size stolenStates) ++ " states from slave " ++ tshow (unSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId slaveId))
               return (uss', [(stolenFrom, USReqRemoveStates slaveId stolenStates)])
         else do -- Send update command
           let toUpdateInputsMap = HMS.fromList toUpdateInputs
@@ -365,7 +365,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
                       USReqUpdate inputs -> SReqUpdate context inputs
                       USReqRemoveStates x y -> SReqRemoveStates x y
                       USReqAddStates y -> SReqAddStates y
-                $logDebug ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req)
+                $logDebugJ ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req)
                 scWrite conn req
                 go
 
@@ -388,11 +388,11 @@ updateSlaves maxBatchSize slaves context inputMap = do
           let status = statuses HMS.! slaveId
           if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
             then do
-              $logInfo ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
+              $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
               return outputs
             else do
               resp0 <- scRead (slaveConnection slave)
-              $logDebug ("Received slave response from slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayResp resp0)
+              $logDebugJ ("Received slave response from slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayResp resp0)
               resp' <- case resp0 of
                 SRespResetState -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
                 SRespGetStates _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
@@ -433,12 +433,12 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
       (stateId,) <$> mapM (\input -> (, input) <$> askSupplyM) inps
   case mhSlaves mh of
     NoSlavesYet states -> do
-      $logWarn "Executing update without any slaves"
+      $logWarnJ ("Executing update without any slaves" :: String)
       (states', outputs) <- statefulUpdate (maUpdate (mhArgs mh)) states context (HMS.fromList <$> inputMap)
       let mh' = mh{ mhSlaves = NoSlavesYet states' }
       return (mh', outputs)
     Slaves slaves -> do
-      $logInfo ("Executing update with " ++ tshow (HMS.size slaves) ++ " slaves")
+      $logInfoJ ("Executing update with " ++ tshow (HMS.size slaves) ++ " slaves")
       -- Update the slave states.
       slaveIdsAndInputs <- either throwAndLog return $
         assignInputsToSlaves (slaveStates <$> slaves) inputMap

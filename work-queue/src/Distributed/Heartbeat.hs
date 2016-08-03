@@ -44,7 +44,7 @@ module Distributed.Heartbeat
 import ClassyPrelude
 import Control.Concurrent.Lifted (threadDelay)
 import Control.Monad.Extra (partitionM)
-import Control.Monad.Logger (logDebug, logInfo)
+import Control.Monad.Logger.JSON.Extra (logDebugJ, logInfoJ)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import qualified Data.List.NonEmpty as NE
 import Data.Time.Clock.POSIX
@@ -201,7 +201,7 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
     startTime <- liftIO getPOSIXTime
     let Seconds ivl = hcCheckerIvl config
         oldTime = startTime - fromIntegral ivl
-    $logDebug $ "Checking if enough time has elapsed since last heartbeat check.  Looking for a time before " ++
+    $logDebugJ $ "Checking if enough time has elapsed since last heartbeat check.  Looking for a time before " ++
         tshow oldTime
     mlastTime <- getRedisTime r (heartbeatLastCheckKey r)
     let setTimeAndWait = do
@@ -212,16 +212,16 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
     case mlastTime of
         Just lastTime | lastTime >= oldTime -> do
             let usecs = (ceiling (lastTime - oldTime) `max` 1) * 1000000
-            $logDebug $ "Heartbeat check: Not enough time has elapsed since the last check, delaying by: " ++
+            $logDebugJ $ "Heartbeat check: Not enough time has elapsed since the last check, delaying by: " ++
                         tshow usecs
             liftIO $ threadDelay usecs
         Just _lastTime -> do
             -- Note that nothing prevents two checkers from checking up on
             -- the workers at the same time. This is fine and part of the contract of the
             -- function.
-            $logDebug "Enough time has passed, checking if there are any inactive workers."
+            $logDebugJ ("Enough time has passed, checking if there are any inactive workers."::String)
             performHeartbeatCheck r startTime handleFailures
-            $logDebug "Setting timestamp for last heartbeat check"
+            $logDebugJ ("Setting timestamp for last heartbeat check"::String)
             setTimeAndWait
         Nothing -> setTimeAndWait
 
@@ -237,17 +237,17 @@ performHeartbeatCheck r startTime handleFailures = do
     case NE.nonEmpty failed of
         Nothing -> return ()
         Just inactives -> do
-            $logInfo ("Got inactive workers: " ++ tshow inactives)
+            $logInfoJ ("Got inactive workers: " ++ tshow inactives)
             deadones <- run r (zadd (heartbeatDeadKey r) (NE.zip (NE.repeat (realToFrac startTime)) (unWorkerId <$> inactives)))
             unless (deadones == fromIntegral (length inactives)) $
-                $logDebug ("Expecting to have registered " ++ tshow (length inactives) ++ " dead workers, but got " ++ tshow deadones ++ ", some other client probably took care of it already.")
+                $logDebugJ ("Expecting to have registered " ++ tshow (length inactives) ++ " dead workers, but got " ++ tshow deadones ++ ", some other client probably took care of it already.")
             -- TODO consider catching exceptins here
             handleFailures
                 inactives
-                (do $logDebug ("Cleaning up inactive workers " ++ tshow inactives)
+                (do $logDebugJ ("Cleaning up inactive workers " ++ tshow inactives)
                     removed <- run r $ srem (heartbeatActiveKey r) (unWorkerId <$> inactives)
                     unless (removed == fromIntegral (length inactives)) $
-                        $logDebug ("Expecting to have cleaned up " ++ tshow (length inactives) ++ " but got " ++ tshow removed ++ ", some other client probably took care of it already.")
+                        $logDebugJ ("Expecting to have cleaned up " ++ tshow (length inactives) ++ " but got " ++ tshow removed ++ ", some other client probably took care of it already.")
                 )
 
 -- | Periodically check for heartbeats while concurrently performing
@@ -289,10 +289,10 @@ withCheckHeartbeats conf redis handle' cont =
 withHeartbeats
     :: MonadConnect m => HeartbeatConfig -> Redis -> (Heartbeating -> m a) -> m a
 withHeartbeats config r cont = do
-    $logInfo "Starting heartbeats"
+    $logInfoJ ("Starting heartbeats" :: String)
     wid <- uniqueWorkerId
     sendHeartbeat wid
-    $logInfo "Initial heartbeat sent"
+    $logInfoJ ("Initial heartbeat sent" :: String)
     fmap (either id absurd) $ race (cont (Heartbeating wid)) $ forever $ do
         let Seconds ivl = hcSenderIvl config
         liftIO $ threadDelay ((fromIntegral ivl `max` 1) * 1000 * 1000)

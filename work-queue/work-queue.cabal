@@ -51,7 +51,7 @@ library
                      , lifted-base
                      , list-t
                      , monad-control
-                     , monad-logger
+                     , monad-logger-json-extra
                      , mono-traversable
                      , mtl
                      , network
@@ -122,7 +122,7 @@ test-suite wq-test
                      , HUnit
                      , lifted-base
                      , monad-control
-                     , monad-logger
+                     , monad-logger-json-extra
                      , network
                      , process
                      , random
@@ -166,7 +166,7 @@ executable hpc-example-stateful
                      , executable-path
                      , process
                      , silently
-                     , monad-logger
+                     , monad-logger-json-extra
                      , redis-fp
                      , lifted-base
                      , semigroups

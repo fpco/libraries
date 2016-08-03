@@ -73,7 +73,7 @@ import           FP.Redis (MonadConnect)
 import           Data.Store (Store)
 import           Control.Concurrent.STM.TMChan
 import           Data.Streaming.NetworkMessage
-import           Control.Monad.Logger (logError, logWarn, logDebug)
+import           Control.Monad.Logger.JSON.Extra (logErrorJ, logWarnJ, logDebugJ)
 import           Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.STM as STM
 import qualified Data.Conduit.Network as CN
@@ -228,7 +228,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
                 return shouldAdd
             if added
                 then readMVar doneVar
-                else $logWarn "Slave tried to connect while past the number of maximum slaves"
+                else $logWarnJ ("Slave tried to connect while past the number of maximum slaves" :: String)
     let server :: m (Maybe b)
         server = do
             let waitForMaxSlaves n = atomically $ do
@@ -245,7 +245,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
             let minSlaves = fromMaybe 0 nmsmaMinimumSlaves
             if slaves < minSlaves
                 then do
-                    $logError ("Timed out waiting for slaves to connect. Needed " ++ tshow minSlaves ++ ", got " ++ tshow slaves)
+                    $logErrorJ ("Timed out waiting for slaves to connect. Needed " ++ tshow minSlaves ++ ", got " ++ tshow slaves)
                     return Nothing
                 else Just <$> cont mh doneWaitingForSlaves
     fmap (either absurd id) $ Async.race (runServer onSlaveConnection) $ finally server $ do
@@ -340,14 +340,14 @@ runRequestingStatefulMaster r (heartbeatingWorkerId -> wid) ss0 host mbPort ma n
                 mbExc <- tryAny (runNMApp nmSettings whenSlaveConnects ad)
                 case mbExc of
                     Left err ->
-                        $logWarn ("requestingStatefulMaster: got exception in slave handler " ++ tshow err)
+                        $logWarnJ ("requestingStatefulMaster: got exception in slave handler " ++ tshow err)
                     Right () -> return ()
     keepRequestingSlaves :: MVar () <- newEmptyMVar
     let runRequestsSlave = do
             -- This is used to get the port if we need it, but also to wait
             -- for the server to be up.
             port <- liftIO getPort
-            $logDebug ("Master starting on " ++ tshow (CN.serverHost ss, port))
+            $logDebugJ ("Master starting on " ++ tshow (CN.serverHost ss, port))
             let wci = WorkerConnectInfo host (fromMaybe port mbPort)
             requestSlaves r wid wci $ \wsc -> do
                 putMVar whenSlaveConnectsVar wsc

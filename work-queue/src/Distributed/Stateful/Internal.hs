@@ -9,7 +9,7 @@ module Distributed.Stateful.Internal where
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
-import           Control.Monad.Logger
+import           Control.Monad.Logger.JSON.Extra
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Data.Proxy (Proxy(..))
@@ -118,7 +118,7 @@ displayResp SRespQuit = "SRespQuit"
 
 throwAndLog :: (Exception e, MonadIO m, MonadLogger m) => e -> m a
 throwAndLog err = do
-  logErrorN (pack (show err))
+  logErrorNJ (show err)
   liftIO $ throwIO err
 
 data StatefulUpdateException

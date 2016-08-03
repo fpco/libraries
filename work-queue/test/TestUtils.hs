@@ -33,10 +33,9 @@ import           ClassyPrelude hiding (keys, (<>))
 import           Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Control.Monad.Catch (Handler (..))
-import           Control.Monad.Logger
+import           Control.Monad.Logger.JSON.Extra
 import           Control.Retry
 import           Data.Foldable (foldl)
-import qualified Data.Text as T
 import           Data.Void (absurd, Void)
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Worker
@@ -81,15 +80,15 @@ loggingIt :: String -> (forall m. (MonadConnect m) => m ()) -> Spec
 loggingIt msg cont = it msg x
   where
     x :: IO ()
-    x = runStdoutLoggingT $ filterLogger (\_ -> minimumLogLevel) $ do
-        $logInfo (T.pack msg)
+    x = runStdoutJSONLoggingT $ filterLogger (\_ -> minimumLogLevel) $ do
+        $logInfoJ msg
         cont
 
 loggingProperty :: forall prop.
        (QC.Testable prop)
     => (LoggingT IO prop) -> QC.Property
 loggingProperty m = QC.ioProperty
-    (runStdoutLoggingT (filterLogger (\_ -> minimumLogLevel) m) :: IO prop)
+    (runStdoutJSONLoggingT (filterLogger (\_ -> minimumLogLevel) m) :: IO prop)
 
 redisIt_ :: String -> (forall m. (MonadConnect m) => m ()) -> Spec
 redisIt_ msg cont = redisIt msg (\_r -> cont)
@@ -120,7 +119,7 @@ killRandomly KillRandomly{..} action = if krRetries < 1
             randomThreadDelay (krMaxPause * 1000)
             mbRes <- Async.race
                 (do randomThreadDelay (krMaxTimeout * 1000)
-                    $logInfo "Killing action")
+                    $logInfoJ ("Killing action"::Text))
                 action
             case mbRes of
                 Left () -> go (n - 1)
