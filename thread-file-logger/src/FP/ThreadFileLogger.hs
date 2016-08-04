@@ -28,23 +28,13 @@ module FP.ThreadFileLogger
     ) where
 
 import ClassyPrelude hiding (catch)
-import Control.Concurrent.Lifted (ThreadId, myThreadId)
-import Control.Exception (catch)
 import Control.Monad.Base (MonadBase(liftBase))
-import Control.Monad.Logger (LogSource, LogLevel(LevelInfo, LevelWarn), LoggingT, runLoggingT, filterLogger, defaultLogStr, runStdoutLoggingT, logDebugS, logInfoS, logWarnS, logErrorS, logOtherS)
-import Control.Monad.Trans.Control (MonadBaseControl, control)
-import Language.Haskell.TH (Loc(..), Q, Exp)
-import System.Directory (createDirectoryIfMissing)
-import System.FilePath (takeDirectory)
-import System.IO (IOMode(AppendMode), openFile, appendFile, hFlush)
-import System.IO.Unsafe (unsafePerformIO)
-import System.Log.FastLogger (LogStr, toLogStr, fromLogStr)
-import System.Posix.Process (getProcessID)
+import Control.Monad.Logger (LogSource, LogLevel(LevelInfo), LoggingT, filterLogger, runStdoutLoggingT, logDebugS, logInfoS, logWarnS, logErrorS, logOtherS)
+import Control.Monad.Trans.Control (MonadBaseControl)
+import Language.Haskell.TH (Q, Exp)
 
 -- TODO: Use weak pointers for thread IDs, as otherwise threads can't
 -- be GCed.
-
-type LogFunc = Loc -> LogSource -> LogLevel -> LogStr -> IO ()
 
 newtype LogTag = LogTag { unLogTag :: Text }
     deriving (Eq, Ord, Show, IsString)
