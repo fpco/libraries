@@ -15,6 +15,7 @@ packages:
   - ./work-queue
   - ./hpc-manager
   - ./th-relative-paths
+  - ./mesosync
 
 image:
   container:
