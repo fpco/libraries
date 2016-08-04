@@ -25,6 +25,7 @@ module Distributed.Heartbeat
     , Heartbeating
     , heartbeatingWorkerId
     , checkHeartbeats
+    , performHeartbeatCheck
     , withCheckHeartbeats
     , withHeartbeats
       -- * Query heartbeat status
@@ -219,26 +220,35 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
             -- the workers at the same time. This is fine and part of the contract of the
             -- function.
             $logDebug "Enough time has passed, checking if there are any inactive workers."
-            workers <- activeOrUnhandledWorkers r
-            (_passed, failed) <- partitionM (\wid -> isJust <$> lastHeartbeatForWorker r wid) workers
-            case NE.nonEmpty failed of
-                Nothing -> return ()
-                Just inactives -> do
-                    $logInfo ("Got inactive workers: " ++ tshow inactives)
-                    deadones <- run r (zadd (heartbeatDeadKey r) (NE.zip (NE.repeat (realToFrac startTime)) (unWorkerId <$> inactives)))
-                    unless (deadones == fromIntegral (length inactives)) $
-                        $logDebug ("Expecting to have registered " ++ tshow (length inactives) ++ " dead workers, but got " ++ tshow deadones ++ ", some other client probably took care of it already.")
-                    -- TODO consider catching exceptins here
-                    handleFailures
-                        inactives
-                        (do $logDebug ("Cleaning up inactive workers " ++ tshow inactives)
-                            removed <- run r $ srem (heartbeatActiveKey r) (unWorkerId <$> inactives)
-                            unless (removed == fromIntegral (length inactives)) $
-                                $logDebug ("Expecting to have cleaned up " ++ tshow (length inactives) ++ " but got " ++ tshow removed ++ ", some other client probably took care of it already.")
-                        )
+            performHeartbeatCheck r startTime handleFailures
             $logDebug "Setting timestamp for last heartbeat check"
             setTimeAndWait
         Nothing -> setTimeAndWait
+
+-- | Perform a single heartbeat check
+performHeartbeatCheck
+    :: MonadConnect m
+    => Redis
+    -> POSIXTime
+    -> (NonEmpty WorkerId -> m () -> m ()) -> m ()
+performHeartbeatCheck r startTime handleFailures = do
+    workers <- activeOrUnhandledWorkers r
+    (_passed, failed) <- partitionM (\wid -> isJust <$> lastHeartbeatForWorker r wid) workers
+    case NE.nonEmpty failed of
+        Nothing -> return ()
+        Just inactives -> do
+            $logInfo ("Got inactive workers: " ++ tshow inactives)
+            deadones <- run r (zadd (heartbeatDeadKey r) (NE.zip (NE.repeat (realToFrac startTime)) (unWorkerId <$> inactives)))
+            unless (deadones == fromIntegral (length inactives)) $
+                $logDebug ("Expecting to have registered " ++ tshow (length inactives) ++ " dead workers, but got " ++ tshow deadones ++ ", some other client probably took care of it already.")
+            -- TODO consider catching exceptins here
+            handleFailures
+                inactives
+                (do $logDebug ("Cleaning up inactive workers " ++ tshow inactives)
+                    removed <- run r $ srem (heartbeatActiveKey r) (unWorkerId <$> inactives)
+                    unless (removed == fromIntegral (length inactives)) $
+                        $logDebug ("Expecting to have cleaned up " ++ tshow (length inactives) ++ " but got " ++ tshow removed ++ ", some other client probably took care of it already.")
+                )
 
 -- | Periodically check for heartbeats while concurrently performing
 -- another action.

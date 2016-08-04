@@ -32,6 +32,8 @@ module Distributed.JobQueue.Client
     , checkForResponse
       -- * Cancel requests
     , cancelRequest
+      -- * Explicitly re-enqueue requests from dead workers
+    , reenqueueRequests
       -- * Auxilliary functions
     , uniqueRequestId
     , requestHashRequestId
@@ -45,8 +47,9 @@ import           Data.List.NonEmpty (NonEmpty((:|)))
 import qualified Data.Store as S
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.Store.TypeHash
+import           Data.Time.Clock.POSIX (getPOSIXTime)
 import           Data.Typeable (Proxy(..))
-import           Distributed.Heartbeat (checkHeartbeats)
+import           Distributed.Heartbeat (checkHeartbeats, performHeartbeatCheck)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Distributed.JobQueue.Internal
 import           Distributed.JobQueue.StaleKeys
@@ -118,13 +121,7 @@ jobClientThread JobClient{..} = do
     fmap (either absurd absurd) (Async.race checker subscriber)
   where
     heartbeatChecker =
-        checkHeartbeats (jqcHeartbeatConfig jcConfig) jcRedis $ \inactive cleanup -> do
-            reenqueuedSome <- or <$> forM inactive (handleWorkerFailure jcRedis)
-            cleanup
-            when reenqueuedSome $ do
-                $logDebugS "JobClient" "Notifying that some requests were re-enqueued"
-                sendNotify jcRedis (requestChannel jcRedis)
-
+        checkHeartbeats (jqcHeartbeatConfig jcConfig) jcRedis $ handleHeartbeatFailures jcRedis
     staleChecker = checkStaleKeys jcConfig jcRedis
 
     checker = fmap (either absurd absurd) (Async.race heartbeatChecker staleChecker)
@@ -303,6 +300,31 @@ cancelRequest expiry redis k = do
     run_ redis (del (unVKey (requestDataKey redis k) :| []))
     run_ redis (del (unVKey (responseDataKey redis k) :| []))
     run_ redis (lrem (requestsKey redis) 1 (unRequestId k))
+
+-- | Manually trigger re-enqueuement of jobs of dead workers.
+--
+-- When a worker is detected as dead by the heartbeat mechanism, its
+-- job is automatically re-enqueued.  However, since the heartbeat
+-- checks are only performed if there is at least one client running,
+-- jobs will not be re-enqueued if there are no clients.
+--
+-- This function explicitly performs a heartbeat check, and causes
+-- jobs of dead workers to be re-enqueued.
+reenqueueRequests :: MonadConnect m => Redis -> m ()
+reenqueueRequests r = do
+    currentTime <- liftIO getPOSIXTime
+    performHeartbeatCheck r currentTime $ handleHeartbeatFailures r
+
+
+handleHeartbeatFailures :: MonadConnect m
+                           => Redis
+                           -> NonEmpty WorkerId -> m () -> m ()
+handleHeartbeatFailures r inactive cleanup = do
+    reenqueuedSome <- or <$> forM inactive (handleWorkerFailure r)
+    cleanup
+    when reenqueuedSome $ do
+        $logDebugS "JobClient" "Notifying that some requests were re-enqueued"
+        sendNotify r (requestChannel r)
 
 handleWorkerFailure :: (MonadConnect m) => Redis -> WorkerId -> m Bool
 handleWorkerFailure r wid = do
