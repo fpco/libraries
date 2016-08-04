@@ -15,6 +15,7 @@
 module Distributed.JobQueueSpec (spec) where
 
 import ClassyPrelude
+import qualified Data.List.NonEmpty as NE
 import Data.Store (Store)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Test.Hspec hiding (shouldBe, shouldSatisfy)
@@ -28,6 +29,7 @@ import qualified Data.HashSet as HS
 import qualified Control.Concurrent.STM as STM
 
 import Data.Store.TypeHash (mkManyHasTypeHash)
+import Distributed.Heartbeat (deadWorkers)
 import Distributed.JobQueue.Client
 import Distributed.JobQueue.Internal
 import Distributed.JobQueue.Status
@@ -218,6 +220,7 @@ spec = do
             (replicate workers testJobWorker)
     stressfulTest $ redisIt_ "Withstands chaos" chaosTest
     redisIt "Stops working on expired jobs" expiredTest
+    redisIt "Can manually check for heartbeats" manualHeartbeatTest
 
 expiredTest :: forall m . MonadConnect m => Redis -> m ()
 expiredTest r = either absurd id <$> Async.race timeoutJobWorker (withTimeoutClient $ \jc -> do
@@ -248,6 +251,28 @@ expiredTest r = either absurd id <$> Async.race timeoutJobWorker (withTimeoutCli
         -- and the request data has expired, too
         jobStillThere <- run r . exists . unVKey $ requestDataKey r rid
         jobStillThere `shouldBe` False
+
+manualHeartbeatTest :: forall m . MonadConnect m => Redis -> m ()
+manualHeartbeatTest r = do
+    let resp = Response "test"
+        req = Request
+            { requestDelay = 500 * 1000 * 1000
+            , requestResponse = DontReenqueue resp
+            }
+    -- submit request, don't wait for result
+    _ <- withTestJobClient $ \jc -> submitTestRequest jc req
+    -- start a worker that will take the job, but crash it before it finishes
+    either id absurd <$> Async.race (threadDelay $ 1000 * 1000) testJobWorker
+    -- manually check the heartbeats to re-enqueue the job
+    waitForHUnitPass upToAMinute $ do
+        reenqueueRequests r -- manually check for dead worker
+        -- check that we do have a dead worker
+        deadWorkers r >>= (`shouldSatisfy` (\xs -> length xs == 1))
+        -- check that the job has been re-enqueued
+        allReqs <- getAllRequestStats r
+        allReqs `shouldSatisfy`
+            (\reqs -> length reqs == 1
+                      && (rsReenqueueByHeartbeatCount . snd . NE.head . NE.fromList) reqs == 1 )
 
 chaosTest :: forall m. (MonadConnect m) => m ()
 chaosTest = do

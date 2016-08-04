@@ -6,7 +6,7 @@ import Control.Monad.Logger
 import Data.Either
 import Data.Time.Clock
 import           Distributed.Heartbeat (clearHeartbeatFailures)
-import Distributed.JobQueue.Client (cancelRequest)
+import Distributed.JobQueue.Client (cancelRequest, reenqueueRequests)
 import Distributed.Types
 import Distributed.JobQueue.Status
 import FP.Redis
@@ -130,7 +130,7 @@ postStatusR :: Handler Html
 postStatusR = do
     config <- getConfig
     (postParams, _) <- runRequestBody
-    let (cmds, others) = partition (\(k, v) -> k `elem` ["cancel", "clear-heartbeats"] && v == "true") postParams
+    let (cmds, others) = partition (\(k, v) -> k `elem` ["cancel", "clear-heartbeats", "reenqueue-requests"] && v == "true") postParams
         (reqs', others') = partition (\(k, _) -> "jqr:" `isPrefixOf` k) others
         reqs = mapMaybe
             (\(k, v) ->
@@ -148,6 +148,7 @@ postStatusR = do
             setMessageI $ "Cancellation request applied.  " <> takesAWhile
         ["clear-heartbeats"] -> withRedis' config $ \redis ->
             clearHeartbeatFailures redis
+        ["reenqueue-requests"] -> withRedis' config $ \redis -> reenqueueRequests redis
         _ -> invalidArgs (map fst cmds)
     redirectUltDest HomeR
 
