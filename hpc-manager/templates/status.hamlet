@@ -29,6 +29,7 @@
   <h2>Actions
   <button .btn .btn-danger type=submit name=cancel value=true>Cancel Selected Computations
   <button .btn .btn-danger type=submit name=clear-heartbeats value=true>Clear Heartbeat Failures
+  <button .btn .btn-info type=submit name=reenqueue-requests value=true title="Manually re-enqueue jobs of dead workers. Normally, dead workers are detected automatically, but sometimes (in particular, if no clients are running), a manual check is required.">Re-enqueue requests of dead workers
 
   <h2>Workers
   <table .table .table-hover>
