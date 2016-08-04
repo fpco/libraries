@@ -226,3 +226,27 @@ executable wq-perf-kmeans
 
   -- ghc-options:         -Wall -threaded -rtsopts -eventlog
   ghc-options:         -Wall -threaded -rtsopts -fprof-auto
+
+executable wq-perf-pfilter
+  main-is:             pfilter/Main.hs
+  hs-source-dirs:      examples/performance
+  default-language:    Haskell2010
+  build-depends:       base
+                     , MonadRandom
+                     , classy-prelude
+                     , conduit-extra
+                     , criterion
+                     , deepseq
+                     , extra
+                     , mesosync
+                     , monad-logger
+                     , optparse-applicative
+                     , process
+                     , random-fu
+                     , random-source
+                     , redis-fp
+                     , semigroups
+                     , store
+                     , unordered-containers
+                     , vector
+                     , work-queue
