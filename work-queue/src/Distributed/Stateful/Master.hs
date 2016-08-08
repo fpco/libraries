@@ -433,7 +433,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
       (stateId,) <$> mapM (\input -> (, input) <$> askSupplyM) inps
   case mhSlaves mh of
     NoSlavesYet states -> do
-      $logWarnJ ("Executing update without any slaves" :: String)
+      $logWarnJ ("Executing update without any slaves" :: Text)
       (states', outputs) <- statefulUpdate (maUpdate (mhArgs mh)) states context (HMS.fromList <$> inputMap)
       let mh' = mh{ mhSlaves = NoSlavesYet states' }
       return (mh', outputs)

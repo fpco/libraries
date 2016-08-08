@@ -325,7 +325,7 @@ watchForCancel r k ivl = loop
   where
     loop :: m (WorkerResult response)
     loop = do
-        $logDebugJ ("Checking for cancel" :: String)
+        $logDebugJ ("Checking for cancel" :: Text)
         mres <- run r (get (cancelKey r k))
         case mres of
             Just res
@@ -333,7 +333,7 @@ watchForCancel r k ivl = loop
                 | otherwise -> liftIO $ throwIO $ InternalJobQueueException
                     "Didn't get expected value at cancelKey."
             Nothing -> do
-                $logDebugJ ("No cancel, waiting" :: String)
+                $logDebugJ ("No cancel, waiting" :: Text)
                 liftIO $ threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl))
                 loop
 
@@ -346,7 +346,7 @@ watchForExpiry r rid ivl = loop
         jobStillThere <- run r . exists . unVKey $ requestDataKey r rid
         if jobStillThere
             then do
-                $logDebugJ ("Not expired, waiting" :: String)
+                $logDebugJ ("Not expired, waiting" :: Text)
                 liftIO (threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl)))
                 loop
             else return RequestExpired

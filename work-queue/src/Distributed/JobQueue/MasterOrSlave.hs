@@ -67,7 +67,7 @@ runMasterOrSlave config redis hb slaveFunc masterFunc = do
             -- 'withSubscribedNotifyChannel' gets every request at a
             -- timeout.
             mb <- transitionIdleTo stateVar Slave $ do
-                $logInfoJ ("Transitioned to slave" :: String)
+                $logInfoJ ("Transitioned to slave" :: Text)
                 slaveFunc wcis
             case mb of
                 Nothing -> $logDebugJ ("Tried to transition to slave, but couldn't. Will not run slave function with connections " ++ tshow wcis)
@@ -78,7 +78,7 @@ runMasterOrSlave config redis hb slaveFunc masterFunc = do
         jobWorkerWait config redis hb (waitToBeIdle stateVar) $ \rid request -> do
             -- If you couldn't transition to master, re-enqueue.
             mbRes <- transitionIdleTo stateVar Master $ do
-                $logInfoJ ("Transitioned to master" :: String)
+                $logInfoJ ("Transitioned to master" :: Text)
                 masterFunc rid request
             case mbRes of
                 Nothing -> do

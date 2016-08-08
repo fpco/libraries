@@ -228,7 +228,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
                 return shouldAdd
             if added
                 then readMVar doneVar
-                else $logWarnJ ("Slave tried to connect while past the number of maximum slaves" :: String)
+                else $logWarnJ ("Slave tried to connect while past the number of maximum slaves" :: Text)
     let server :: m (Maybe b)
         server = do
             let waitForMaxSlaves n = atomically $ do

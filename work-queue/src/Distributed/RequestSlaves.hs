@@ -172,7 +172,7 @@ withSlaveRequestsWait redis failsafeTimeout getLiveWorkers wait f = do
                      $logWarnJ ("Ignoring " ++ tshow invalidReqs' ++ " slave requests, since the workers failed their heartbeat.")
             case NE.nonEmpty validReqs of
                 Nothing -> do
-                    $logDebugJ ("Tried to get masters to connect to but got none" :: String)
+                    $logDebugJ ("Tried to get masters to connect to but got none" :: Text)
                     return ()
                 Just reqs' -> do
                     $logDebugJ ("Got " ++ tshow reqs' ++ " masters to try to connect to")

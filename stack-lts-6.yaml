@@ -18,7 +18,7 @@ packages:
   - ./mesosync
   - location:
       git: git@github.com:fpco/monad-logger-json-extra.git
-      commit: 931a096f4d18a57430908ec65a87556e26c5d298
+      commit: dd40b3c96e67f41da984ba6d203c6c82b1932d00
     extra-dep: true
 
 image:

@@ -219,9 +219,9 @@ checkHeartbeats config r handleFailures = logNest "checkHeartbeats" $ forever $ 
             -- Note that nothing prevents two checkers from checking up on
             -- the workers at the same time. This is fine and part of the contract of the
             -- function.
-            $logDebugJ ("Enough time has passed, checking if there are any inactive workers."::String)
+            $logDebugJ ("Enough time has passed, checking if there are any inactive workers."::Text)
             performHeartbeatCheck r startTime handleFailures
-            $logDebugJ ("Setting timestamp for last heartbeat check"::String)
+            $logDebugJ ("Setting timestamp for last heartbeat check"::Text)
             setTimeAndWait
         Nothing -> setTimeAndWait
 
@@ -289,10 +289,10 @@ withCheckHeartbeats conf redis handle' cont =
 withHeartbeats
     :: MonadConnect m => HeartbeatConfig -> Redis -> (Heartbeating -> m a) -> m a
 withHeartbeats config r cont = do
-    $logInfoJ ("Starting heartbeats" :: String)
+    $logInfoJ ("Starting heartbeats" :: Text)
     wid <- uniqueWorkerId
     sendHeartbeat wid
-    $logInfoJ ("Initial heartbeat sent" :: String)
+    $logInfoJ ("Initial heartbeat sent" :: Text)
     fmap (either id absurd) $ race (cont (Heartbeating wid)) $ forever $ do
         let Seconds ivl = hcSenderIvl config
         liftIO $ threadDelay ((fromIntegral ivl `max` 1) * 1000 * 1000)
