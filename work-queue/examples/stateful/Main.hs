@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DataKinds #-}
 
-import Control.Monad.Logger
+import Control.Monad.Logger.JSON.Extra
 import Control.Monad.IO.Class
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 (pack)
@@ -23,7 +23,7 @@ type Request = ByteString
 type Response = ByteString
 
 mainClient :: IO ()
-mainClient = runStdoutLoggingT $
+mainClient = runStdoutJSONLoggingT $
   withJobClient jqc $ \jc -> do
     -- Use the current time as the request id, to avoid cached results.
     now <- liftIO getCurrentTime
@@ -34,7 +34,7 @@ mainClient = runStdoutLoggingT $
     liftIO $ print (mResponse :: Maybe Response)
 
 mainWorker :: IO ()
-mainWorker = runStdoutLoggingT $ withRedis (jqcRedisConfig jqc) $ \r -> jobWorkerWithHeartbeats jqc r workerFunc
+mainWorker = runStdoutJSONLoggingT $ withRedis (jqcRedisConfig jqc) $ \r -> jobWorkerWithHeartbeats jqc r workerFunc
 
 workerFunc :: RequestId -> Request -> (LoggingT IO) (Reenqueue Response)
 workerFunc _ request = do

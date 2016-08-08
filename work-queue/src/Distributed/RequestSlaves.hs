@@ -40,7 +40,7 @@ module Distributed.RequestSlaves
     ) where
 
 import ClassyPrelude
-import Control.Monad.Logger
+import Control.Monad.Logger.JSON.Extra
 import qualified Data.HashSet as HashSet
 import Data.List.NonEmpty (NonEmpty(..))
 import Data.Store (Store, encode)
@@ -86,17 +86,17 @@ requestSlaves r wid wci0 cont = do
     stoppedVar :: MVar Bool <- newMVar False
     let add = withMVar stoppedVar $ \stopped ->
             if stopped
-                then $logInfo ("Trying to increase the slave count when worker " ++ tshow wid ++ " has already been removed, ignoring")
+                then $logInfoJ ("Trying to increase the slave count when worker " ++ tshow wid ++ " has already been removed, ignoring")
                 else run_ r (zincrby (workerRequestsKey r) 1 encoded)
     let remove = modifyMVar_ stoppedVar $ \stopped ->
             if stopped
                 then do
-                    $logInfo ("Trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests, but it is already removed")
+                    $logInfoJ ("Trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests, but it is already removed")
                     return stopped
                 else do
                     removed <- run r (zrem (workerRequestsKey r) (encoded :| []))
                     if  | removed == 0 ->
-                            $logWarn ("Got no removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests. This can happen if the request has already been deleted due to a temporary heartbeat failure of the master.")
+                            $logWarnJ ("Got no removals when trying to remove " ++ tshow (wciwwiWorkerId wci) ++ " from worker requests. This can happen if the request has already been deleted due to a temporary heartbeat failure of the master.")
                         | removed == 1 ->
                             return ()
                         | True ->
@@ -169,17 +169,17 @@ withSlaveRequestsWait redis failsafeTimeout getLiveWorkers wait f = do
             case NE.nonEmpty invalidReqs of
                  Nothing -> return ()
                  Just invalidReqs' ->
-                     $logWarn ("Ignoring " ++ tshow invalidReqs' ++ " slave requests, since the workers failed their heartbeat.")
+                     $logWarnJ ("Ignoring " ++ tshow invalidReqs' ++ " slave requests, since the workers failed their heartbeat.")
             case NE.nonEmpty validReqs of
                 Nothing -> do
-                    $logDebug ("Tried to get masters to connect to but got none")
+                    $logDebugJ ("Tried to get masters to connect to but got none" :: Text)
                     return ()
                 Just reqs' -> do
-                    $logDebug ("Got " ++ tshow reqs' ++ " masters to try to connect to")
+                    $logDebugJ ("Got " ++ tshow reqs' ++ " masters to try to connect to")
                     mbRes :: Either SomeException () <- tryAny (f (wciwwiWci <$> reqs'))
                     case mbRes of
                         Left err -> do
-                            $logWarn ("withSlaveRequests: got error " ++ tshow err ++ ", continuing")
+                            $logWarnJ ("withSlaveRequests: got error " ++ tshow err ++ ", continuing")
                         Right () -> return ()
 
 -- | Get the list of all 'WorkerConnectInfo' of the masters that accept slave connections.
@@ -223,13 +223,13 @@ connectToAMaster cont0 wcis0 = do
     go nmSettings (toList wcis0) []
   where
     cont wci nm = do
-        $logDebug ("Managed to connect to master " ++ tshow wci)
+        $logDebugJ ("Managed to connect to master " ++ tshow wci)
         cont0 nm
 
     go :: NMSettings -> [WorkerConnectInfo] -> [SomeException] -> m ()
     go nmSettings wcis_ excs = case wcis_ of
         [] -> do
-            $logWarn ("Could not connect to any of the masters, because of exceptions " ++ tshow excs ++ ". This is probably OK, will give up as slave.")
+            $logWarnJ ("Could not connect to any of the masters, because of exceptions " ++ tshow excs ++ ". This is probably OK, will give up as slave.")
             return ()
         wci@(WorkerConnectInfo host port) : wcis -> do
             mbExc :: Either SomeException (Either SomeException ()) <-
@@ -241,7 +241,7 @@ connectToAMaster cont0 wcis0 = do
                 Right (Right ()) -> return ()
                 Left err -> if acceptableException err
                     then do
-                        $logInfo ("Could not connect to master " ++ tshow wci ++ ", because of acceptable exception " ++ tshow err ++ ", continuing")
+                        $logInfoJ ("Could not connect to master " ++ tshow wci ++ ", because of acceptable exception " ++ tshow err ++ ", continuing")
                         go nmSettings wcis (err : excs)
                     else throwIO err
 
@@ -313,14 +313,14 @@ acceptSlaveConnections r wid ss0 host mbPort contSlaveConnect cont = do
                         Nothing -> False
                 case mbExc of
                     Left err -> if acceptableException err || blockedOnMVar err
-                        then $logWarn ("acceptSlaveConnections: got IOError or NetworkMessageException, this can happen if the slave dies " ++ tshow err)
-                        else $logError ("acceptSlaveConnections: got unexpected exception" ++ tshow err)
+                        then $logWarnJ ("acceptSlaveConnections: got IOError or NetworkMessageException, this can happen if the slave dies " ++ tshow err)
+                        else $logErrorJ ("acceptSlaveConnections: got unexpected exception" ++ tshow err)
                     Right () -> return ()
     let runMaster = do
             -- This is used to get the port if we need it, but also to wait
             -- for the server to be up.
             port <- liftIO getPort
-            $logDebug ("Master starting on " ++ tshow (CN.serverHost ss, port))
+            $logDebugJ ("Master starting on " ++ tshow (CN.serverHost ss, port))
             let wci = WorkerConnectInfo host (fromMaybe port mbPort)
             requestSlaves r wid wci $ \wsc -> do
                 putMVar whenSlaveConnectsVar wsc

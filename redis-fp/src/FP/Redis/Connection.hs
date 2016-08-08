@@ -78,7 +78,7 @@ connectInfo :: ByteString -- ^ Server's hostname
 connectInfo host = ConnectInfo { connectHost = host
                                , connectPort = 6379
                                , connectLogSource = "REDIS"
-                               , connectRetryPolicy = Nothing 
+                               , connectRetryPolicy = Nothing
                                }
 
 -- | Get original connect info from connection.

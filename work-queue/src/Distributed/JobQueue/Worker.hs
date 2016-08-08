@@ -34,7 +34,7 @@ module Distributed.JobQueue.Worker
 
 import ClassyPrelude
 import Control.Concurrent (threadDelay)
-import Control.Monad.Logger
+import Control.Monad.Logger.JSON.Extra
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Proxy
 import Data.Time.Clock.POSIX (getPOSIXTime)
@@ -143,11 +143,11 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
     checkActiveKey r wid
     forM_ mbRidbs $ \ridBs -> do
         let rid = RequestId ridBs
-        $logInfo (workerMsg ("Receiving request " ++ tshow rid))
+        $logInfoJ (workerMsg ("Receiving request " ++ tshow rid))
         mbReqBs <- receiveRequest r wid rid
         case mbReqBs of
             Nothing -> do
-                $logInfo (workerMsg ("Failed getting the content of request " ++ tshow rid ++ ". This can happen if the request is expired or cancelled. The request will be dropped."))
+                $logInfoJ (workerMsg ("Failed getting the content of request " ++ tshow rid ++ ". This can happen if the request is expired or cancelled. The request will be dropped."))
                 -- In this case the best we can do is to just drop the request id we got. This is mostly to
                 -- mitigate against the case of a stale request id being reenqueued forever. This can
                 -- happen, for example, if a worker dies at the wrong moment. If the request data has expired,
@@ -155,11 +155,11 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
                 checkPoppedActiveKey wid rid =<< run r (rpop (activeKey r wid))
                 checkActiveKey r wid
             Just reqBs -> do
-                $logInfo (workerMsg ("Got contents of request " ++ tshow rid))
+                $logInfoJ (workerMsg ("Got contents of request " ++ tshow rid))
                 mbResp :: WorkerResult response <- case checkRequest (Proxy :: Proxy response) rid reqBs of
                     Left err -> return (GotResponse (Left err))
                     Right req -> do
-                        $logDebug (workerMsg ("Starting to work on request " ++ tshow ridBs))
+                        $logDebugJ (workerMsg ("Starting to work on request " ++ tshow ridBs))
                         cancelledOrResp :: Either (WorkerResult response) (Either SomeException (Reenqueue response)) <-
                             Async.race (watchForCancelOrExpiry r rid jqcCancelCheckIvl) (tryAny (f rid req))
                         case cancelledOrResp of
@@ -170,27 +170,27 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
                 let gotX msg = workerMsg ("Request " ++ tshow rid ++ " got " ++ msg)
                 case mbResp of
                     RequestGotCancelled -> do
-                        $logInfo (gotX "cancel")
+                        $logInfoJ (gotX "cancel")
                         removeActiveRequest r wid rid
                     RequestExpired -> do
-                        $logInfo (gotX "expired")
+                        $logInfoJ (gotX "expired")
                         removeActiveRequest r wid rid
                     RequestShouldBeReenqueued -> do
-                        $logInfo (gotX "reenqueue")
+                        $logInfoJ (gotX "reenqueue")
                         reenqueueRequest r wid rid
                     GotResponse res -> do
                         case res of
-                            Left err -> $logWarn (gotX ("exception: " ++ tshow err))
-                            Right _ -> $logInfo (gotX ("Request " ++ tshow rid ++ " got response"))
+                            Left err -> $logWarnJ (gotX ("exception: " ++ tshow err))
+                            Right _ -> $logInfoJ (gotX ("Request " ++ tshow rid ++ " got response"))
                         sendResponse r jqcResponseExpiry wid rid (encode res)
                         addRequestEvent r rid (RequestWorkFinished wid)
     -- Wait for notification only if we've already consumed all the available requests
     -- -- the notifications only tell us about _new_ requests, nothing about how many
     -- there might be backed up in the queue.
     unless (isJust mbRidbs) $ do
-        $logDebug (workerMsg "Waiting for request notification")
+        $logDebugJ (workerMsg "Waiting for request notification")
         waitForNewRequest
-        $logDebug (workerMsg "Got notified of an available request")
+        $logDebugJ (workerMsg "Got notified of an available request")
   where
     workerMsg msg = tshow (unWorkerId wid) ++ ": " ++ msg
 
@@ -234,7 +234,7 @@ checkPoppedActiveKey :: (MonadConnect m) => WorkerId -> RequestId -> Maybe ByteS
 checkPoppedActiveKey (WorkerId wid) (RequestId rid) mbRid = do
     case mbRid of
         Nothing -> do
-            $logWarn ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got nothing. This means that the worker has been detected as dead by a client.")
+            $logWarnJ ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got nothing. This means that the worker has been detected as dead by a client.")
         Just rid' ->
             unless (rid == rid') $
                 throwM (InternalJobQueueException ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got " ++ tshow rid'))
@@ -271,7 +271,7 @@ removeActiveRequest r wid rid = do
     if  | removed == 1 ->
             return ()
         | removed == 0 ->
-            $logWarn $
+            $logWarnJ $
                 tshow rid <>
                 " isn't a member of active queue (" <>
                 tshow ak <>
@@ -291,7 +291,7 @@ removeActiveRequest r wid rid = do
     -- erroneously reenqueued.
     removed' <- run r (lrem (requestsKey r) 0 (unRequestId rid))
     when (removed' > 0) $
-        $logWarn ("Expecting no request " <> tshow rid <> " in requestsKey, but found " ++ tshow removed ++ ". This can happen with spurious heartbeat failures.")
+        $logWarnJ ("Expecting no request " <> tshow rid <> " in requestsKey, but found " ++ tshow removed ++ ". This can happen with spurious heartbeat failures.")
 
 -- | Send a response for a particular request. Once the response is
 -- successfully sent, this also removes the request data, as it's no
@@ -325,7 +325,7 @@ watchForCancel r k ivl = loop
   where
     loop :: m (WorkerResult response)
     loop = do
-        $logDebug "Checking for cancel"
+        $logDebugJ ("Checking for cancel" :: Text)
         mres <- run r (get (cancelKey r k))
         case mres of
             Just res
@@ -333,7 +333,7 @@ watchForCancel r k ivl = loop
                 | otherwise -> liftIO $ throwIO $ InternalJobQueueException
                     "Didn't get expected value at cancelKey."
             Nothing -> do
-                $logDebug "No cancel, waiting"
+                $logDebugJ ("No cancel, waiting" :: Text)
                 liftIO $ threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl))
                 loop
 
@@ -342,11 +342,11 @@ watchForExpiry r rid ivl = loop
   where
     loop :: m (WorkerResult response)
     loop = do
-        $logDebug $ "Checking for expiry of " ++ tshow rid
+        $logDebugJ $ "Checking for expiry of " ++ tshow rid
         jobStillThere <- run r . exists . unVKey $ requestDataKey r rid
         if jobStillThere
             then do
-                $logDebug "Not expired, waiting"
+                $logDebugJ ("Not expired, waiting" :: Text)
                 liftIO (threadDelay (1000 * 1000 * fromIntegral (unSeconds ivl)))
                 loop
             else return RequestExpired

@@ -20,7 +20,7 @@ module Distributed.Stateful.Slave
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
-import           Control.Monad.Logger (logDebugNS)
+import           Control.Monad.Logger.JSON.Extra (logDebugNSJ)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Distributed.Stateful.Internal
@@ -63,7 +63,7 @@ runSlave SlaveArgs{..} = do
     go recv send mempty `catch` handler
   where
     throw = throwAndLog
-    debug msg = logDebugNS "Distributed.Stateful.Slave" msg
+    debug msg = logDebugNSJ "Distributed.Stateful.Slave" msg
     go ::
          m (SlaveReq state context input)
       -> (SlaveResp state output -> m ())

@@ -15,7 +15,7 @@ module Distributed.JobQueue.MasterOrSlave
     ) where
 
 import ClassyPrelude
-import Control.Monad.Logger
+import Control.Monad.Logger.JSON.Extra
 import Data.Streaming.NetworkMessage
 import Distributed.Heartbeat
 import Distributed.JobQueue.Internal
@@ -67,10 +67,10 @@ runMasterOrSlave config redis hb slaveFunc masterFunc = do
             -- 'withSubscribedNotifyChannel' gets every request at a
             -- timeout.
             mb <- transitionIdleTo stateVar Slave $ do
-                $logInfo "Transitioned to slave"
+                $logInfoJ ("Transitioned to slave" :: Text)
                 slaveFunc wcis
             case mb of
-                Nothing -> $logDebug ("Tried to transition to slave, but couldn't. Will not run slave function with connections " ++ tshow wcis)
+                Nothing -> $logDebugJ ("Tried to transition to slave, but couldn't. Will not run slave function with connections " ++ tshow wcis)
                 Just () -> return ()
 
     handleMasterRequests :: TVar MasterOrSlave -> m void
@@ -78,11 +78,11 @@ runMasterOrSlave config redis hb slaveFunc masterFunc = do
         jobWorkerWait config redis hb (waitToBeIdle stateVar) $ \rid request -> do
             -- If you couldn't transition to master, re-enqueue.
             mbRes <- transitionIdleTo stateVar Master $ do
-                $logInfo ("Transitioned to master")
+                $logInfoJ ("Transitioned to master" :: Text)
                 masterFunc rid request
             case mbRes of
                 Nothing -> do
-                    $logDebug ("Tried to transition to master, but couldn't. Request " ++ tshow rid ++ " will be re-enqueued.")
+                    $logDebugJ ("Tried to transition to master, but couldn't. Request " ++ tshow rid ++ " will be re-enqueued.")
                     return Reenqueue
                 Just res -> do
                     return res

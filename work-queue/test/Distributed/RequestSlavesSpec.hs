@@ -24,7 +24,7 @@ import           Data.Void (absurd, Void)
 import qualified Data.Map.Strict as Map
 import qualified Control.Concurrent.STM as STM
 import           Control.Concurrent (threadDelay)
-import           Control.Monad.Logger
+import           Control.Monad.Logger.JSON.Extra
 import qualified Data.Conduit.Network as CN
 import qualified Data.ByteString.Char8 as BSC8
 
@@ -95,15 +95,15 @@ runMasterCollectResults r wids mid numSlaves = do
     let whenSlaveConnects nm = do
             nmWrite nm (MasterSends mid)
             SlaveSends slaveN n <- nmRead nm
-            $logInfo (masterLog mid ("Got echo from " ++ tshow slaveN))
+            $logInfoJ (masterLog mid ("Got echo from " ++ tshow slaveN))
             atomically (modifyTVar resultsVar (Map.insert slaveN n))
     let master = do
-        $logInfo (masterLog mid "Waiting for all slaves to be done")
+        $logInfoJ (masterLog mid "Waiting for all slaves to be done")
         res <- atomically $ do
             results <- readTVar resultsVar
             unless (Map.size results == numSlaves) STM.retry
             return results
-        $logInfo (masterLog mid "Slaves done")
+        $logInfoJ (masterLog mid "Slaves done")
         return res
     results <- runMaster r wids whenSlaveConnects master
     unless (results == Map.fromList [(SlaveId x, mid) | x <- [1..numSlaves]]) $
@@ -114,9 +114,9 @@ runEchoSlave r wids slaveId delay = do
     let slave nm = do
             MasterSends n <- nmRead nm
             liftIO (threadDelay (delay * 1000))
-            $logInfo (slaveLog slaveId ("Echoing to " ++ tshow n))
+            $logInfoJ (slaveLog slaveId ("Echoing to " ++ tshow n))
             nmWrite nm (SlaveSends slaveId n)
-            $logInfo (slaveLog slaveId ("Slave done, quitting"))
+            $logInfoJ (slaveLog slaveId ("Slave done, quitting"))
     runSlave r wids slave
 
 mapConcurrently_ :: (MonadConnect m, Traversable t) => (a -> m ()) -> t a -> m ()

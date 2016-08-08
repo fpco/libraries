@@ -2,7 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Handler.Home where
 
-import Control.Monad.Logger
+import Control.Monad.Logger.JSON.Extra
 import Data.Either
 import Data.Time.Clock
 import           Distributed.Heartbeat (clearHeartbeatFailures)
@@ -171,7 +171,7 @@ getRequestsR = do
 withRedis' :: (MonadCatch m, MonadCommand m, MonadMask m)
            => Config -> (Redis -> LoggingT m a) -> m a
 withRedis' config =
-    handleMismatchedSchema . runStdoutLoggingT . withRedis rc
+    handleMismatchedSchema . runStdoutJSONLoggingT . withRedis rc
   where
     rc = (defaultRedisConfig (redisPrefix config))
         { rcHost = redisHost config

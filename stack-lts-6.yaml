@@ -15,6 +15,11 @@ packages:
   - ./work-queue
   - ./hpc-manager
   - ./th-relative-paths
+  - ./mesosync
+  - location:
+      git: git@github.com:fpco/monad-logger-json-extra.git
+      commit: dd40b3c96e67f41da984ba6d203c6c82b1932d00
+    extra-dep: true
 
 image:
   container:

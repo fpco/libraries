@@ -12,7 +12,7 @@ module Application
     , handler
     ) where
 
-import Control.Monad.Logger                 (liftLoc)
+import Control.Monad.Logger.JSON.Extra      (liftLoc)
 import Import
 import Language.Haskell.TH.Syntax           (qLocation)
 import Network.Wai.Handler.Warp             (Settings, defaultSettings,

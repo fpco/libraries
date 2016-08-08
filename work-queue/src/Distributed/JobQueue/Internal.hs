@@ -7,7 +7,7 @@
 module Distributed.JobQueue.Internal where
 
 import ClassyPrelude
-import Control.Monad.Logger (logWarn, logInfo)
+import Control.Monad.Logger.JSON.Extra (logWarnJ, logInfoJ)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import Data.List.NonEmpty hiding (unwords)
@@ -99,7 +99,7 @@ setRedisSchemaVersion :: (MonadConnect m) => Redis -> m ()
 setRedisSchemaVersion r = do
     mv <- run r $ get (redisSchemaKey r)
     case mv of
-        Just v | v /= redisSchemaVersion -> $logWarn $
+        Just v | v /= redisSchemaVersion -> $logWarnJ $
             "Redis schema version changed from " <> tshow v <> " to " <> tshow redisSchemaVersion <>
             ".  This is only expected once after updating work-queue version."
         _ -> return ()
@@ -110,7 +110,7 @@ checkRedisSchemaVersion :: MonadConnect m => Redis -> m ()
 checkRedisSchemaVersion r = do
     mVersion <- run r $ get (redisSchemaKey r)
     case mVersion of
-        Nothing -> $logInfo "Redis schema not set.  This probably just means that no client is running yet."
+        Nothing -> $logInfoJ ("Redis schema not set.  This probably just means that no client is running yet."::Text)
         Just v -> when (v /= redisSchemaVersion) $ liftIO $ throwIO MismatchedRedisSchemaVersion
             { actualRedisSchemaVersion = v
             , expectedRedisSchemaVersion = redisSchemaVersion
@@ -161,7 +161,7 @@ addRequestEvent :: (MonadConnect m) => Redis -> RequestId -> RequestEvent -> m (
 addRequestEvent r k x = do
     now <- liftIO getCurrentTime
     run_ r $ rpush (requestEventsKey r k) (encode (now, x) :| [])
-    $logInfo $ decodeUtf8 $ toStrict $ Aeson.encode $ EventLogMessage
+    $logInfoJ $ EventLogMessage
         { logTime = show now
         , logRequest = k
         , logEvent = x
