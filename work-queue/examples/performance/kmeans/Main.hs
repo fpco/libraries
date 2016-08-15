@@ -16,7 +16,6 @@
 import           ClassyPrelude
 import           Control.DeepSeq
 import           Control.Monad.Random hiding (fromList)
-import           Criterion.Measurement
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Data.List (unfoldr)
@@ -221,7 +220,7 @@ masterArgs opts = MasterArgs
     , maUpdate = updateFn opts
     }
 
-generateRequest :: Options -> IO Request
+generateRequest :: MonadConnect m => Options -> m Request
 generateRequest Options{..} = do
     let r = mkStdGen 42
         randPoint range = Point <$> (UV.generateM optDim $ (const $ getRandomR range))
@@ -259,10 +258,10 @@ jqc = defaultJobQueueConfig "perf:kmeans:"
 
 main :: IO ()
 main = do
-    initializeTime
     opts <- OA.execParser (OA.info (OA.helper <*> options)
                           (OA.fullDesc
                           `mappend` OA.progDesc "Run a distributed kmeans, to benchmark the work-queue library"))
-    if optNoNetworkMessage opts
+    logErrors $
+        if optNoNetworkMessage opts
         then runWithoutNM (masterArgs opts) (optNSlaves opts) distributeKMeans (generateRequest opts)
         else runWithNM jqc (optSpawnWorker opts) (masterArgs opts) (optNSlaves opts) distributeKMeans (generateRequest opts)

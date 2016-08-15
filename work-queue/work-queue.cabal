@@ -229,6 +229,7 @@ executable wq-perf-kmeans
 
 executable wq-perf-pfilter
   main-is:             pfilter/Main.hs
+  other-modules:       PerformanceUtils
   hs-source-dirs:      examples/performance
   default-language:    Haskell2010
   build-depends:       base
@@ -237,6 +238,7 @@ executable wq-perf-pfilter
                      , conduit-extra
                      , criterion
                      , deepseq
+                     , erf
                      , extra
                      , mesosync
                      , monad-logger
@@ -250,3 +252,4 @@ executable wq-perf-pfilter
                      , unordered-containers
                      , vector
                      , work-queue
+  ghc-options:         -Wall -threaded -rtsopts -funbox-strict-fields
