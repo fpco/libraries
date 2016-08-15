@@ -10,6 +10,7 @@ extra-deps:
   - th-reify-many-0.1.6
   - th-utilities-0.1.1.0
 packages:
+  - ./docker-archive
   - ./redis-fp
   - ./thread-file-logger
   - ./work-queue
