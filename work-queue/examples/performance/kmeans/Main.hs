@@ -14,12 +14,9 @@
 {-# LANGUAGE TypeFamilies #-}
 
 import           ClassyPrelude
-import           Control.Concurrent.Mesosync.Lifted.Safe
 import           Control.DeepSeq
-import           Control.Monad.Logger
 import           Control.Monad.Random hiding (fromList)
 import           Criterion.Measurement
-import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Data.List (unfoldr)
@@ -31,13 +28,12 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as MVector
 import qualified Data.Vector.Unboxed as UV
 import           Distributed.JobQueue.Client
-import           Distributed.JobQueue.Worker
 import           Distributed.Stateful
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
 import qualified Options.Applicative as OA
-import           System.Environment (getExecutablePath)
-import           System.Process
+import           PerformanceUtils
+
 
 -- * Command line options
 
@@ -257,63 +253,9 @@ generateRequest Options{..} = do
                          , rMaxIterations = optNIterations
                          }
 
-logErrors :: LoggingT IO a -> IO a
-logErrors = runStdoutLoggingT . filterLogger (\_ ll -> ll >= LevelError)
 
 jqc :: JobQueueConfig
 jqc = defaultJobQueueConfig "perf:kmeans:"
-
-
-performRequest :: Options -> IO ()
-performRequest opts = logErrors $ withJobClient jqc $ \jc -> do
-    tzero <- liftIO getTime
-    rid <- uniqueRequestId
-    req <- liftIO $ generateRequest opts
-    t0 <- liftIO getTime
-    submitRequest jc rid req
-    mRes <- waitForResponse_ jc rid
-    liftIO . putStrLn $ unwords [ "result:", pack $ show (mRes :: Maybe Response)]
-    t1 <- liftIO getTime
-    liftIO . putStrLn $ "Generating the request took" ++ pack (show (t0 - tzero)) ++ " seconds."
-    liftIO . putStrLn $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
-
--- * functionality to spawn workers in separate processed, similar as in the dpf.
-
-spawnAndWaitForWorker :: IO ProcessHandle
-spawnAndWaitForWorker = do
-    program <- getExecutablePath
-    args <- getArgs
-    runProcess program ("--spawn-worker":map unpack args) Nothing Nothing Nothing Nothing Nothing
-
-
-runWithNM :: Options -> IO ()
-runWithNM opts =
-    if optSpawnWorker opts
-       then do putStrLn "spawning worker"
-               let ss = CN.serverSettings 3333 "*"
-               logErrors $ runJobQueueStatefulWorker
-                   jqc
-                   ss
-                   "127.0.0.1"
-                   Nothing
-                   (masterArgs opts)
-                   (NMStatefulMasterArgs (Just $ optNSlaves opts) (Just $ optNSlaves opts) (1000 * 1000))
-                   (\mh _rid req -> DontReenqueue <$> distributeKMeans req mh)
-        else
-            bracket
-                (mapConcurrently (const spawnAndWaitForWorker) [0..(optNSlaves opts :: Int)])
-                (mapM terminateProcess)
-                (\_ -> performRequest opts)
-
-runWithoutNM :: Options -> IO ()
-runWithoutNM opts = do
-    req <- liftIO $ generateRequest opts
-    t0 <- getTime
-    res <- logErrors $
-        runSimplePureStateful (masterArgs opts) (optNSlaves opts) (distributeKMeans req)
-    print res
-    t1 <- getTime
-    putStrLn $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
 
 main :: IO ()
 main = do
@@ -322,5 +264,5 @@ main = do
                           (OA.fullDesc
                           `mappend` OA.progDesc "Run a distributed kmeans, to benchmark the work-queue library"))
     if optNoNetworkMessage opts
-        then runWithoutNM opts
-        else runWithNM opts
+        then runWithoutNM (masterArgs opts) (optNSlaves opts) distributeKMeans (generateRequest opts)
+        else runWithNM jqc (optSpawnWorker opts) (masterArgs opts) (optNSlaves opts) distributeKMeans (generateRequest opts)
