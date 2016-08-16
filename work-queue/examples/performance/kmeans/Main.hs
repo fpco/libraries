@@ -261,7 +261,14 @@ main = do
     opts <- OA.execParser (OA.info (OA.helper <*> options)
                           (OA.fullDesc
                           `mappend` OA.progDesc "Run a distributed kmeans, to benchmark the work-queue library"))
+    let reqParas = ( "kmeans-bench.csv"
+                   , [ ("NetworkMessage", pack . show . not . optNoNetworkMessage $ opts)
+                     , ("clusters", pack . show . optNClusters $ opts)
+                     , ("points", pack . show . optNPoints $ opts)
+                     , ("granularity", pack . show . optGranularity $ opts)
+                     , ("iterations", pack . show . optNIterations $ opts)
+                     ])
     logErrors $
         if optNoNetworkMessage opts
-        then runWithoutNM (masterArgs opts) (optNSlaves opts) distributeKMeans (generateRequest opts)
-        else runWithNM jqc (optSpawnWorker opts) (masterArgs opts) (optNSlaves opts) distributeKMeans (generateRequest opts)
+        then runWithoutNM reqParas (masterArgs opts) (optNSlaves opts) distributeKMeans (generateRequest opts)
+        else runWithNM reqParas jqc (optSpawnWorker opts) (masterArgs opts) (optNSlaves opts) distributeKMeans (generateRequest opts)

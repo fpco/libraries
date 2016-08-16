@@ -212,6 +212,7 @@ executable wq-perf-kmeans
                      , conduit-extra
                      , criterion
                      , deepseq
+                     , directory
                      , extra
                      , mesosync
                      , monad-logger
@@ -238,6 +239,7 @@ executable wq-perf-pfilter
                      , conduit-extra
                      , criterion
                      , deepseq
+                     , directory
                      , erf
                      , extra
                      , mesosync

@@ -360,7 +360,17 @@ main = do
             , maUpdate = dpfSlave cfg
             }
     randomsrc <- newIORef (pureMT 42)
+    let reqParas = ( "pfilter-bench.csv"
+                   , [ ("NetworkMessage", pack . show . not . optNoNetworkMessage $ opts)
+                     , ("stepsize", pack . show . optStepsize $ opts)
+                     , ("deltat", pack . show . optDeltaT $ opts)
+                     , ("steps", pack . show . optSteps $ opts)
+                     , ("particles", pack . show . optNParticles $ opts)
+                     , ("omega2", pack . show . optOmega2 $ opts)
+                     , ("omega2_interval", pack . show . optOmega2Range $ opts)
+                     , ("phi0", pack . show . optPhi0 $ opts)
+                     ])
     logErrors $
         if optNoNetworkMessage opts
-        then runWithoutNM masterArgs (optNSlaves opts) (dpfMaster cfg randomsrc) (generateRequest opts randomsrc)
-        else (runWithNM jqc (optSpawnWorker opts) masterArgs (optNSlaves opts) (dpfMaster cfg randomsrc) (generateRequest opts randomsrc))
+        then runWithoutNM reqParas masterArgs (optNSlaves opts) (dpfMaster cfg randomsrc) (generateRequest opts randomsrc)
+        else (runWithNM reqParas jqc (optSpawnWorker opts) masterArgs (optNSlaves opts) (dpfMaster cfg randomsrc) (generateRequest opts randomsrc))

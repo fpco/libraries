@@ -29,6 +29,8 @@ import           Distributed.Stateful.Master
 import           Control.DeepSeq
 import           Control.Concurrent.Mesosync.Lifted.Safe
 import qualified Data.Conduit.Network as CN
+import System.Directory
+import System.IO (withFile, IOMode (..))
 
 spawnAndWaitForWorker :: MonadIO m => m ProcessHandle
 spawnAndWaitForWorker = liftIO $ do
@@ -44,8 +46,11 @@ performRequest :: forall m response request.
                  , Store request, Store response
                  , HasTypeHash request, HasTypeHash response
                  , Show response)
-                 => m request -> JobClient response -> m ()
-performRequest generateRequest jc = do
+                 => (FilePath, [(Text, Text)], Int)
+                 -> m request
+                 -> JobClient response
+                 -> m ()
+performRequest (fp, reqParas, nSlaves) generateRequest jc = do
     liftIO initializeTime
     tzero <- liftIO getTime
     rid <- uniqueRequestId
@@ -57,6 +62,9 @@ performRequest generateRequest jc = do
     t1 <- liftIO getTime
     liftIO . putStrLn $ "Generating the request took" ++ pack (show (t0 - tzero)) ++ " seconds."
     liftIO . putStrLn $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
+    liftIO . writeToCsv fp $ reqParas ++ [ ("slaves", pack $ show nSlaves)
+                                         , ("time", pack $ show (t1 - t0))
+                                         ]
 
 
 
@@ -66,7 +74,8 @@ runWithNM :: forall m context input output state request response.
     , Store state, Store context, Store input, Store output, Store request, Store response
     , HasTypeHash state, HasTypeHash context, HasTypeHash input, HasTypeHash output, HasTypeHash request, HasTypeHash response
     , Show response)
-    => JobQueueConfig
+    => (FilePath, [(Text, Text)])
+    -> JobQueueConfig
     -> Bool
     -> MasterArgs m state context input output
     -> Int
@@ -75,7 +84,7 @@ runWithNM :: forall m context input output state request response.
       -> m response)
     -> m request
     -> m ()
-runWithNM jqc spawnWorker masterArgs nSlaves workerFunc generateRequest =
+runWithNM (fp, reqParas) jqc spawnWorker masterArgs nSlaves workerFunc generateRequest =
     if spawnWorker
        then do putStrLn "spawning worker"
                let ss = CN.serverSettings 3333 "*"
@@ -91,20 +100,21 @@ runWithNM jqc spawnWorker masterArgs nSlaves workerFunc generateRequest =
             bracket
                 (mapConcurrently (const spawnAndWaitForWorker) [0..(nSlaves :: Int)])
                 (mapM (liftIO . terminateProcess))
-                (\_ -> withJobClient jqc $ \(jc :: JobClient response) -> performRequest generateRequest jc)
+                (\_ -> withJobClient jqc $ \(jc :: JobClient response) -> performRequest (fp, reqParas, nSlaves) generateRequest jc)
 
 runWithoutNM ::
   ( MonadConnect m
   , Show response, NFData state
-  , NFData output, Store state) =>
-  MasterArgs m state context input output
+  , NFData output, Store state)
+  => (FilePath, [(Text, Text)])
+  -> MasterArgs m state context input output
   -> Int
   -> (request
       -> MasterHandle m state context input output
       -> m response)
   -> m request
   -> m ()
-runWithoutNM masterArgs nSlaves masterFunc generateRequest = do
+runWithoutNM (fp, reqParas) masterArgs nSlaves masterFunc generateRequest = do
     req <- generateRequest
     liftIO initializeTime
     t0 <- liftIO getTime
@@ -112,3 +122,15 @@ runWithoutNM masterArgs nSlaves masterFunc generateRequest = do
     print res
     t1 <- liftIO getTime
     putStrLn $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
+    liftIO . writeToCsv fp $ reqParas ++ [ ("slaves", pack $ show nSlaves)
+                                         , ("time", pack $ show (t1 - t0))
+                                         ]
+
+writeToCsv :: FilePath -> [(Text, Text)] -> IO ()
+writeToCsv fp vals = do
+    gitHash <- readCreateProcess (shell "git rev-parse HEAD") ""
+    let vals' = ("commit", take 8 $ pack gitHash):vals
+    exists <- doesFileExist fp
+    withFile fp (if exists then AppendMode else WriteMode) $ \h -> do
+        unless exists (hPutStrLn h $ intercalate "," $ map fst vals')
+        hPutStrLn h $ intercalate "," $ map snd vals'
