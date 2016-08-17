@@ -179,16 +179,20 @@ executable hpc-example-stateful
 -- problem.
 executable wq-perf-unmotivated
   main-is:             unmotivated/Main.hs
+  other-modules:       PerformanceUtils
   hs-source-dirs:      examples/performance
   default-language:    Haskell2010
   build-depends:       base
                      , MonadRandom
                      , bytestring
+                     , classy-prelude
                      , conduit-extra
                      , criterion
                      , deepseq
+                     , directory
                      , mesosync
                      , monad-logger
+                     , optparse-applicative
                      , process
                      , redis-fp
                      , store
