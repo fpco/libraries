@@ -19,6 +19,7 @@ module Main where
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import qualified Data.HashMap.Strict as HMS
+import qualified Data.Map.Strict as M
 import           Data.Number.Erf
 import           Data.Random
 import           Data.Random.Source.PureMT
@@ -169,18 +170,18 @@ dpfMaster PFConfig{..} s PFRequest{..} mh = do
           return $ PFResponse parameterEstimate
       nParticles = V.length rparticles
 
-weightedVectorRVar :: V.Vector (Double, a) -> RVar a
+weightedVectorRVar :: Show a => V.Vector (Double, a) -> RVar a
 weightedVectorRVar vec = do
     let drawVector = V.postscanl'
             (\(summedWeight, _ignore) (w, sid) -> (summedWeight + w, sid))
             (0,error "this should get dropped in the postscan")
             vec
         normalisation = fst . V.last $ drawVector
+        drawMap = M.fromAscList . V.toList $ drawVector
     r <- uniform 0 normalisation :: RVar Double
-    case V.dropWhile ((<r) . fst) drawVector of
-        v | V.null v -> error "Could not draw"
-        v -> return . snd . V.head $ v
-
+    case M.lookupGT r drawMap of
+        Nothing -> error $ unwords ["Could not draw", show r, "from", show drawVector]
+        Just (_, x) -> return x
 
 dpfSlave :: forall m parameter state summary input. MonadConnect m
             => PFConfig parameter state summary input
