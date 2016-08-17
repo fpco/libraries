@@ -233,7 +233,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
         server = do
             let waitForMaxSlaves n = atomically $ do
                     connected <- readTVar slavesConnectedVar
-                    unless (connected == n) $ traceM "not enough workers, retry" >> STM.retry
+                    unless (connected == n) STM.retry
             let doneWaitingForSlaves = case nmsmaMaximumSlaves of
                     Nothing -> liftIO (forever (threadDelay maxBound))
                     Just n -> waitForMaxSlaves n

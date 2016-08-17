@@ -18,7 +18,6 @@ module Distributed.Stateful.Slave
   , StatefulConn(..)
   ) where
 
-import           Criterion.Measurement
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger.JSON.Extra (logDebugNSJ)
@@ -45,24 +44,13 @@ data SlaveException
 
 instance Exception SlaveException
 
-timed (name :: Text) action = do
-    t0 <- liftIO getTime
-    res <- action
-    t1 <- liftIO getTime
-    liftIO . putStrLn $ unwords [name, tshow (t1 - t0)]
-    return res
-{-# INLINE timed #-}
-
-untimed (name :: Text) action = action
-{-# INLINE untimed #-}
-
 -- | Runs a stateful slave. Returns when the master sends the "quit" command.
 {-# INLINE runSlave #-}
 runSlave :: forall state context input output m.
      (MonadConnect m, NFData state, NFData output, S.Store state)
   => SlaveArgs m state context input output
   -> m ()
-runSlave SlaveArgs{..} = timed "runSlave" $ do
+runSlave SlaveArgs{..} = do
     let recv = scRead saConn
     let send = scWrite saConn
         -- We're only catching 'SlaveException's here, since they
@@ -82,7 +70,7 @@ runSlave SlaveArgs{..} = timed "runSlave" $ do
       -> (HMS.HashMap StateId state)
       -> m ()
     go recv send states = do
-      req <- untimed "runSlave.go.recv" $ recv
+      req <- recv
       debug (displayReq req)
       -- WARNING: All exceptions thrown here should be of type
       -- 'SlaveException', as only those will be catched.
@@ -106,7 +94,7 @@ runSlave SlaveArgs{..} = timed "runSlave" $ do
             unless (null missing) $ throw (MissingStatesToRemove missing)
             let states' = foldl' (flip HMS.delete) states stateIdsToDelete
             return (SRespRemoveStates requesting (S.encode <$> HMS.fromList toSend), Just states')
-          SReqUpdate context inputs -> untimed "runSlave.go.eres.SReqUpdate" $ do
+          SReqUpdate context inputs -> do
             (states', outputs) <- statefulUpdate saUpdate states context inputs
             return (SRespUpdate outputs, Just states')
           SReqQuit -> do

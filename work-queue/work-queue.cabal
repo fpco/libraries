@@ -36,7 +36,6 @@ library
   other-modules:       Data.SimpleSupply
   build-depends:       base
                      , stm-chans
-                     , criterion
                      , lens
                      , aeson
                      , base64-bytestring

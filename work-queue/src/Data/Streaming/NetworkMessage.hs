@@ -119,11 +119,11 @@ data NMAppData iSend youSend = NMAppData
 
 -- | Send a message to the other side of the connection.
 nmWrite :: (MonadIO m, Store iSend) => NMAppData iSend youSend -> iSend -> m ()
-nmWrite nm iSend = {-# SCC "nmWrite" #-} liftIO (appWrite (nmAppData nm) (encode iSend))
+nmWrite nm iSend = liftIO (appWrite (nmAppData nm) (encode iSend))
 
 -- | Read a message from the other side of the connection.
 nmRead  :: (MonadConnect m, Store youSend) => NMAppData iSend youSend -> m youSend
-nmRead NMAppData{..} = {-# SCC "nmRead" #-} liftIO (appGet "nmRead" nmByteBuffer nmAppData)
+nmRead NMAppData{..} = liftIO (appGet "nmRead" nmByteBuffer nmAppData)
 
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and
@@ -134,7 +134,7 @@ appGet :: (Store a)
        -> AppData
        -> IO a  -- ^ result
 appGet loc bb ad =
-    (({-# SCC "peekMessage" #-} S.peekMessage bb) >>= loop)
+    ((S.peekMessage bb) >>= loop)
     `catch` (\ ex@(PeekException _ _) -> throwIO . NMDecodeFailure . ((loc ++ " ") ++) . show $ ex)
   where
     loop (S.NeedMoreInput cont) = do
@@ -171,7 +171,7 @@ runNMApp :: forall iSend youSend m a.
     -> NMApp iSend youSend m a
     -> AppData
     -> m a
-runNMApp (NMSettings exeHash) nmApp ad = BB.with (Just $ 64 * 1024) $ \buffer -> do
+runNMApp (NMSettings exeHash) nmApp ad = BB.with Nothing $ \buffer -> do
     -- Handshake
     let myHS = mkHandshake nmApp exeHash
     liftIO (appWrite ad (encode myHS))
@@ -216,4 +216,4 @@ getPortAfterBind ss = do
 
 -- | Utility for encoding a value after wrapping it in a 'S.Message'.
 encode :: Store a => a -> ByteString
-encode = {-# SCC "encode" #-} S.encodeMessage . S.Message
+encode = S.encodeMessage . S.Message

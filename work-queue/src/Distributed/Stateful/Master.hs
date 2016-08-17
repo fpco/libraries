@@ -43,8 +43,6 @@ module Distributed.Stateful.Master
     , StatefulConn(..)
     ) where
 
-import           Control.Exception.Lifted (evaluate)
-import           Criterion.Measurement
 import           ClassyPrelude
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
@@ -57,7 +55,7 @@ import           Distributed.Stateful.Internal
 import           Text.Printf (printf)
 import           FP.Redis (MonadConnect)
 import           Control.Lens (makeLenses, set, at, _Just, over)
-import           Control.DeepSeq (NFData, force)
+import           Control.DeepSeq (NFData)
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -324,18 +322,6 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
             set (at requestingSlaveId . _Just . ssWaitingForStates) True uss
       return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
 
-
-timed (name :: Text) action = do
-    t0 <- liftIO getTime
-    res <- action
-    t1 <- liftIO getTime
-    liftIO . putStrLn $ unwords [name, tshow (t1 - t0)]
-    return res
-{-# INLINE timed #-}
-
-untimed (name :: Text) action = action
-{-# INLINE untimed #-}
-
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
      (MonadConnect m, NFData input, NFData output)
@@ -348,7 +334,6 @@ updateSlaves :: forall state context input output m.
   -- ^ Inputs to the computation
   -> m [(SlaveId, HMS.HashMap StateId (HMS.HashMap StateId output))]
 updateSlaves maxBatchSize slaves context inputMap = do
-  t0 <- liftIO getTime
   outgoingChans :: HMS.HashMap SlaveId (SlaveConn m state context input output, TChan (Maybe (UpdateSlaveReq input))) <-
     forM slaves $ \slave -> do
       chan <- liftIO newTChanIO
@@ -359,16 +344,11 @@ updateSlaves maxBatchSize slaves context inputMap = do
         , _ssWaitingForStates = False
         }
   statusVar <- newMVar (slaveStatus0 <$> slaves)
-  t1 <- liftIO getTime
-  res <- fmap snd $ Async.concurrently
+  fmap snd $ Async.concurrently
     (Async.mapConcurrently (uncurry sendLoop) (HMS.toList outgoingChans))
     (finally
-     (timed "slaveLoop" $ Async.mapConcurrently (slaveLoop (snd <$> outgoingChans) statusVar) (HMS.toList slaves))
-     (untimed "finally" $ forM_ (snd <$> outgoingChans) (\chan -> atomically (writeTChan chan Nothing))))
-  t2 <- liftIO getTime
-  liftIO . putStrLn $ unlines [ "updateSlaves.init:  " ++ tshow (t1 - t0)
-                              , "updateSlaves.async: " ++ tshow (t2 - t1)]
-  return res
+      (Async.mapConcurrently (slaveLoop (snd <$> outgoingChans) statusVar) (HMS.toList slaves))
+      (forM_ (snd <$> outgoingChans) (\chan -> atomically (writeTChan chan Nothing))))
   where
     sendLoop ::
          SlaveId
@@ -436,7 +416,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
 -- inconsistent state, and the whole computation should be aborted.
 {-# INLINE update #-}
 update :: forall state context input output m.
-     (MonadConnect m, NFData input, NFData output, NFData state)
+     (MonadConnect m, NFData input, NFData output)
   => MasterHandle m state context input output
   -> context
   -> HMS.HashMap StateId [input]
@@ -473,12 +453,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
               liftM (slaveId,) $ readExpect "update (1)" (slaveConnection (slaves HMS.! slaveId)) $ \case
                 SRespUpdate outputs -> Just outputs
                 _ -> Nothing
-          Just maxBatchSize -> do
-              t0 <- liftIO getTime
-              res <- updateSlaves maxBatchSize slaves context (HMS.fromList <$> inputMap)
-              t1 <- liftIO getTime
-              liftIO . putStrLn $ "updateSlaves: " ++ tshow (t1 - t0)
-              return res
+          Just maxBatchSize -> updateSlaves maxBatchSize slaves context (HMS.fromList <$> inputMap)
       let mh' = mh
             { mhSlaves = Slaves $
                 integrateNewStates slaves (second (fmap (const ()) . mconcat . HMS.elems) <$> outputs)
@@ -508,9 +483,9 @@ sendStates ::
 sendStates slavesWithStates = do
   -- Send states
   forM_ slavesWithStates $ \(conn, states) -> do
-    timed "sendStates.scWrite" $ scWrite conn (SReqResetState states)
+    scWrite conn (SReqResetState states)
   forM_ slavesWithStates $ \(conn, _) -> do
-    timed "sendStates.readExpect" $ readExpect "sendStates" conn $ \case
+    readExpect "sendStates" conn $ \case
       SRespResetState -> Just ()
       _ -> Nothing
 
@@ -545,8 +520,7 @@ resetStates (MasterHandle mhv) states0 = modifyMVar mhv $ \mh -> do
       let slaveStatesId :: [(SlaveId, HMS.HashMap StateId ())]
           slaveStatesId = map (second (HMS.fromList . map (second (const ())))) (HMS.toList slavesStates)
       let slaves' = integrateNewStates slaves slaveStatesId
-      
-      timed "sendStates" $ sendStates
+      sendStates
         [ (slaveConnection slave, HMS.fromList (slavesStates HMS.! slaveId))
         | (slaveId, slave) <- HMS.toList slaves
         ]
