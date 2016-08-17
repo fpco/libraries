@@ -208,6 +208,7 @@ data Options = Options
                , optOmega2 :: Double
                , optOmega2Range :: Double -- ^ Size of the interval in which we distribute the particles
                , optPhi0 :: Double
+               , optResampleThreshold :: Double
                , optNParticles :: Int
                , optNSlaves :: Int
                , optSpawnWorker :: Bool
@@ -241,6 +242,10 @@ options = Options
                             `mappend` OA.short 'p'
                             `mappend` OA.help "Initial condition")
          <|> pure (pi/2))
+    <*> (OA.option OA.auto (OA.long "resample-threshold"
+                            `mappend` OA.short 't'
+                            `mappend` OA.help "When the effective number of particles divided my the number of particles drops below this ratio, we perform resampling.  Should be in the interval [0,1], where 0 means no resampling, and 1 means resampling during every update.")
+         <|> pure 0.5)
     <*> (OA.option OA.auto (OA.long "nparticles"
                             `mappend` OA.short 'N'
                             `mappend` OA.help "Number of particles")
@@ -309,7 +314,7 @@ pfConfig opts@Options{..} =
             noise <- normalT 0 0.01 -- this is rather ad hoc
             return MyParameter { omega2 = omega2 + noise }
         pfcWeigh phi phi' = 1 - abs (erf (180/pi*(phi-phi')))
-        pfcEffectiveParticleThreshold = 0.5
+        pfcEffectiveParticleThreshold = optResampleThreshold
         pfcSampleParameter xs = let (normalisation, omega') = HMS.foldl'
                                         (\(weightSum, omegaSum) (weight, MyParameter{..}) -> (weightSum + weight, omegaSum + weight * omega2)) (0,0) xs
                                 in MyParameter { omega2 = omega' / normalisation }
@@ -369,6 +374,7 @@ main = do
                      , ("omega2", pack . show . optOmega2 $ opts)
                      , ("omega2_interval", pack . show . optOmega2Range $ opts)
                      , ("phi0", pack . show . optPhi0 $ opts)
+                     , ("resample_threshold", pack . show . optResampleThreshold $ opts)
                      ])
     logErrors $
         if optNoNetworkMessage opts
