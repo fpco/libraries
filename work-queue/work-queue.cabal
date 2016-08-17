@@ -237,6 +237,7 @@ executable wq-perf-pfilter
                      , MonadRandom
                      , classy-prelude
                      , conduit-extra
+                     , containers
                      , criterion
                      , deepseq
                      , directory

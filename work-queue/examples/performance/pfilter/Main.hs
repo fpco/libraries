@@ -21,7 +21,6 @@ import           Control.DeepSeq (NFData)
 import qualified Data.HashMap.Strict as HMS
 import           Data.Number.Erf
 import           Data.Random
-import           Data.Random.RVar
 import           Data.Random.Source.PureMT
 import           Data.Store
 import           Data.Store.TypeHash (mkManyHasTypeHash)
@@ -272,9 +271,9 @@ integrate :: (Double -> UV.Vector Double -> UV.Vector Double)
           -- ^ starting @ys@
           -> UV.Vector Double
 integrate f stepsize deltaX x ys = go deltaX
-  where go deltaX | deltaX < stepsize = step deltaX
-        go deltaX = let !ys' = step stepsize
-                    in integrate f stepsize (deltaX - stepsize) (x + stepsize) ys'
+  where go remainingInterval | remainingInterval < stepsize = step remainingInterval
+        go remainingInterval = let !ys' = step stepsize
+                    in integrate f stepsize (remainingInterval - stepsize) (x + stepsize) ys'
         step h =
             let k1 = (*(h/6)) `UV.map` f x ys
                 k2 = (*(h/3)) `UV.map` f (x + (h/2)) (UV.zipWith (\y k -> y + k/2) ys k1)
@@ -310,9 +309,9 @@ pfConfig opts@Options{..} =
             return MyParameter { omega2 = omega2 + noise }
         pfcWeigh phi phi' = 1 - abs (erf (180/pi*(phi-phi')))
         pfcEffectiveParticleThreshold = 0.5
-        pfcSampleParameter xs = let (weightSum, omegaSum) = HMS.foldl'
+        pfcSampleParameter xs = let (normalisation, omega') = HMS.foldl'
                                         (\(weightSum, omegaSum) (weight, MyParameter{..}) -> (weightSum + weight, omegaSum + weight * omega2)) (0,0) xs
-                                in MyParameter { omega2 = omegaSum / weightSum }
+                                in MyParameter { omega2 = omega' / normalisation }
     in PFConfig{..}
 
 mySystem :: Options -> EvolvingSystem MyInput MySummary
@@ -326,8 +325,8 @@ mySystem Options{..} =
 
 generateRequest :: (MonadConnect m, RandomSource m s) => Options -> s -> m (PFRequest MyParameter MyState MySummary MyInput)
 generateRequest Options{..} s = do
-    let rvar = uniform (min 0 (optOmega2 - (optOmega2Range/2))) (optOmega2 + (optOmega2Range/2))
-    parameters <- V.replicateM optNParticles (sampleFrom s rvar)
+    let dist = uniform (min 0 (optOmega2 - (optOmega2Range/2))) (optOmega2 + (optOmega2Range/2))
+    parameters <- V.replicateM optNParticles (sampleFrom s dist)
     let trueParticle = Particle { pparameter = MyParameter optOmega2
                             , pstate = MyState 0 (UV.fromList [optPhi0, 0])
                             , pestimate = optPhi0
