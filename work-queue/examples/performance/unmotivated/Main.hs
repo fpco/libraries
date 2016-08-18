@@ -15,11 +15,8 @@ import           ClassyPrelude
 import           Control.DeepSeq
 import           Control.Exception (evaluate)
 import           Control.Monad.Random
-import           Criterion.Measurement
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
-import           Data.Store (Store)
-import           Data.Store.Streaming
 import           Data.Store.TypeHash (mkManyHasTypeHash)
 import qualified Data.Vector as V
 import           Distributed.JobQueue.Client
@@ -28,7 +25,6 @@ import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
 import qualified Options.Applicative as OA
 import           PerformanceUtils
-import qualified System.IO.ByteBuffer as BB
 
 type Request = [State]
 type Response = Double
@@ -84,19 +80,11 @@ myInputs = [V.enumFromN 1 20]
 
 myAction :: MonadConnect m => Request -> MasterHandle m State Context Input Output -> m Response
 myAction req mh = do
-    t00 <- liftIO getTime
     _ <- resetStates mh req
-    t01 <- liftIO getTime
-    liftIO . putStrLn $ unwords ["resetStates:", pack $ show (t01 - t00)]
     finalStates <- mapM (\_ -> do
-                                t0 <- liftIO getTime
                                 stateIds <- getStateIds mh
-                                t1 <- liftIO getTime
                                 let inputs = HMS.fromList $ zip (HS.toList stateIds) (repeat myInputs)
                                 newStates <- update mh 5 inputs
-                                t2 <- liftIO getTime
-                                liftIO . putStrLn $ unlines [ "getStateIds: ", pack $ show (t1 - t0)
-                                                            , "update   : ", pack $ show (t2 - t1)]
                                 return newStates
                         ) [1..5::Int]
     return (sum $ sum <$> (unsafeHead finalStates :: HashMap StateId (HashMap StateId Output)))
