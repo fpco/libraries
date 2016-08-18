@@ -227,7 +227,7 @@ options = Options
     <*> (OA.option OA.auto (OA.long "steps"
                             `mappend` OA.short 's'
                             `mappend` OA.help "Number of particle filter steps")
-         <|> pure 50)
+         <|> pure 10)
     <*> (OA.option OA.auto (OA.long "omega2"
                             `mappend` OA.short 'w'
                             `mappend` OA.help "Squared eigenfrequency of the pendulum")

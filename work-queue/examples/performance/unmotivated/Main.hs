@@ -66,7 +66,7 @@ masterArgs opts = MasterArgs
 myStates :: Options -> [State]
 myStates Options{..} =
     let r = mkStdGen 42
-    in concat $ mapM (const (evalRandT go r)) [1..200 :: Int]
+    in concat $ mapM (const (evalRandT go r)) [1..optNStates :: Int]
   where
     go :: RandT StdGen [] State
     go = do
@@ -95,6 +95,7 @@ jqc = defaultJobQueueConfig "perf:unmotivated:"
 data Options = Options
                { optNoNetworkMessage :: Bool
                , optVLength :: Int
+               , optNStates :: Int
                , optNSlaves :: Int
                , optOutput :: FilePath
                , optSpawnWorker :: Bool
@@ -104,9 +105,12 @@ options :: OA.Parser Options
 options = Options
     <$> OA.switch (OA.long "no-network-message"
                    `mappend` OA.help "Run in a single process, communicating via STM (instead of using NetworkMessage")
-    <*> (OA.option OA.auto (OA.short 'N'
+    <*> (OA.option OA.auto (OA.short 'l'
                             `mappend` OA.help "length of vectors")
          OA.<|> pure 1000)
+    <*> (OA.option OA.auto (OA.short 'N'
+                            `mappend` OA.help "number of states")
+         OA.<|> pure 200)
     <*> OA.option OA.auto (OA.long "nslaves"
                            `mappend` OA.short 'n'
                            `mappend` OA.help "Number of slave nodes")
@@ -126,7 +130,8 @@ main = do
           `mappend` OA.progDesc "Run a benchmark that is not motivated by anything, just performs some calculations with vectors."))
     let reqParas = ( optOutput opts
                    , [ ("NetworkMessage", pack . show . not . optNoNetworkMessage $ opts)
-                     , ("N", pack . show . optVLength $ opts)
+                     , ("l", pack . show . optVLength $ opts)
+                     , ("N", pack . show . optNStates $ opts)
                      ])
     logErrors $
         if optNoNetworkMessage opts
