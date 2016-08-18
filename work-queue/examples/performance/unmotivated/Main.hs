@@ -45,12 +45,6 @@ $(mkManyHasTypeHash [ [t| ByteString |]
                     , [t| Request |]
                     ])
 
-roundtrip :: forall a m . (MonadConnect m, Store a) => a -> m a
-roundtrip x = BB.with (Just $ 64 * 1024) $ \bb -> do
-    BB.copyByteString bb (encodeMessage . Message $ x)
-    mm <- decodeMessage bb (return Nothing) :: m (Maybe (Message a))
-    return (maybe (error "could not decode") fromMessage mm :: a)
-
 -- | Perform some computations.  The only aim is to take about a
 -- fraction of a millisecond, which is similar to an update in the
 -- distributed particle filter.
@@ -114,6 +108,7 @@ data Options = Options
                { optNoNetworkMessage :: Bool
                , optVLength :: Int
                , optNSlaves :: Int
+               , optOutput :: FilePath
                , optSpawnWorker :: Bool
                }
 
@@ -127,6 +122,10 @@ options = Options
     <*> OA.option OA.auto (OA.long "nslaves"
                            `mappend` OA.short 'n'
                            `mappend` OA.help "Number of slave nodes")
+    <*> (OA.strOption (OA.long "output"
+                           `mappend` OA.short 'o'
+                           `mappend` OA.help "FilePath for the csv output")
+         <|> pure "unmotivated-bench.csv")
     <*> OA.switch (OA.long "spawn-worker"
                    `mappend` OA.help "Used internally to spawn a worker")
 
@@ -137,7 +136,7 @@ main = do
         (OA.info (OA.helper <*> options)
          (OA.fullDesc
           `mappend` OA.progDesc "Run a benchmark that is not motivated by anything, just performs some calculations with vectors."))
-    let reqParas = ( "unmotivated-bench.csv"
+    let reqParas = ( optOutput opts
                    , [ ("NetworkMessage", pack . show . not . optNoNetworkMessage $ opts)
                      , ("N", pack . show . optVLength $ opts)
                      ])

@@ -15,22 +15,23 @@
 module PerformanceUtils where
 
 import           ClassyPrelude
-import           System.Process
-import           System.Environment (getExecutablePath)
+import           Control.Concurrent.Mesosync.Lifted.Safe
+import           Control.DeepSeq
 import           Control.Monad.Logger
 import           Criterion.Measurement
+import qualified Data.Conduit.Network as CN
+import           Data.List (init)
+import           Data.Store (Store)
+import           Data.Store.TypeHash
 import           Distributed.JobQueue.Client
 import           Distributed.JobQueue.Worker
-import           Data.Store (Store)
-import           FP.Redis (MonadConnect)
-import           Data.Store.TypeHash
 import           Distributed.Stateful
 import           Distributed.Stateful.Master
-import           Control.DeepSeq
-import           Control.Concurrent.Mesosync.Lifted.Safe
-import qualified Data.Conduit.Network as CN
-import System.Directory
-import System.IO (withFile, IOMode (..))
+import           FP.Redis (MonadConnect)
+import           System.Directory
+import           System.Environment (getExecutablePath)
+import           System.IO (withFile, IOMode (..))
+import           System.Process
 
 spawnAndWaitForWorker :: MonadIO m => m ProcessHandle
 spawnAndWaitForWorker = liftIO $ do
@@ -129,7 +130,8 @@ runWithoutNM (fp, reqParas) masterArgs nSlaves masterFunc generateRequest = do
 writeToCsv :: FilePath -> [(Text, Text)] -> IO ()
 writeToCsv fp vals = do
     gitHash <- readCreateProcess (shell "git rev-parse HEAD") ""
-    let vals' = ("commit", take 8 $ pack gitHash):vals
+    nodename <- readCreateProcess (shell "uname -n") ""
+    let vals' = ("commit", take 8 $ pack gitHash):("node", pack $ init nodename):vals
     exists <- doesFileExist fp
     withFile fp (if exists then AppendMode else WriteMode) $ \h -> do
         unless exists (hPutStrLn h $ intercalate "," $ map fst vals')

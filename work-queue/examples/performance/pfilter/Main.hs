@@ -196,10 +196,7 @@ evolvingSystemFromList :: [(Maybe input, Maybe summary)] -> EvolvingSystem input
 evolvingSystemFromList [] = EvolvingSystem Nothing
 evolvingSystemFromList (x:xs) = EvolvingSystem (Just (evolvingSystemFromList xs, x))
 
-
-
-
--- * Command line options
+-- | Command line options
 data Options = Options
                { optNoNetworkMessage :: Bool
                , optStepsize :: Double
@@ -211,6 +208,7 @@ data Options = Options
                , optResampleThreshold :: Double
                , optNParticles :: Int
                , optNSlaves :: Int
+               , optOutput :: FilePath
                , optSpawnWorker :: Bool
                }
 
@@ -253,16 +251,15 @@ options = Options
     <*> OA.option OA.auto (OA.long "nslaves"
                            `mappend` OA.short 'n'
                            `mappend` OA.help "Number of slave nodes")
+    <*> (OA.strOption (OA.long "output"
+                           `mappend` OA.short 'o'
+                           `mappend` OA.help "FilePath for the csv output")
+         <|> pure "pfilter-bench.csv")
     <*> OA.switch (OA.long "spawn-worker"
                    `mappend` OA.help "Used internally to spawn a worker")
 
 
--- We'll use a simple dynamical system for this benchmark, a non-linearized pendulum: @phi'' + omega2 * sin phi == 0@
-
-
--- The input for each step will be the time.
-
--- For evolving the dynamical system,
+-- | For evolving the dynamical system,
 -- we use a simple fourth order Runge-Kutta, with a fixed time step.
 integrate :: (Double -> UV.Vector Double -> UV.Vector Double)
           -- ^ Function @f@ on the RHS of the differential
@@ -358,14 +355,19 @@ main = do
     opts <- OA.execParser
         (OA.info (OA.helper <*> options)
          (OA.fullDesc
-          `mappend` OA.progDesc "Run a distributed particle filter, to benchmark the work-queue library"))
+          `mappend` OA.progDesc
+          (unlines ["Run a distributed particle filter, to benchmark the work-queue library."
+                   , ""
+                   , "The particle filter estimates the parameter omega of a simple dynamical system,"
+                   , "a (non-linearized) pendulum, phi'' + omega2 * sin phi == 0."
+                   ])))
     let cfg = pfConfig opts
         masterArgs = MasterArgs
             { maMaxBatchSize = Just 5
             , maUpdate = dpfSlave cfg
             }
     randomsrc <- newIORef (pureMT 42)
-    let reqParas = ( "pfilter-bench.csv"
+    let reqParas = ( optOutput opts
                    , [ ("NetworkMessage", pack . show . not . optNoNetworkMessage $ opts)
                      , ("stepsize", pack . show . optStepsize $ opts)
                      , ("deltat", pack . show . optDeltaT $ opts)

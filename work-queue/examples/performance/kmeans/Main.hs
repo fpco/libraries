@@ -44,6 +44,7 @@ data Options = Options
                , optGranularity :: Int
                , optNIterations :: Int
                , optNSlaves :: Int
+               , optOutput :: FilePath
                , optSpawnWorker :: Bool
                }
 
@@ -74,6 +75,10 @@ options = Options
     <*> OA.option OA.auto (OA.long "nslaves"
                            `mappend` OA.short 'n'
                            `mappend` OA.help "Number of slave nodes")
+    <*> (OA.strOption (OA.long "output"
+                           `mappend` OA.short 'o'
+                           `mappend` OA.help "FilePath for the csv output")
+         <|> pure "kmeans-bench.csv")
     <*> OA.switch (OA.long "spawn-worker"
                    `mappend` OA.help "Used internally to spawn a worker")
 
@@ -261,7 +266,7 @@ main = do
     opts <- OA.execParser (OA.info (OA.helper <*> options)
                           (OA.fullDesc
                           `mappend` OA.progDesc "Run a distributed kmeans, to benchmark the work-queue library"))
-    let reqParas = ( "kmeans-bench.csv"
+    let reqParas = ( optOutput opts
                    , [ ("NetworkMessage", pack . show . not . optNoNetworkMessage $ opts)
                      , ("clusters", pack . show . optNClusters $ opts)
                      , ("points", pack . show . optNPoints $ opts)
