@@ -27,6 +27,7 @@ module Distributed.JobQueue.Client
     , withJobClient
       -- * Submitting requests and retrieving results
     , submitRequest
+    , submitRequestUrgent
     , waitForResponse
     , waitForResponse_
     , checkForResponse
@@ -148,11 +149,41 @@ submitRequest :: forall request response m.
     -- with 'uniqueRequestId'.
     -> request
     -> m ()
-submitRequest JobClient{..} rid request = do
+submitRequest = submitRequestWithPriority PriorityNormal
+
+-- | Submits a new request that will be de-enqueued sooner than any job request submitted via 'submitRequest'.
+submitRequestUrgent :: forall request response m.
+       (MonadConnect m, Sendable request, Sendable response)
+    => JobClient response
+    -- ^ Client that will schedule the request (to generate a client,
+    -- use 'withJobClient')
+    -> RequestId
+    -- ^ Unique Id that will reference this request.  Can be generated
+    -- with 'uniqueRequestId'.
+    -> request
+    -> m ()
+submitRequestUrgent = submitRequestWithPriority PriorityUrgent
+
+
+-- | As 'submitRequest', but allows giving the job a custom 'RequestPriority'.
+submitRequestWithPriority :: forall request response m.
+       (MonadConnect m, Sendable request, Sendable response)
+    => RequestPriority
+    -- ^ Priority of the request.
+    -> JobClient response
+    -- ^ Client that will schedule the request (to generate a client,
+    -- use 'withJobClient')
+    -> RequestId
+    -- ^ Unique Id that will reference this request.  Can be generated
+    -- with 'uniqueRequestId'.
+    -> request
+    -> m ()
+submitRequestWithPriority priority JobClient{..} rid request = do
     let encoded = S.encode JobRequest
             { jrRequestTypeHash = typeHash (Proxy :: Proxy request)
             , jrResponseTypeHash = typeHash (Proxy :: Proxy response)
             , jrSchema = redisSchemaVersion
+            , jrPriority = priority
             , jrBody = S.encode request
             }
     $logDebugSJ "sendRequest" $ "Pushing request " <> tshow rid
@@ -163,7 +194,10 @@ submitRequest JobClient{..} rid request = do
         then $logWarnSJ "submitRequest" $
             "Didn't submit request " <> tshow rid <> " because it already exists in redis."
         else do
-            run_ jcRedis (lpush (requestsKey jcRedis) (unRequestId rid :| []))
+            let pushop = case priority of
+                    PriorityNormal -> lpush
+                    PriorityUrgent -> rpush
+            run_ jcRedis (pushop (requestsKey jcRedis) (unRequestId rid :| []))
             $logDebugSJ "submitRequest" $ "Notifying about request " <> tshow rid
             sendNotify jcRedis (requestChannel jcRedis)
             addRequestEnqueuedEvent jcConfig jcRedis rid
