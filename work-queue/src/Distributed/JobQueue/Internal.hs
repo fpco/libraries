@@ -18,6 +18,7 @@ import Distributed.Types
 import Distributed.Heartbeat
 import FP.Redis
 import Data.Store.TypeHash (TypeHash)
+import qualified Data.ByteString.Char8 as B
 
 -- * Redis keys
 
@@ -29,6 +30,14 @@ requestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests"
 -- | List of urgent 'RequestId's.
 urgentRequestsKey :: Redis -> LKey
 urgentRequestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests-urgent"
+
+-- | Key to the set of all 'RequestId's of urgent requests.
+--
+-- This holds all the 'RequestId's of urgent requests, regardless of
+-- whether they are already taken by a worker.  This is used to make
+-- sure that urgent requests are re-enqueued to the urgent queue.
+urgentRequestsSetKey :: Redis -> SKey
+urgentRequestsSetKey r = SKey $ Key $ redisKeyPrefix r <> "requests-urgent-set"
 
 -- | Given a 'RequestId', computes the key for the request data.
 requestDataKey :: Redis -> RequestId -> VKey
@@ -169,8 +178,30 @@ reenqueueRequest reason r wid = do
             successLog rid
     return $ RequestId <$> mbRid
     where
+      -- re-enqueue the job to the appropriate queue (if the job is
+      -- urgent, to urgentRequestsKey, otherwise to requestsKey).  We
+      -- use a LUA script to save roundtrips, and to ensure atomicity.
       reenqueue :: CommandRequest (Maybe ByteString)
-      reenqueue = rpoplpush (activeKey r wid) (requestsKey r)
+      reenqueue = eval
+          (B.unlines [ "local rid = redis.call('LPOP', KEYS[1])"
+                     , "if rid == false then"
+                     , "  return false"
+                     , "else"
+                     , "  local isUrgent = redis.call('SISMEMBER', KEYS[2], rid)"
+                     , "  if isUrgent then"
+                     , "    redis.call('RPUSH', KEYS[3], rid)"
+                     , "  else"
+                     , "    redis.call('RPUSH', KEYS[4], rid)"
+                     , "  end"
+                     , "  return rid"
+                     , "end"
+                     ])
+          [ unLKey $ activeKey r wid
+          , unSKey $ urgentRequestsSetKey r
+          , unLKey $ urgentRequestsKey r
+          , unLKey $ requestsKey r
+          ]
+          []
       failureLog = case reason of
           ReenqueuedByWorker -> return () -- The log will be produced by 'checkPoppedActiveKey'.
           ReenqueuedAfterHeartbeatFailure ->

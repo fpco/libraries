@@ -187,6 +187,7 @@ submitRequestWithPriority priority JobClient{..} rid request = do
             , jrBody = S.encode request
             }
     $logDebugSJ "sendRequest" $ "Pushing request " <> tshow rid
+    when (priority == PriorityUrgent) (run_ jcRedis (sadd (urgentRequestsSetKey jcRedis) (unRequestId rid :| [])))
     -- NOTE: It's crucial for the body to be added _before_ the request id in the requests
     -- list, since the worker will just drop the request id if the body is missing.
     added <- run jcRedis (set (requestDataKey jcRedis rid) encoded [EX (jqcRequestExpiry jcConfig), NX])
@@ -335,6 +336,7 @@ cancelRequest expiry redis k = do
     run_ redis (del (unVKey (responseDataKey redis k) :| []))
     run_ redis (lrem (requestsKey redis) 1 (unRequestId k))
     run_ redis (lrem (urgentRequestsKey redis) 1 (unRequestId k))
+    run_ redis (srem (urgentRequestsSetKey redis) (unRequestId k :| []))
 
 -- | Manually trigger re-enqueuement of jobs of dead workers.
 --
