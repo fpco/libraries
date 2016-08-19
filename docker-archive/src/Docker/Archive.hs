@@ -43,6 +43,9 @@ archive imgName pattern = liftIO $ do
 
     dockerfileToFile dockerFile $
          cmdFrom "busybox"
+         -- We are using busybox here because it is the smallest known
+         -- image that also contains cp. Which at present is necessary
+         -- to extract files that are added to the docker archive.
       <> cmdCopy pattern $(mkAbsDir "/archive")
       <> cmdCMD "ls /archive"
 
