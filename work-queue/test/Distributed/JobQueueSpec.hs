@@ -73,6 +73,12 @@ testJobWorker = withRedis (jqcRedisConfig testJobQueueConfig) $ \r -> jobWorkerW
     threadDelay requestDelay
     return requestResponse
 
+-- | This worker will never finish.
+stalledTestJobWorker :: (MonadConnect m) => m void
+stalledTestJobWorker = withRedis (jqcRedisConfig testJobQueueConfig) $ \r -> jobWorkerWithHeartbeats testJobQueueConfig r $ \_wid Request{..} -> do
+    void $ forever $ threadDelay requestDelay
+    return requestResponse
+
 withTestJobClient :: (MonadConnect m) => (JobClient Response -> m a) -> m a
 withTestJobClient = withJobClient testJobQueueConfig
 
@@ -222,6 +228,7 @@ spec = do
     redisIt "Stops working on expired jobs" expiredTest
     redisIt "Can manually check for heartbeats" manualHeartbeatTest
     redisIt_ "Handles urgent jobs first" priorityTest
+    redisIt "Handles urgent jobs first, even if they are re-enqueued." priorityReenqueueTest
 
 priorityTest :: forall m. MonadConnect m => m ()
 priorityTest = do
@@ -242,6 +249,41 @@ priorityTest = do
             testJobWorker
             (either id id <$> Async.race (waitForResponse_ jc ridLow) (waitForResponse_ jc ridHigh))
     resp' `shouldBe` Just respHigh
+
+
+priorityReenqueueTest :: forall m. MonadConnect m => Redis -> m ()
+priorityReenqueueTest r = do
+    let reqLow = Request
+            { requestDelay = 0
+            , requestResponse = DontReenqueue $ Response $ "The low priority job was handled."
+            }
+        respHigh = Response "The high priority job was handled."
+        reqHigh = Request
+            { requestDelay = 3 * 1000 * 1000
+            , requestResponse = DontReenqueue respHigh
+            }
+    resp' <- withTestJobClient $ \jc -> do
+        ridLow <- submitTestRequest jc reqLow
+        ridHigh <- getRequestId
+        submitRequestUrgent jc ridHigh reqHigh
+        -- start a worker, and kill it after it started working on the job, so that it gets re-enqueued.
+        either absurd id <$> Async.race stalledTestJobWorker
+            (waitForHUnitPass upToAMinute $ do
+                    getRequestStats r ridHigh >>= \case
+                        Nothing -> fail "RequestStats not found"
+                        Just stats -> rsComputeStartTime stats `shouldSatisfy` isJust
+                    )
+        -- wait until the job is re-enqueued by the heartbeat checker
+        waitForHUnitPass upToAMinute $ do
+            getRequestStats r ridHigh >>= \case
+                Nothing -> fail "RequestStats not found"
+                Just stats -> rsReenqueueByHeartbeatCount stats `shouldBe` 1
+        -- start a new worker, and make sure the urgent job is served first
+        either absurd id <$> Async.race
+            testJobWorker
+            (either id id <$> Async.race (waitForResponse_ jc ridLow) (waitForResponse_ jc ridHigh))
+    resp' `shouldBe` Just respHigh
+
 
 expiredTest :: forall m . MonadConnect m => Redis -> m ()
 expiredTest r = either absurd id <$> Async.race timeoutJobWorker (withTimeoutClient $ \jc -> do
