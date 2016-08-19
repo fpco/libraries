@@ -60,7 +60,7 @@ extract
 extract imgName outputPath = runDocker extractOptions
   where
     extractOptions =
-      ["run", "--rm", "-v", (toFilePath outputPath) <> ":/output", T.unpack (unImageName imgName), "cp", "-R", "/archive/.", "/output"]
+      ["run", "--rm", "-v", (toFilePath outputPath) <> ":/output", T.unpack (unImageName imgName), "cp", "-a", "/archive/.", "/output"]
 
 pull
   :: (MonadIO m)
