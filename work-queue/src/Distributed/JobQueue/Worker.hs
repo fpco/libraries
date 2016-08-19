@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -139,7 +140,11 @@ jobWorkerThread :: forall request response m void.
     -> m void
 jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
     wait
-    mbRidbs <- run r (rpoplpush (requestsKey r) (activeKey r wid))
+    -- try to get a request from the urgent queue first.  If no urgent
+    -- request is there, try one from the normal queue.
+    mbRidbs <- run r (rpoplpush (urgentRequestsKey r) (activeKey r wid)) >>= \case
+        Just x -> return $ Just x
+        Nothing -> run r (rpoplpush (requestsKey r) (activeKey r wid))
     checkActiveKey r wid
     forM_ mbRidbs $ \ridBs -> do
         let rid = RequestId ridBs
@@ -258,7 +263,8 @@ reenqueueAndCheckRequest r wid rid = do
 --   failure).
 --
 -- - Clears the 'RequestId' and the corresponding body from
---   'requestsKey' and 'requestDataKey', respectively.
+--   'requestsKey' and 'urgentRequestsKey', and 'requestDataKey',
+--   respectively.
 --
 -- It is called after a request has successfully finished, or has been
 -- canceled.
@@ -289,7 +295,8 @@ removeActiveRequest r wid rid = do
     -- Also remove from the requestsKey: it might be that the request has been
     -- erroneously reenqueued.
     removed' <- run r (lrem (requestsKey r) 0 (unRequestId rid))
-    when (removed' > 0) $
+    removed'' <- run r (lrem (urgentRequestsKey r) 0 (unRequestId rid))
+    when (removed' > 0 || removed'' > 0) $
         $logWarnJ ("Expecting no request " <> tshow rid <> " in requestsKey, but found " ++ tshow removed ++ ". This can happen with spurious heartbeat failures.")
 
 -- | Send a response for a particular request. Once the response is

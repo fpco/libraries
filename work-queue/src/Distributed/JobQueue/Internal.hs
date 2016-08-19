@@ -26,6 +26,10 @@ import Data.Store.TypeHash (TypeHash)
 requestsKey :: Redis -> LKey
 requestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests"
 
+-- | List of urgent 'RequestId's.
+urgentRequestsKey :: Redis -> LKey
+urgentRequestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests-urgent"
+
 -- | Given a 'RequestId', computes the key for the request data.
 requestDataKey :: Redis -> RequestId -> VKey
 requestDataKey  r k = VKey $ Key $ redisKeyPrefix r <> "request:" <> unRequestId k

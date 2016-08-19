@@ -61,7 +61,9 @@ getJobQueueStatus :: MonadConnect m => Redis -> m JobQueueStatus
 getJobQueueStatus r = do
     checkRedisSchemaVersion r
     mLastTime <- lastHeartbeatCheck r
-    pending <- run r $ lrange (requestsKey r) 0 (-1)
+    pendingNormal <- run r $ lrange (requestsKey r) 0 (-1)
+    pendingUrgent <- run r $ lrange (urgentRequestsKey r) 0 (-1)
+    let pending = pendingUrgent ++ pendingNormal
     wids <- activeOrUnhandledWorkers r
     inactiveWids <- deadWorkers r
     -- We could instead use zrange with WITHSCORES, to retrieve the

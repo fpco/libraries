@@ -195,9 +195,9 @@ submitRequestWithPriority priority JobClient{..} rid request = do
             "Didn't submit request " <> tshow rid <> " because it already exists in redis."
         else do
             let pushop = case priority of
-                    PriorityNormal -> lpush
-                    PriorityUrgent -> rpush
-            run_ jcRedis (pushop (requestsKey jcRedis) (unRequestId rid :| []))
+                    PriorityNormal -> lpush (requestsKey jcRedis)
+                    PriorityUrgent -> lpush (urgentRequestsKey jcRedis)
+            run_ jcRedis (pushop (unRequestId rid :| []))
             $logDebugSJ "submitRequest" $ "Notifying about request " <> tshow rid
             sendNotify jcRedis (requestChannel jcRedis)
             addRequestEnqueuedEvent jcConfig jcRedis rid
@@ -334,6 +334,7 @@ cancelRequest expiry redis k = do
     run_ redis (del (unVKey (requestDataKey redis k) :| []))
     run_ redis (del (unVKey (responseDataKey redis k) :| []))
     run_ redis (lrem (requestsKey redis) 1 (unRequestId k))
+    run_ redis (lrem (urgentRequestsKey redis) 1 (unRequestId k))
 
 -- | Manually trigger re-enqueuement of jobs of dead workers.
 --
