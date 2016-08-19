@@ -14,6 +14,7 @@ module Docker.Archive
   , pull
   ) where
 
+import Control.Exception
 import Control.Monad.IO.Class
 import Data.Monoid
 import Data.Text (Text)
@@ -45,8 +46,7 @@ archive imgName pattern = liftIO $ do
       <> cmdCopy pattern $(mkAbsDir "/archive")
       <> cmdCMD "ls /archive"
 
-    (_, _, _, ph) <- createProcess (proc "docker" options)
-    waitForProcess ph
+    runDocker options
   where
     buildOptions dockerfilePath =
       ["build", "-f", toFilePath dockerfilePath, "-t", T.unpack (unImageName imgName), "."]
@@ -54,9 +54,7 @@ archive imgName pattern = liftIO $ do
 extract
   :: (MonadIO m)
   => ImageName -> Path Abs Dir -> m ExitCode
-extract imgName outputPath = liftIO $ do
-  (_, _, _, ph) <- createProcess (proc "docker" extractOptions)
-  waitForProcess ph
+extract imgName outputPath = runDocker extractOptions
   where
     extractOptions =
       ["run", "-ti", "--rm", "-v", (toFilePath outputPath) <> ":/output", T.unpack (unImageName imgName), "cp", "-R", "/archive/.", "/output"]
@@ -64,9 +62,7 @@ extract imgName outputPath = liftIO $ do
 pull
   :: (MonadIO m)
   => ImageName -> m ExitCode
-pull imgName = liftIO $ do
-  (_, _, _, ph) <- createProcess (proc "docker" pullOptions)
-  waitForProcess ph
+pull imgName = runDocker pullOptions
   where
     pullOptions =
       ["pull", T.unpack (unImageName imgName)]
@@ -74,9 +70,15 @@ pull imgName = liftIO $ do
 push
   :: (MonadIO m)
   => ImageName -> m ExitCode
-push imgName = liftIO $ do
-  (_, _, _, ph) <- createProcess (proc "docker" pushOptions)
-  waitForProcess ph
+push imgName = runDocker pushOptions
   where
     pushOptions =
       ["push", T.unpack (unImageName imgName)]
+
+-- Utilities
+
+runDocker :: (MonadIO m) => [String] -> m ExitCode
+runDocker opts = liftIO $ bracket
+  (createProcess (proc "docker" opts))
+  (\(_, _, _, ph) -> terminateProcess ph)
+    $ \(_, _, _, ph) -> waitForProcess ph
