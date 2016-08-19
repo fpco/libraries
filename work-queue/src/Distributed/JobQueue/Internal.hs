@@ -28,6 +28,8 @@ requestsKey :: Redis -> LKey
 requestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests"
 
 -- | List of urgent 'RequestId's.
+--
+--Jobs in this queue take precedence over those in 'requestsKey'.
 urgentRequestsKey :: Redis -> LKey
 urgentRequestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests-urgent"
 
