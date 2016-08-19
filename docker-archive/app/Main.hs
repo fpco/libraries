@@ -6,6 +6,7 @@ import Options.Applicative
 import Path
 import Path.IO
 import System.Exit
+import System.FilePath.Glob
 
 import Docker.Archive
 
@@ -75,7 +76,7 @@ parseCommand = subparser
 parseArchiveOptions :: Parser ArchiveOptions
 parseArchiveOptions = ArchiveOptions
   <$> argument ostr (metavar "IMAGE:TAG")
-  <*> argument ostr (metavar "PATTERN")
+  <*> argument (compile <$> str) (metavar "PATTERN")
 
 parseExtractOptions :: Parser ExtractOptions
 parseExtractOptions = ExtractOptions

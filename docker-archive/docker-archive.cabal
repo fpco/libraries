@@ -25,9 +25,12 @@ library
   build-depends:     base
 
                    , bytestring
+                   , exceptions
+                   , Glob
                    , path
                    , path-io
                    , process
+                   , tar
                    , text
                    , transformers
 
@@ -42,6 +45,7 @@ executable docker-archive
 
                    , docker-archive
                    , exceptions
+                   , Glob
                    , path
                    , path-io
                    , optparse-applicative
