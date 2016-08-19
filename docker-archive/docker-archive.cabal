@@ -45,18 +45,3 @@ executable docker-archive
                    , path
                    , path-io
                    , optparse-applicative
-
-test-suite docker-archive-test
-  type:              exitcode-stdio-1.0
-  main-is:           Test.hs
-  hs-source-dirs:    test
-  default-language:  Haskell2010
-
-  ghc-options:       -Wall -Werror -threaded -with-rtsopts=-N
-
-  build-depends:     base
-
-                   , tasty
-                   , tasty-hunit
-                   , tasty-quickcheck
-                   , tasty-th
