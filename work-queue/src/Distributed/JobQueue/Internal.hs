@@ -166,10 +166,10 @@ instance Aeson.ToJSON RequestEvent
 -- | Re-enqueue the request of a given worker.
 reenqueueRequest :: MonadConnect m => ReenqueueReason -> Redis -> WorkerId -> m (Maybe RequestId)
 reenqueueRequest reason r wid = do
-    -- REVIEW TODO it would be nice to check that after this the activeKey is empty,
-    -- but we cannot do it (the worker might still be alive and adding a request to
-    -- the activeKey.)
     mbRid <- run r reenqueue
+    when (mbRid == Just "ERROR_ACTIVEKEY_NOT_EMPTY")
+        (liftIO $ throwIO $ InternalJobQueueException $
+         "activeKey of worker " ++ tshow wid ++ " was not empty after its job was re-enqueued.")
     checkActiveKey r wid
     case mbRid of
         Nothing -> failureLog
@@ -193,7 +193,11 @@ reenqueueRequest reason r wid = do
                      , "  else"
                      , "    redis.call('RPUSH', KEYS[4], rid)"
                      , "  end"
-                     , "  return rid"
+                     , "  if redis.call('LLEN', KEYS[1]) == 0 then"
+                     , "    return rid"
+                     , "  else"
+                     , "    return 'ERROR_ACTIVEKEY_NOT_EMPTY'"
+                     , "  end"
                      , "end"
                      ])
           [ unLKey $ activeKey r wid
