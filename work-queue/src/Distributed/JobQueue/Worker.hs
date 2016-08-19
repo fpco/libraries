@@ -152,7 +152,8 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
                 -- mitigate against the case of a stale request id being reenqueued forever. This can
                 -- happen, for example, if a worker dies at the wrong moment. If the request data has expired,
                 -- we will never be able to process the request anyway, so we might as well drop it.
-                checkPoppedActiveKey wid rid =<< run r (rpop (activeKey r wid))
+                mbRid <- run r (rpop (activeKey r wid))
+                checkPoppedActiveKey wid rid (RequestId <$> mbRid)
                 checkActiveKey r wid
             Just reqBs -> do
                 $logInfoJ (workerMsg ("Got contents of request " ++ tshow rid))
@@ -177,7 +178,7 @@ jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
                         removeActiveRequest r wid rid
                     RequestShouldBeReenqueued -> do
                         $logInfoJ (gotX "reenqueue")
-                        reenqueueRequest r wid rid
+                        reenqueueAndCheckRequest r wid rid
                     GotResponse res -> do
                         case res of
                             Left err -> $logWarnJ (gotX ("exception: " ++ tshow err))
@@ -230,22 +231,20 @@ checkRequest _proxy rid req = do
             }
     decodeOrErr "jobWorker" jrBody
 
-checkPoppedActiveKey :: (MonadConnect m) => WorkerId -> RequestId -> Maybe ByteString -> m ()
+checkPoppedActiveKey :: (MonadConnect m) => WorkerId -> RequestId -> Maybe RequestId -> m ()
 checkPoppedActiveKey (WorkerId wid) (RequestId rid) mbRid = do
     case mbRid of
         Nothing -> do
             $logWarnJ ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got nothing. This means that the worker has been detected as dead by a client.")
-        Just rid' ->
+        Just (RequestId rid') ->
             unless (rid == rid') $
                 throwM (InternalJobQueueException ("We expected " ++ tshow rid ++ " to be in worker " ++ tshow wid ++ " active key, but instead we got " ++ tshow rid'))
 
-reenqueueRequest ::
+reenqueueAndCheckRequest ::
        (MonadConnect m)
     => Redis -> WorkerId -> RequestId -> m ()
-reenqueueRequest r (WorkerId wid) rid = do
-    checkPoppedActiveKey (WorkerId wid) rid =<< run r (rpoplpush (activeKey r (WorkerId wid)) (requestsKey r))
-    checkActiveKey r (WorkerId wid)
-    addRequestEvent r rid (RequestWorkReenqueuedByWorker (WorkerId wid))
+reenqueueAndCheckRequest r wid rid = do
+    checkPoppedActiveKey wid rid =<< reenqueueRequest ReenqueuedByWorker r wid
 
 
 -- | Remove a worker's active request.

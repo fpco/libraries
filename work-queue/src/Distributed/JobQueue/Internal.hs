@@ -7,7 +7,8 @@
 module Distributed.JobQueue.Internal where
 
 import ClassyPrelude
-import Control.Monad.Logger.JSON.Extra (logWarnJ, logInfoJ)
+import Control.Monad.Logger.JSON.Extra (logWarnJ, logInfoJ
+                                       , logWarnSJ)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import Data.List.NonEmpty hiding (unwords)
@@ -129,19 +130,55 @@ checkActiveKey r wid = do
                 , pack . show $ nRequests
                 ]
 
+-- | Requests are re-enqueued in three situations:
+data ReenqueueReason =
+    ReenqueuedByWorker -- ^ The worker decided to re-enqueue the request.
+    | ReenqueuedAfterHeartbeatFailure -- ^ The worker failed its heartbeat
+    | ReenqueuedAsStale -- ^ A job is detected as stale, as in "Distributed.JobQueue.StaleKeys"
+    deriving (Generic, Show, Typeable)
+instance Store ReenqueueReason
+instance Aeson.ToJSON ReenqueueReason
+
 -- | Request Events
 data RequestEvent
     = RequestEnqueued
     | RequestWorkStarted !WorkerId
-    | RequestWorkReenqueuedByWorker !WorkerId
-    | RequestWorkReenqueuedAfterHeartbeatFailure !WorkerId
-    | RequestWorkReenqueuedAsStale !WorkerId
+    | RequestWorkReenqueued !ReenqueueReason !WorkerId
     | RequestWorkFinished !WorkerId
     | RequestResponseRead
     deriving (Generic, Show, Typeable)
-
 instance Store RequestEvent
 instance Aeson.ToJSON RequestEvent
+
+-- | Re-enqueue the request of a given worker.
+reenqueueRequest :: MonadConnect m => ReenqueueReason -> Redis -> WorkerId -> m (Maybe RequestId)
+reenqueueRequest reason r wid = do
+    -- REVIEW TODO it would be nice to check that after this the activeKey is empty,
+    -- but we cannot do it (the worker might still be alive and adding a request to
+    -- the activeKey.)
+    mbRid <- run r reenqueue
+    checkActiveKey r wid
+    case mbRid of
+        Nothing -> failureLog
+        Just rid -> do
+            addRequestEvent r (RequestId rid) (RequestWorkReenqueued reason wid)
+            successLog rid
+    return $ RequestId <$> mbRid
+    where
+      reenqueue :: CommandRequest (Maybe ByteString)
+      reenqueue = rpoplpush (activeKey r wid) (requestsKey r)
+      failureLog = case reason of
+          ReenqueuedByWorker -> return () -- The log will be produced by 'checkPoppedActiveKey'.
+          ReenqueuedAfterHeartbeatFailure ->
+              $logWarnSJ "JobQueue" $ tshow wid <> " failed its heartbeat, but didn't have an item to re-enqueue."
+          ReenqueuedAsStale ->
+              $logWarnSJ "JobQueue" $ tshow wid <> " is not active anymore, and does not have a job."
+      successLog rid = case reason of
+          ReenqueuedByWorker -> return () -- The log will be produced by 'checkPoppedActiveKey'.
+          ReenqueuedAfterHeartbeatFailure ->
+              $logWarnSJ "JobQueue" $ tshow wid <> " failed its heartbeat, and " <> tshow rid <> " was re-enqueued."
+          ReenqueuedAsStale ->
+              $logWarnSJ "JobQueue" $ tshow wid <> " is not active anymore, and " <> tshow rid <> " was re-enqueued."
 
 data EventLogMessage
     = EventLogMessage

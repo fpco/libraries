@@ -361,16 +361,5 @@ handleHeartbeatFailures r inactive cleanup = do
         sendNotify r (requestChannel r)
 
 handleWorkerFailure :: (MonadConnect m) => Redis -> WorkerId -> m Bool
-handleWorkerFailure r wid = do
-    -- REVIEW TODO it would be nice to check that after this the activeKey is empty,
-    -- but we cannot do it (the worker might still be alive and adding a request to
-    -- the activeKey.)
-    mbRid <- run r (rpoplpush (activeKey r wid) (requestsKey r))
-    checkActiveKey r wid
-    case mbRid of
-        Nothing -> do
-            $logWarnSJ "JobQueue" $ tshow wid <> " failed its heartbeat, but didn't have an item to re-enqueue."
-        Just rid -> do
-            addRequestEvent r (RequestId rid) (RequestWorkReenqueuedAfterHeartbeatFailure wid)
-            $logWarnSJ "JobQueue" $ tshow wid <> " failed its heartbeat, and " <> tshow rid <> " was re-enqueued."
-    return (isJust mbRid)
+handleWorkerFailure r wid =
+    isJust <$> reenqueueRequest ReenqueuedAfterHeartbeatFailure r wid

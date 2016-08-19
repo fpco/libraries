@@ -20,6 +20,7 @@ module Distributed.JobQueue.Status
     , getAllRequests
       -- * Re-exports from Internal
     , RequestEvent(..)
+    , ReenqueueReason(..)
     , getRequestEvents
     ) where
 
@@ -123,9 +124,9 @@ getRequestStats r k = do
         _ -> return $ Just RequestStats {..}
           where
             rsEnqueueTime = lastMay [x | (x, RequestEnqueued) <- evs]
-            rsReenqueueByWorkerCount = length [() | (_, RequestWorkReenqueuedByWorker _) <- evs]
-            rsReenqueueByHeartbeatCount = length [() | (_, RequestWorkReenqueuedAfterHeartbeatFailure _) <- evs]
-            rsReenqueueByStaleKeyCount = length [() | (_, RequestWorkReenqueuedAsStale _) <- evs]
+            rsReenqueueByWorkerCount = length [() | (_, RequestWorkReenqueued ReenqueuedByWorker _) <- evs]
+            rsReenqueueByHeartbeatCount = length [() | (_, RequestWorkReenqueued ReenqueuedAfterHeartbeatFailure _) <- evs]
+            rsReenqueueByStaleKeyCount = length [() | (_, RequestWorkReenqueued ReenqueuedAsStale _) <- evs]
             rsComputeStartTime = lastMay [x | (x, RequestWorkStarted _) <- evs]
             rsComputeFinishTime = lastMay [x | (x, RequestWorkFinished _) <- evs]
             rsComputeTime = diffUTCTime <$> rsComputeFinishTime <*> rsComputeStartTime

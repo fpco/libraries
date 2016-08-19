@@ -34,7 +34,6 @@ module Distributed.JobQueue.StaleKeys where
 
 import           ClassyPrelude hiding (keys)
 import           Control.Concurrent.Lifted (threadDelay)
-import           Control.Monad.Logger.JSON.Extra
 import qualified Data.HashSet as HashSet
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Internal
@@ -61,13 +60,6 @@ checkStaleKeys config r = logNest "checkStaleKeys" $ forever $ do
                 "failed to convert activeKey " ++ pack (show k) ++ " to WorkerId."
             Just wid -> return wid
     let staleKeys = HashSet.toList $ workersWithJobs `HashSet.difference` liveWorkers
-    forM_ staleKeys $ \wid -> do
-        mbRid <- run r (rpoplpush (activeKey r wid) (requestsKey r))
-        checkActiveKey r wid
-        case mbRid of
-            Nothing -> $logWarnSJ "JobQueue" $ tshow wid <> " is not active anymore, and does not have a job."
-            Just rid -> do
-                addRequestEvent r (RequestId rid) (RequestWorkReenqueuedAsStale wid)
-                $logWarnSJ "JobQueue" $ tshow wid <> " is not active anymore, and " <> tshow rid <> " was re-enqueued."
+    forM_ staleKeys $ \wid -> void $ reenqueueRequest ReenqueuedAsStale r wid
     threadDelay (1000000 * (fromIntegral . unSeconds . jqcCheckStaleKeysInterval $ config))
     checkStaleKeys config r
