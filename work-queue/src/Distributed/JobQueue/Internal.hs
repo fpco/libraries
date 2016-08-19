@@ -261,9 +261,7 @@ getRequestEvents r k =
 -- front of the queue, so they will be served first.
 data RequestPriority = PriorityUrgent
                      | PriorityNormal
-                      deriving (Eq, Show, Generic)
-instance Store RequestPriority
-
+                     deriving Eq
 -- | Configuration of job-queue, used by both the client and worker.
 --
 -- REVIEW TODO: Take a look if it's worth having just one type for client
@@ -339,7 +337,6 @@ data JobRequest = JobRequest
     , jrSchema :: !ByteString
     -- REVIEW: This is a tag to detect if the deployment is compatible with the current
     -- code.
-    , jrPriority :: !RequestPriority
     , jrBody :: !ByteString
     } deriving (Generic, Show, Typeable)
 

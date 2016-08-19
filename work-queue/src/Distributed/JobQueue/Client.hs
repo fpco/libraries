@@ -183,7 +183,6 @@ submitRequestWithPriority priority JobClient{..} rid request = do
             { jrRequestTypeHash = typeHash (Proxy :: Proxy request)
             , jrResponseTypeHash = typeHash (Proxy :: Proxy response)
             , jrSchema = redisSchemaVersion
-            , jrPriority = priority
             , jrBody = S.encode request
             }
     $logDebugSJ "sendRequest" $ "Pushing request " <> tshow rid
