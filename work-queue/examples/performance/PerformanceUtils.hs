@@ -15,6 +15,7 @@
 module PerformanceUtils where
 
 import           ClassyPrelude
+import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.Mesosync.Lifted.Safe
 import           Control.DeepSeq
 import           Control.Monad.Logger
@@ -23,21 +24,67 @@ import qualified Data.Conduit.Network as CN
 import           Data.List (init)
 import           Data.Store (Store)
 import           Data.Store.TypeHash
+import           Data.Streaming.Process (Inherited(..), ClosedStream(..), InputSource
+                                        , OutputSink, streamingProcess, waitForStreamingProcess
+                                        , ProcessExitedUnsuccessfully(..), streamingProcessHandleRaw)
+import           Data.Void
 import           Distributed.JobQueue.Client
 import           Distributed.JobQueue.Worker
 import           Distributed.Stateful
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
+import           GHC.Environment (getFullArgs)
 import           System.Directory
 import           System.Environment (getExecutablePath)
+import           System.Exit (ExitCode(..))
 import           System.IO (withFile, IOMode (..))
 import           System.Process
 
-spawnAndWaitForWorker :: MonadIO m => m ProcessHandle
+
+withCheckedProcessCleanup
+    :: ( InputSource stdin
+       , OutputSink stderr
+       , OutputSink stdout
+       )
+    => CreateProcess
+    -> (stdin -> stdout -> stderr -> IO b)
+    -> IO b
+withCheckedProcessCleanup cp f = do
+    (x, y, z, sph) <- streamingProcess cp
+    res <- f x y z `onException` (terminateProcess (streamingProcessHandleRaw sph))
+    ec <- waitForStreamingProcess sph
+    if ec == ExitSuccess
+        then return res
+        else throwIO $ ProcessExitedUnsuccessfully cp ec
+
+spawnAndWaitForWorker :: MonadIO m => m ()
 spawnAndWaitForWorker = liftIO $ do
     program <- getExecutablePath
-    args <- getArgs
-    runProcess program ("--spawn-worker":map unpack args) Nothing Nothing Nothing Nothing Nothing
+    args <- getFullArgs
+    let cp = proc program ("--spawn-worker":map unpack args)
+    withCheckedProcessCleanup cp (\ClosedStream Inherited Inherited -> forever (threadDelay maxBound) >> return ())
+
+withWorker :: MonadConnect m => m a -> m a
+withWorker cont = do
+    program <- liftIO getExecutablePath
+    args <- liftIO getFullArgs
+    let cp = proc program ("--spawn-worker":map unpack args)
+    (x, y, z, sph) <- streamingProcess cp
+    let cont' = \ClosedStream Inherited Inherited -> do
+            res <- cont
+            liftIO $ terminateProcess (streamingProcessHandleRaw sph)
+            return res
+    either absurd id <$> race
+        (do waitForStreamingProcess sph >>= \case
+                ExitSuccess -> forever (threadDelay maxBound)
+                ec -> liftIO . throwIO $ ProcessExitedUnsuccessfully cp ec
+        )
+        (cont' x y z `onException` (liftIO $ terminateProcess (streamingProcessHandleRaw sph)))
+
+withNWorkers :: MonadConnect m => Int -> m a -> m a
+withNWorkers n _cont | n < 0 = error "Negative number of workers requested."
+withNWorkers 0 cont = cont
+withNWorkers n cont = withNWorkers (n-1) (withWorker cont)
 
 logErrors :: MonadIO m => LoggingT m a -> m a
 logErrors = runStdoutLoggingT . filterLogger (\_ ll -> ll >= LevelError)
@@ -97,11 +144,9 @@ runWithNM (fp, reqParas) jqc spawnWorker masterArgs nSlaves workerFunc generateR
                    masterArgs
                    (NMStatefulMasterArgs (Just nSlaves) (Just nSlaves) (1000 * 1000))
                    (\mh _rid req -> DontReenqueue <$> workerFunc req mh)
-        else
-            bracket
-                (mapConcurrently (const spawnAndWaitForWorker) [0..(nSlaves :: Int)])
-                (mapM (liftIO . terminateProcess))
-                (\_ -> withJobClient jqc $ \(jc :: JobClient response) -> performRequest (fp, reqParas, nSlaves) generateRequest jc)
+        else withNWorkers
+                 (nSlaves + 1) -- +1 for the master
+                 (withJobClient jqc $ \(jc :: JobClient response) -> performRequest (fp, reqParas, nSlaves) generateRequest jc)
 
 runWithoutNM ::
   ( MonadConnect m

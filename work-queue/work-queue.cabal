@@ -190,12 +190,14 @@ executable wq-perf-unmotivated
                      , criterion
                      , deepseq
                      , directory
+                     , lifted-base
                      , mesosync
                      , monad-logger
                      , optparse-applicative
                      , process
                      , redis-fp
                      , store
+                     , streaming-commons
                      , transformers
                      , unordered-containers
                      , vector
@@ -217,6 +219,7 @@ executable wq-perf-kmeans
                      , deepseq
                      , directory
                      , extra
+                     , lifted-base
                      , mesosync
                      , monad-logger
                      , optparse-applicative
@@ -224,6 +227,7 @@ executable wq-perf-kmeans
                      , redis-fp
                      , semigroups
                      , store
+                     , streaming-commons
                      , unordered-containers
                      , vector
                      , work-queue
@@ -245,6 +249,7 @@ executable wq-perf-pfilter
                      , directory
                      , erf
                      , extra
+                     , lifted-base
                      , mesosync
                      , monad-logger
                      , optparse-applicative
@@ -253,6 +258,7 @@ executable wq-perf-pfilter
                      , random-source
                      , redis-fp
                      , semigroups
+                     , streaming-commons
                      , store
                      , unordered-containers
                      , vector
