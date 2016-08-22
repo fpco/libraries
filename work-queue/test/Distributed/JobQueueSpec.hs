@@ -18,7 +18,7 @@ import ClassyPrelude
 import qualified Data.List.NonEmpty as NE
 import Data.Store (Store)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
-import           Test.Hspec hiding (shouldBe, shouldSatisfy)
+import           Test.Hspec hiding (shouldBe, shouldSatisfy, shouldMatchList)
 import FP.Redis (MonadConnect, Seconds(..), exists, VKey (..))
 import Control.Concurrent.Lifted (threadDelay)
 import qualified Data.UUID as UUID
@@ -227,11 +227,11 @@ spec = do
     stressfulTest $ redisIt_ "Withstands chaos" chaosTest
     redisIt "Stops working on expired jobs" expiredTest
     redisIt "Can manually check for heartbeats" manualHeartbeatTest
-    redisIt_ "Handles urgent jobs first" priorityTest
+    redisIt "Handles urgent jobs first" priorityTest
     redisIt "Handles urgent jobs first, even if they are re-enqueued." priorityReenqueueTest
 
-priorityTest :: forall m. MonadConnect m => m ()
-priorityTest = do
+priorityTest :: forall m. MonadConnect m => Redis -> m ()
+priorityTest r = do
     let reqLow = Request
             { requestDelay = 0
             , requestResponse = DontReenqueue $ Response $ "The low priority job was handled."
@@ -245,6 +245,10 @@ priorityTest = do
         ridLow <- submitTestRequest jc reqLow
         ridHigh <- getRequestId
         submitRequestUrgent jc ridHigh reqHigh
+        -- wait until both requests have arrived in redis.  Otherwise,
+        -- we might start on the non-urgent request before the urgent
+        -- one is in the queue.
+        waitForRequestSubmission r [ridLow, ridHigh]
         either absurd id <$> Async.race
             testJobWorker
             (either id id <$> Async.race (waitForResponse_ jc ridLow) (waitForResponse_ jc ridHigh))
@@ -266,6 +270,7 @@ priorityReenqueueTest r = do
         ridLow <- submitTestRequest jc reqLow
         ridHigh <- getRequestId
         submitRequestUrgent jc ridHigh reqHigh
+        waitForRequestSubmission r [ridLow, ridHigh]
         -- start a worker, and kill it after it started working on the job, so that it gets re-enqueued.
         either absurd id <$> Async.race stalledTestJobWorker
             (waitForHUnitPass upToAMinute $ do
@@ -284,6 +289,10 @@ priorityReenqueueTest r = do
             (either id id <$> Async.race (waitForResponse_ jc ridLow) (waitForResponse_ jc ridHigh))
     resp' `shouldBe` Just respHigh
 
+waitForRequestSubmission :: forall m. MonadConnect m => Redis -> [RequestId] -> m ()
+waitForRequestSubmission r rids =  waitForHUnitPass upToAMinute $ do
+    rids' <- getAllRequests r
+    rids' `shouldMatchList` rids
 
 expiredTest :: forall m . MonadConnect m => Redis -> m ()
 expiredTest r = either absurd id <$> Async.race timeoutJobWorker (withTimeoutClient $ \jc -> do
