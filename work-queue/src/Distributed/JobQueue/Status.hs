@@ -20,6 +20,7 @@ module Distributed.JobQueue.Status
     , getAllRequests
       -- * Re-exports from Internal
     , RequestEvent(..)
+    , ReenqueueReason(..)
     , getRequestEvents
     ) where
 
@@ -60,7 +61,9 @@ getJobQueueStatus :: MonadConnect m => Redis -> m JobQueueStatus
 getJobQueueStatus r = do
     checkRedisSchemaVersion r
     mLastTime <- lastHeartbeatCheck r
-    pending <- run r $ lrange (requestsKey r) 0 (-1)
+    pendingNormal <- run r $ lrange (requestsKey r) 0 (-1)
+    pendingUrgent <- run r $ lrange (urgentRequestsKey r) 0 (-1)
+    let pending = pendingUrgent ++ pendingNormal
     wids <- activeOrUnhandledWorkers r
     inactiveWids <- deadWorkers r
     -- We could instead use zrange with WITHSCORES, to retrieve the
@@ -123,9 +126,9 @@ getRequestStats r k = do
         _ -> return $ Just RequestStats {..}
           where
             rsEnqueueTime = lastMay [x | (x, RequestEnqueued) <- evs]
-            rsReenqueueByWorkerCount = length [() | (_, RequestWorkReenqueuedByWorker _) <- evs]
-            rsReenqueueByHeartbeatCount = length [() | (_, RequestWorkReenqueuedAfterHeartbeatFailure _) <- evs]
-            rsReenqueueByStaleKeyCount = length [() | (_, RequestWorkReenqueuedAsStale _) <- evs]
+            rsReenqueueByWorkerCount = length [() | (_, RequestWorkReenqueued ReenqueuedByWorker _) <- evs]
+            rsReenqueueByHeartbeatCount = length [() | (_, RequestWorkReenqueued ReenqueuedAfterHeartbeatFailure _) <- evs]
+            rsReenqueueByStaleKeyCount = length [() | (_, RequestWorkReenqueued ReenqueuedAsStale _) <- evs]
             rsComputeStartTime = lastMay [x | (x, RequestWorkStarted _) <- evs]
             rsComputeFinishTime = lastMay [x | (x, RequestWorkFinished _) <- evs]
             rsComputeTime = diffUTCTime <$> rsComputeFinishTime <*> rsComputeStartTime

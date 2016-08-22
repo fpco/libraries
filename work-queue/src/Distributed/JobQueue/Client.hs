@@ -27,6 +27,7 @@ module Distributed.JobQueue.Client
     , withJobClient
       -- * Submitting requests and retrieving results
     , submitRequest
+    , submitRequestUrgent
     , waitForResponse
     , waitForResponse_
     , checkForResponse
@@ -148,7 +149,36 @@ submitRequest :: forall request response m.
     -- with 'uniqueRequestId'.
     -> request
     -> m ()
-submitRequest JobClient{..} rid request = do
+submitRequest = submitRequestWithPriority PriorityNormal
+
+-- | Submits a new request that will be de-enqueued sooner than any job request submitted via 'submitRequest'.
+submitRequestUrgent :: forall request response m.
+       (MonadConnect m, Sendable request, Sendable response)
+    => JobClient response
+    -- ^ Client that will schedule the request (to generate a client,
+    -- use 'withJobClient')
+    -> RequestId
+    -- ^ Unique Id that will reference this request.  Can be generated
+    -- with 'uniqueRequestId'.
+    -> request
+    -> m ()
+submitRequestUrgent = submitRequestWithPriority PriorityUrgent
+
+
+-- | As 'submitRequest', but allows giving the job a custom 'RequestPriority'.
+submitRequestWithPriority :: forall request response m.
+       (MonadConnect m, Sendable request, Sendable response)
+    => RequestPriority
+    -- ^ Priority of the request.
+    -> JobClient response
+    -- ^ Client that will schedule the request (to generate a client,
+    -- use 'withJobClient')
+    -> RequestId
+    -- ^ Unique Id that will reference this request.  Can be generated
+    -- with 'uniqueRequestId'.
+    -> request
+    -> m ()
+submitRequestWithPriority priority JobClient{..} rid request = do
     let encoded = S.encode JobRequest
             { jrRequestTypeHash = typeHash (Proxy :: Proxy request)
             , jrResponseTypeHash = typeHash (Proxy :: Proxy response)
@@ -156,6 +186,7 @@ submitRequest JobClient{..} rid request = do
             , jrBody = S.encode request
             }
     $logDebugSJ "sendRequest" $ "Pushing request " <> tshow rid
+    when (priority == PriorityUrgent) (run_ jcRedis (sadd (urgentRequestsSetKey jcRedis) (unRequestId rid :| [])))
     -- NOTE: It's crucial for the body to be added _before_ the request id in the requests
     -- list, since the worker will just drop the request id if the body is missing.
     added <- run jcRedis (set (requestDataKey jcRedis rid) encoded [EX (jqcRequestExpiry jcConfig), NX])
@@ -163,7 +194,10 @@ submitRequest JobClient{..} rid request = do
         then $logWarnSJ "submitRequest" $
             "Didn't submit request " <> tshow rid <> " because it already exists in redis."
         else do
-            run_ jcRedis (lpush (requestsKey jcRedis) (unRequestId rid :| []))
+            let queueKey = case priority of
+                    PriorityNormal -> requestsKey jcRedis
+                    PriorityUrgent -> urgentRequestsKey jcRedis
+            run_ jcRedis (lpush queueKey (unRequestId rid :| []))
             $logDebugSJ "submitRequest" $ "Notifying about request " <> tshow rid
             sendNotify jcRedis (requestChannel jcRedis)
             addRequestEnqueuedEvent jcConfig jcRedis rid
@@ -300,6 +334,8 @@ cancelRequest expiry redis k = do
     run_ redis (del (unVKey (requestDataKey redis k) :| []))
     run_ redis (del (unVKey (responseDataKey redis k) :| []))
     run_ redis (lrem (requestsKey redis) 1 (unRequestId k))
+    run_ redis (lrem (urgentRequestsKey redis) 1 (unRequestId k))
+    run_ redis (srem (urgentRequestsSetKey redis) (unRequestId k :| []))
 
 -- | Manually trigger re-enqueuement of jobs of dead workers.
 --
@@ -320,23 +356,9 @@ handleHeartbeatFailures :: MonadConnect m
                            => Redis
                            -> NonEmpty WorkerId -> m () -> m ()
 handleHeartbeatFailures r inactive cleanup = do
-    reenqueuedSome <- or <$> forM inactive (handleWorkerFailure r)
+    reenqueuedSome <- or <$> forM inactive
+        (\wid -> isJust <$> reenqueueRequest ReenqueuedAfterHeartbeatFailure r wid)
     cleanup
     when reenqueuedSome $ do
         $logDebugSJ "JobClient" ("Notifying that some requests were re-enqueued"::Text)
         sendNotify r (requestChannel r)
-
-handleWorkerFailure :: (MonadConnect m) => Redis -> WorkerId -> m Bool
-handleWorkerFailure r wid = do
-    -- REVIEW TODO it would be nice to check that after this the activeKey is empty,
-    -- but we cannot do it (the worker might still be alive and adding a request to
-    -- the activeKey.)
-    mbRid <- run r (rpoplpush (activeKey r wid) (requestsKey r))
-    checkActiveKey r wid
-    case mbRid of
-        Nothing -> do
-            $logWarnSJ "JobQueue" $ tshow wid <> " failed its heartbeat, but didn't have an item to re-enqueue."
-        Just rid -> do
-            addRequestEvent r (RequestId rid) (RequestWorkReenqueuedAfterHeartbeatFailure wid)
-            $logWarnSJ "JobQueue" $ tshow wid <> " failed its heartbeat, and " <> tshow rid <> " was re-enqueued."
-    return (isJust mbRid)

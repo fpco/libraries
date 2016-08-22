@@ -7,7 +7,7 @@
 module Distributed.JobQueue.Internal where
 
 import ClassyPrelude
-import Control.Monad.Logger.JSON.Extra (logWarnJ, logInfoJ)
+import Control.Monad.Logger.JSON.Extra (logWarnJ, logInfoJ , logWarnSJ)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import Data.List.NonEmpty hiding (unwords)
@@ -17,6 +17,7 @@ import Distributed.Types
 import Distributed.Heartbeat
 import FP.Redis
 import Data.Store.TypeHash (TypeHash)
+import qualified Data.ByteString.Char8 as BSC8
 
 -- * Redis keys
 
@@ -24,6 +25,20 @@ import Data.Store.TypeHash (TypeHash)
 -- and the workers pop them off.
 requestsKey :: Redis -> LKey
 requestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests"
+
+-- | List of urgent 'RequestId's.
+--
+--Jobs in this queue take precedence over those in 'requestsKey'.
+urgentRequestsKey :: Redis -> LKey
+urgentRequestsKey r = LKey $ Key $ redisKeyPrefix r <> "requests-urgent"
+
+-- | Key to the set of all 'RequestId's of urgent requests.
+--
+-- This holds all the 'RequestId's of urgent requests, regardless of
+-- whether they are already taken by a worker.  This is used to make
+-- sure that urgent requests are re-enqueued to the urgent queue.
+urgentRequestsSetKey :: Redis -> SKey
+urgentRequestsSetKey r = SKey $ Key $ redisKeyPrefix r <> "requests-urgent-set"
 
 -- | Given a 'RequestId', computes the key for the request data.
 requestDataKey :: Redis -> RequestId -> VKey
@@ -129,19 +144,81 @@ checkActiveKey r wid = do
                 , pack . show $ nRequests
                 ]
 
+-- | Requests are re-enqueued in three situations:
+data ReenqueueReason =
+    ReenqueuedByWorker -- ^ The worker decided to re-enqueue the request.
+    | ReenqueuedAfterHeartbeatFailure -- ^ The worker failed its heartbeat
+    | ReenqueuedAsStale -- ^ A job is detected as stale, as in "Distributed.JobQueue.StaleKeys"
+    deriving (Generic, Show, Typeable)
+instance Store ReenqueueReason
+instance Aeson.ToJSON ReenqueueReason
+
 -- | Request Events
 data RequestEvent
     = RequestEnqueued
     | RequestWorkStarted !WorkerId
-    | RequestWorkReenqueuedByWorker !WorkerId
-    | RequestWorkReenqueuedAfterHeartbeatFailure !WorkerId
-    | RequestWorkReenqueuedAsStale !WorkerId
+    | RequestWorkReenqueued !ReenqueueReason !WorkerId
     | RequestWorkFinished !WorkerId
     | RequestResponseRead
     deriving (Generic, Show, Typeable)
-
 instance Store RequestEvent
 instance Aeson.ToJSON RequestEvent
+
+-- | Re-enqueue the request of a given worker.
+reenqueueRequest :: MonadConnect m => ReenqueueReason -> Redis -> WorkerId -> m (Maybe RequestId)
+reenqueueRequest reason r wid = do
+    mbRid <- run r reenqueue
+    when (mbRid == Just "ERROR_ACTIVEKEY_NOT_EMPTY")
+        (liftIO $ throwIO $ InternalJobQueueException $
+         "activeKey of worker " ++ tshow wid ++ " was not empty after its job was re-enqueued.")
+    checkActiveKey r wid
+    case mbRid of
+        Nothing -> failureLog
+        Just rid -> do
+            addRequestEvent r (RequestId rid) (RequestWorkReenqueued reason wid)
+            successLog rid
+    return $ RequestId <$> mbRid
+    where
+      -- re-enqueue the job to the appropriate queue (if the job is
+      -- urgent, to urgentRequestsKey, otherwise to requestsKey).  We
+      -- use a LUA script to save roundtrips, and to ensure atomicity.
+      reenqueue :: CommandRequest (Maybe ByteString)
+      reenqueue = eval
+          (BSC8.unlines [ "local rid = redis.call('LPOP', KEYS[1])"
+                        , "if rid == false then"
+                        , "  return false"
+                        , "else"
+                        , "  if redis.call('LLEN', KEYS[1]) ~= 0 then"
+                        , "    return 'ERROR_ACTIVEKEY_NOT_EMPTY'"
+                        , "  else"
+                        , "    local isUrgent = redis.call('SISMEMBER', KEYS[2], rid)"
+                        , "    if isUrgent then"
+                        , "      redis.call('LPUSH', KEYS[3], rid)"
+                        , "    else"
+                        , "      redis.call('LPUSH', KEYS[4], rid)"
+                        , "    end"
+                        , "    return rid"
+                        , "  end"
+                        , "end"
+                     ])
+          [ unLKey $ activeKey r wid
+          , unSKey $ urgentRequestsSetKey r
+          , unLKey $ urgentRequestsKey r
+          , unLKey $ requestsKey r
+          ]
+          []
+      failureLog = case reason of
+          ReenqueuedByWorker -> return () -- The log will be produced by 'checkPoppedActiveKey'.
+          ReenqueuedAfterHeartbeatFailure ->
+              $logWarnSJ "JobQueue" $ tshow wid <> " failed its heartbeat, but didn't have an item to re-enqueue."
+          ReenqueuedAsStale ->
+              $logWarnSJ "JobQueue" $ tshow wid <> " is not active anymore, and does not have a job."
+      successLog rid = case reason of
+          ReenqueuedByWorker -> return () -- The log will be produced by 'checkPoppedActiveKey'.
+          ReenqueuedAfterHeartbeatFailure ->
+              $logWarnSJ "JobQueue" $ tshow wid <> " failed its heartbeat, and " <> tshow rid <> " was re-enqueued."
+          ReenqueuedAsStale ->
+              $logWarnSJ "JobQueue" $ tshow wid <> " is not active anymore, and " <> tshow rid <> " was re-enqueued."
 
 data EventLogMessage
     = EventLogMessage
@@ -182,6 +259,14 @@ getRequestEvents r k =
 
 -- * Config
 
+
+-- | Priority of a request.
+--
+-- Requests with priority 'PriorityUrgent' will be enqueued at the
+-- front of the queue, so they will be served first.
+data RequestPriority = PriorityUrgent
+                     | PriorityNormal
+                     deriving Eq
 -- | Configuration of job-queue, used by both the client and worker.
 --
 -- REVIEW TODO: Take a look if it's worth having just one type for client

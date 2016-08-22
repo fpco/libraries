@@ -92,7 +92,7 @@ waitForJobReenqueued redis = waitForHUnitPass upToAMinute $ do
     requestEvents <- getRequestEvents redis requestId
     requestEvents `shouldSatisfy`
         (isJust . find (\(_, rEvent) -> case rEvent of
-                               RequestWorkReenqueuedAsStale _ -> True
+                               RequestWorkReenqueued ReenqueuedAsStale _ -> True
                                _ -> False))
 
 
