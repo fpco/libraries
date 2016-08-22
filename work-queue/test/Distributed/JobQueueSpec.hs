@@ -233,7 +233,7 @@ spec = do
 priorityTest :: forall m. MonadConnect m => Redis -> m ()
 priorityTest r = do
     let reqLow = Request
-            { requestDelay = 0
+            { requestDelay = 1000 * 1000
             , requestResponse = DontReenqueue $ Response $ "The low priority job was handled."
             }
         respHigh = Response "The high priority job was handled."
@@ -258,7 +258,7 @@ priorityTest r = do
 priorityReenqueueTest :: forall m. MonadConnect m => Redis -> m ()
 priorityReenqueueTest r = do
     let reqLow = Request
-            { requestDelay = 0
+            { requestDelay = 1000 * 1000
             , requestResponse = DontReenqueue $ Response $ "The low priority job was handled."
             }
         respHigh = Response "The high priority job was handled."
