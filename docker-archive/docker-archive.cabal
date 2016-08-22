@@ -1,0 +1,51 @@
+name:          docker-archive
+version:       0.1.0.0
+synopsis:      Simple project template from stack
+description:   Please see README.md
+homepage:      http://github.com/githubuser/ark#readme
+license:       AllRightsReserved
+license-file:  LICENSE
+author:        Author name here
+maintainer:    example@example.com
+copyright:     2010 Author Here
+category:      Web
+build-type:    Simple
+cabal-version: >=1.10
+
+library
+  hs-source-dirs:    src
+  default-language:  Haskell2010
+
+  exposed-modules:   Docker.Archive
+
+  other-modules:     Docker.Archive.Dockerfile
+
+  ghc-options:       -Wall -Werror
+
+  build-depends:     base
+
+                   , bytestring
+                   , exceptions
+                   , Glob
+                   , path
+                   , path-io
+                   , process
+                   , tar
+                   , text
+                   , transformers
+
+executable docker-archive
+  main-is:           Main.hs
+  hs-source-dirs:    app
+  default-language:  Haskell2010
+
+  ghc-options:       -Wall -Werror -rtsopts
+
+  build-depends:     base
+
+                   , docker-archive
+                   , exceptions
+                   , Glob
+                   , path
+                   , path-io
+                   , optparse-applicative

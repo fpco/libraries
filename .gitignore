@@ -13,3 +13,6 @@ cabal.config
 .docker-sandbox
 .eventlog
 .stack-work/
+.DS_Store
+*#
+*~
