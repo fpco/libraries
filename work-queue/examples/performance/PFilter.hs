@@ -14,7 +14,15 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE BangPatterns #-}
-module Main where
+module PFilter
+       ( Options (..)
+       , pfConfig
+       , dpfSlave
+       , dpfMaster
+       , generateRequest
+       , jqc
+       , csvInfo
+       ) where
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
@@ -22,7 +30,6 @@ import qualified Data.HashMap.Strict as HMS
 import qualified Data.Map.Strict as M
 import           Data.Number.Erf
 import           Data.Random
-import           Data.Random.Source.PureMT
 import           Data.Store
 import           Data.Store.TypeHash (mkManyHasTypeHash)
 import qualified Data.Vector as V
@@ -31,8 +38,6 @@ import           Distributed.JobQueue.Client
 import           Distributed.Stateful.Master
 import qualified Distributed.Stateful.Master as WQ
 import           FP.Redis (MonadConnect)
-import qualified Options.Applicative as OA
-import           PerformanceUtils
 
 -- * type definitions
 
@@ -198,8 +203,7 @@ evolvingSystemFromList (x:xs) = EvolvingSystem (Just (evolvingSystemFromList xs,
 
 -- | Command line options
 data Options = Options
-               { optNoNetworkMessage :: Bool
-               , optStepsize :: Double
+               { optStepsize :: Double
                , optDeltaT :: Double
                , optSteps :: Int
                , optOmega2 :: Double
@@ -207,57 +211,8 @@ data Options = Options
                , optPhi0 :: Double
                , optResampleThreshold :: Double
                , optNParticles :: Int
-               , optNSlaves :: Int
                , optOutput :: FilePath
-               , optSpawnWorker :: Bool
                }
-
-options :: OA.Parser Options
-options = Options
-    <$> OA.switch (OA.long "no-network-message"
-                   `mappend` OA.help "Run in a single process, communicating via STM (instead of using NetworkMessage")
-    <*> (OA.option OA.auto (OA.long "stepsize"
-                            `mappend` OA.short 'h'
-                            `mappend` OA.help "Stepsize for Runge-Kutta integration")
-         <|> pure 0.0001)
-    <*> (OA.option OA.auto (OA.long "deltat"
-                            `mappend` OA.short 'd'
-                            `mappend` OA.help "Time interval between to particle filter steps")
-         <|> pure 0.1)
-    <*> (OA.option OA.auto (OA.long "steps"
-                            `mappend` OA.short 's'
-                            `mappend` OA.help "Number of particle filter steps")
-         <|> pure 10)
-    <*> (OA.option OA.auto (OA.long "omega2"
-                            `mappend` OA.short 'w'
-                            `mappend` OA.help "Squared eigenfrequency of the pendulum")
-         <|> pure 1)
-    <*> (OA.option OA.auto (OA.long "omega2-interval"
-                            `mappend` OA.short 'i'
-                            `mappend` OA.help "Size of the interval in which we perform the parameter search")
-         <|> pure 2)
-    <*> (OA.option OA.auto (OA.long "phi0"
-                            `mappend` OA.short 'p'
-                            `mappend` OA.help "Initial condition")
-         <|> pure (pi/2))
-    <*> (OA.option OA.auto (OA.long "resample-threshold"
-                            `mappend` OA.short 't'
-                            `mappend` OA.help "When the effective number of particles divided my the number of particles drops below this ratio, we perform resampling.  Should be in the interval [0,1], where 0 means no resampling, and 1 means resampling during every update.")
-         <|> pure 0.5)
-    <*> (OA.option OA.auto (OA.long "nparticles"
-                            `mappend` OA.short 'N'
-                            `mappend` OA.help "Number of particles")
-         <|> pure 1000)
-    <*> OA.option OA.auto (OA.long "nslaves"
-                           `mappend` OA.short 'n'
-                           `mappend` OA.help "Number of slave nodes")
-    <*> (OA.strOption (OA.long "output"
-                           `mappend` OA.short 'o'
-                           `mappend` OA.help "FilePath for the csv output")
-         <|> pure "pfilter-bench.csv")
-    <*> OA.switch (OA.long "spawn-worker"
-                   `mappend` OA.help "Used internally to spawn a worker")
-
 
 -- | For evolving the dynamical system,
 -- we use a simple fourth order Runge-Kutta, with a fixed time step.
@@ -350,35 +305,14 @@ $(mkManyHasTypeHash [ [t| PFResponse MyParameter |]
                     , [t| PFState MyParameter MyState MySummary |]
                     ])
 
-main :: IO ()
-main = do
-    opts <- OA.execParser
-        (OA.info (OA.helper <*> options)
-         (OA.fullDesc
-          `mappend` OA.progDesc
-          (unlines ["Run a distributed particle filter, to benchmark the work-queue library."
-                   , ""
-                   , "The particle filter estimates the parameter omega of a simple dynamical system,"
-                   , "a (non-linearized) pendulum, phi'' + omega2 * sin phi == 0."
-                   ])))
-    let cfg = pfConfig opts
-        masterArgs = MasterArgs
-            { maMaxBatchSize = Just 5
-            , maUpdate = dpfSlave cfg
-            }
-    randomsrc <- newIORef (pureMT 42)
-    let reqParas = ( optOutput opts
-                   , [ ("NetworkMessage", pack . show . not . optNoNetworkMessage $ opts)
-                     , ("stepsize", pack . show . optStepsize $ opts)
-                     , ("deltat", pack . show . optDeltaT $ opts)
-                     , ("steps", pack . show . optSteps $ opts)
-                     , ("particles", pack . show . optNParticles $ opts)
-                     , ("omega2", pack . show . optOmega2 $ opts)
-                     , ("omega2_interval", pack . show . optOmega2Range $ opts)
-                     , ("phi0", pack . show . optPhi0 $ opts)
-                     , ("resample_threshold", pack . show . optResampleThreshold $ opts)
-                     ])
-    logErrors $
-        if optNoNetworkMessage opts
-        then runWithoutNM reqParas masterArgs (optNSlaves opts) (dpfMaster cfg randomsrc) (generateRequest opts randomsrc)
-        else (runWithNM reqParas jqc (optSpawnWorker opts) masterArgs (optNSlaves opts) (dpfMaster cfg randomsrc) (generateRequest opts randomsrc))
+csvInfo ::  Options -> [(Text, Text)]
+csvInfo opts =
+    [ ("stepsize", pack . show . optStepsize $ opts)
+    , ("deltat", pack . show . optDeltaT $ opts)
+    , ("steps", pack . show . optSteps $ opts)
+    , ("particles", pack . show . optNParticles $ opts)
+    , ("omega2", pack . show . optOmega2 $ opts)
+    , ("omega2_interval", pack . show . optOmega2Range $ opts)
+    , ("phi0", pack . show . optPhi0 $ opts)
+    , ("resample_threshold", pack . show . optResampleThreshold $ opts)
+    ]

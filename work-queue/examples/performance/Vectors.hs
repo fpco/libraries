@@ -10,6 +10,12 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
+module Vectors ( Options (..)
+               , masterArgs
+               , myAction, myStates
+               , csvInfo
+               , jqc
+               ) where
 
 import           ClassyPrelude
 import           Control.DeepSeq
@@ -23,8 +29,7 @@ import           Distributed.JobQueue.Client
 import           Distributed.Stateful
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
-import qualified Options.Applicative as OA
-import           PerformanceUtils
+import TypeHash.Orphans ()
 
 type Request = [State]
 type Response = Double
@@ -35,10 +40,7 @@ type Input = V.Vector Double
 type Context = Double
 type Output = Double
 
-$(mkManyHasTypeHash [ [t| ByteString |]
-                    , [t| Double |]
-                    , [t| Input |]
-                    , [t| Request |]
+$(mkManyHasTypeHash [ [t| Request |]
                     ])
 
 -- | Perform some computations.  The only aim is to take about a
@@ -93,47 +95,12 @@ jqc :: JobQueueConfig
 jqc = defaultJobQueueConfig "perf:unmotivated:"
 
 data Options = Options
-               { optNoNetworkMessage :: Bool
-               , optVLength :: Int
+               { optVLength :: Int
                , optNStates :: Int
-               , optNSlaves :: Int
                , optOutput :: FilePath
-               , optSpawnWorker :: Bool
                }
 
-options :: OA.Parser Options
-options = Options
-    <$> OA.switch (OA.long "no-network-message"
-                   `mappend` OA.help "Run in a single process, communicating via STM (instead of using NetworkMessage")
-    <*> (OA.option OA.auto (OA.short 'l'
-                            `mappend` OA.help "length of vectors")
-         OA.<|> pure 1000)
-    <*> (OA.option OA.auto (OA.short 'N'
-                            `mappend` OA.help "number of states")
-         OA.<|> pure 200)
-    <*> OA.option OA.auto (OA.long "nslaves"
-                           `mappend` OA.short 'n'
-                           `mappend` OA.help "Number of slave nodes")
-    <*> (OA.strOption (OA.long "output"
-                           `mappend` OA.short 'o'
-                           `mappend` OA.help "FilePath for the csv output")
-         <|> pure "unmotivated-bench.csv")
-    <*> OA.switch (OA.long "spawn-worker"
-                   `mappend` OA.help "Used internally to spawn a worker")
-
-
-main :: IO ()
-main = do
-    opts <- OA.execParser
-        (OA.info (OA.helper <*> options)
-         (OA.fullDesc
-          `mappend` OA.progDesc "Run a benchmark that is not motivated by anything, just performs some calculations with vectors."))
-    let reqParas = ( optOutput opts
-                   , [ ("NetworkMessage", pack . show . not . optNoNetworkMessage $ opts)
-                     , ("l", pack . show . optVLength $ opts)
-                     , ("N", pack . show . optNStates $ opts)
-                     ])
-    logErrors $
-        if optNoNetworkMessage opts
-        then runWithoutNM reqParas (masterArgs opts) (optNSlaves opts) myAction (return $ myStates opts)
-        else runWithNM reqParas jqc (optSpawnWorker opts) (masterArgs opts) (optNSlaves opts) myAction (return $ myStates opts)
+csvInfo :: Options -> [(Text, Text)]
+csvInfo opts =
+    [ ("l", pack . show . optVLength $ opts)
+    , ("N", pack . show . optNStates $ opts)]

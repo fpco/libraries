@@ -12,6 +12,13 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE TypeFamilies #-}
+module KMeans ( Options (..)
+              , masterArgs
+              , distributeKMeans
+              , generateRequest
+              , csvInfo
+              , jqc
+              ) where
 
 import           ClassyPrelude
 import           Control.DeepSeq
@@ -30,57 +37,19 @@ import           Distributed.JobQueue.Client
 import           Distributed.Stateful
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
-import qualified Options.Applicative as OA
-import           PerformanceUtils
+import           TypeHash.Orphans ()
 
 
 -- * Command line options
 
 data Options = Options
-               { optNoNetworkMessage :: Bool
-               , optDim :: Int
+               { optDim :: Int
                , optNClusters :: Int
                , optNPoints :: Int
                , optGranularity :: Int
                , optNIterations :: Int
-               , optNSlaves :: Int
                , optOutput :: FilePath
-               , optSpawnWorker :: Bool
                }
-
-options :: OA.Parser Options
-options = Options
-    <$> OA.switch (OA.long "no-network-message"
-                   `mappend` OA.help "Run in a single process, communicating via STM (instead of using NetworkMessage")
-    <*> (OA.option OA.auto (OA.long "dim"
-                            `mappend` OA.short 'v'
-                            `mappend` OA.help "Vector space dimension")
-         <|> pure 10)
-    <*> (OA.option OA.auto (OA.long "clusters"
-                            `mappend` OA.short 'c'
-                            `mappend` OA.help "Number of clusters")
-         <|> pure 4)
-    <*> (OA.option OA.auto (OA.long "points"
-                            `mappend` OA.short 'p'
-                            `mappend` OA.help "Number of points")
-         <|> pure 1000000)
-    <*> (OA.option OA.auto (OA.long "granularity"
-                            `mappend` OA.short 'g'
-                            `mappend` OA.help "Points will be grouped into groups of this size for processing")
-         <|> pure 50000)
-    <*> (OA.option OA.auto (OA.long "iterations"
-                            `mappend` OA.short 'i'
-                            `mappend` OA.help "Number of iterations")
-         <|> pure 3)
-    <*> OA.option OA.auto (OA.long "nslaves"
-                           `mappend` OA.short 'n'
-                           `mappend` OA.help "Number of slave nodes")
-    <*> (OA.strOption (OA.long "output"
-                           `mappend` OA.short 'o'
-                           `mappend` OA.help "FilePath for the csv output")
-         <|> pure "kmeans-bench.csv")
-    <*> OA.switch (OA.long "spawn-worker"
-                   `mappend` OA.help "Used internally to spawn a worker")
 
 -- * Types and instances
 
@@ -130,8 +99,7 @@ instance Store Output
 instance Semigroup Output where
     (Output v1) <> (Output v2) = Output $ V.zipWith (<>) v1 v2
 
-$(mkManyHasTypeHash [ [t| Double |]
-                    , [t| Input |]
+$(mkManyHasTypeHash [ [t| Input |]
                     , [t| Request |]
                     , [t| Response |]
                     , [t| Output |]
@@ -234,12 +202,10 @@ generateRequest Options{..} = do
             return $ Point (UV.zipWith (+) v v')
     (flip evalRandT) r $ do
         centerPoints <-
-            -- V.generateM optNClusters (const (randPoint (0,10)))
             mapM (const $ randPoint (-1000,1000)) [0..optNClusters-1]
         let pointsPerCluster = optNPoints `div` optNClusters
-            clusterAroundPoint p = V.generateM pointsPerCluster (const $ randPointAround p) -- mapM (const $ randPointAround p) [1..pointsPerCluster]
+            clusterAroundPoint p = V.generateM pointsPerCluster (const $ randPointAround p)
         ps <- mapM clusterAroundPoint centerPoints
-        -- let initialClusters = zipWith (\i p -> Cluster i p) [0..] centerPoints
         initialClusters <- V.mapM (\(i, (Point p)) -> do
                                           (Point jitter) <- randPoint (-10,10)
                                           let p' = UV.zipWith (\x y -> (x + y)) p jitter
@@ -261,19 +227,10 @@ generateRequest Options{..} = do
 jqc :: JobQueueConfig
 jqc = defaultJobQueueConfig "perf:kmeans:"
 
-main :: IO ()
-main = do
-    opts <- OA.execParser (OA.info (OA.helper <*> options)
-                          (OA.fullDesc
-                          `mappend` OA.progDesc "Run a distributed kmeans, to benchmark the work-queue library"))
-    let reqParas = ( optOutput opts
-                   , [ ("NetworkMessage", pack . show . not . optNoNetworkMessage $ opts)
-                     , ("clusters", pack . show . optNClusters $ opts)
-                     , ("points", pack . show . optNPoints $ opts)
-                     , ("granularity", pack . show . optGranularity $ opts)
-                     , ("iterations", pack . show . optNIterations $ opts)
-                     ])
-    logErrors $
-        if optNoNetworkMessage opts
-        then runWithoutNM reqParas (masterArgs opts) (optNSlaves opts) distributeKMeans (generateRequest opts)
-        else runWithNM reqParas jqc (optSpawnWorker opts) (masterArgs opts) (optNSlaves opts) distributeKMeans (generateRequest opts)
+csvInfo :: Options -> [(Text, Text)]
+csvInfo opts =
+    [ ("clusters", pack . show . optNClusters $ opts)
+    , ("points", pack . show . optNPoints $ opts)
+    , ("granularity", pack . show . optGranularity $ opts)
+    , ("iterations", pack . show . optNIterations $ opts)
+    ]

@@ -174,73 +174,18 @@ executable hpc-example-stateful
 
   ghc-options:         -Wall -threaded
 
--- a simple example using the work-queue. Tries to have an update step
--- that is similarly in cost to the dpf, but does not resemble a real
--- problem.
-executable wq-perf-unmotivated
-  main-is:             unmotivated/Main.hs
+executable wq-performance
+  main-is:             Main.hs
   other-modules:       PerformanceUtils
+                     , PFilter
+                     , Vectors
+                     , KMeans
+                     , TypeHash.Orphans
   hs-source-dirs:      examples/performance
   default-language:    Haskell2010
   build-depends:       base
                      , MonadRandom
                      , bytestring
-                     , classy-prelude
-                     , conduit-extra
-                     , criterion
-                     , deepseq
-                     , directory
-                     , lifted-base
-                     , mesosync
-                     , monad-logger
-                     , optparse-applicative
-                     , process
-                     , redis-fp
-                     , store
-                     , streaming-commons
-                     , transformers
-                     , unordered-containers
-                     , vector
-                     , work-queue
-
-  ghc-options:         -Wall -threaded -rtsopts -fprof-auto
-
--- distributed kmeans algorithm, using the work-queue.
-executable wq-perf-kmeans
-  main-is:             kmeans/Main.hs
-  hs-source-dirs:      examples/performance
-  other-modules:       PerformanceUtils
-  default-language:    Haskell2010
-  build-depends:       base
-                     , MonadRandom
-                     , classy-prelude
-                     , conduit-extra
-                     , criterion
-                     , deepseq
-                     , directory
-                     , extra
-                     , lifted-base
-                     , mesosync
-                     , monad-logger
-                     , optparse-applicative
-                     , process
-                     , redis-fp
-                     , semigroups
-                     , store
-                     , streaming-commons
-                     , unordered-containers
-                     , vector
-                     , work-queue
-
-  ghc-options:         -Wall -threaded -rtsopts -fprof-auto
-
-executable wq-perf-pfilter
-  main-is:             pfilter/Main.hs
-  other-modules:       PerformanceUtils
-  hs-source-dirs:      examples/performance
-  default-language:    Haskell2010
-  build-depends:       base
-                     , MonadRandom
                      , classy-prelude
                      , conduit-extra
                      , containers
@@ -258,9 +203,12 @@ executable wq-perf-pfilter
                      , random-source
                      , redis-fp
                      , semigroups
-                     , streaming-commons
                      , store
+                     , streaming-commons
+                     , text
+                     , transformers
                      , unordered-containers
                      , vector
                      , work-queue
-  ghc-options:         -Wall -threaded -rtsopts -funbox-strict-fields
+
+  ghc-options:         -Wall -threaded -rtsopts -fprof-auto -funbox-strict-fields
