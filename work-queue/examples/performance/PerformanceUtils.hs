@@ -12,7 +12,10 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-module PerformanceUtils where
+module PerformanceUtils ( runWithNM
+                        , runWithoutNM
+                        , logErrors
+                        ) where
 
 import           ClassyPrelude
 import           Control.Concurrent.Lifted (threadDelay)
@@ -21,12 +24,9 @@ import           Control.DeepSeq
 import           Control.Monad.Logger
 import           Criterion.Measurement
 import qualified Data.Conduit.Network as CN
-import           Data.List (init)
 import           Data.Store (Store)
 import           Data.Store.TypeHash
-import           Data.Streaming.Process (Inherited(..), ClosedStream(..), InputSource
-                                        , OutputSink, streamingProcess, waitForStreamingProcess
-                                        , ProcessExitedUnsuccessfully(..), streamingProcessHandleRaw)
+import           Data.Streaming.Process (Inherited(..), ClosedStream(..), streamingProcess, waitForStreamingProcess, ProcessExitedUnsuccessfully(..), streamingProcessHandleRaw)
 import           Data.Void
 import           Distributed.JobQueue.Client
 import           Distributed.JobQueue.Worker
@@ -39,30 +39,6 @@ import           System.Environment (getExecutablePath)
 import           System.Exit (ExitCode(..))
 import           System.IO (withFile, IOMode (..))
 import           System.Process
-
-
-withCheckedProcessCleanup
-    :: ( InputSource stdin
-       , OutputSink stderr
-       , OutputSink stdout
-       )
-    => CreateProcess
-    -> (stdin -> stdout -> stderr -> IO b)
-    -> IO b
-withCheckedProcessCleanup cp f = do
-    (x, y, z, sph) <- streamingProcess cp
-    res <- f x y z `onException` (terminateProcess (streamingProcessHandleRaw sph))
-    ec <- waitForStreamingProcess sph
-    if ec == ExitSuccess
-        then return res
-        else throwIO $ ProcessExitedUnsuccessfully cp ec
-
-spawnAndWaitForWorker :: MonadIO m => m ()
-spawnAndWaitForWorker = liftIO $ do
-    program <- getExecutablePath
-    args <- getFullArgs
-    let cp = proc program ("--spawn-worker":map unpack args)
-    withCheckedProcessCleanup cp (\ClosedStream Inherited Inherited -> forever (threadDelay maxBound) >> return ())
 
 withWorker :: MonadConnect m => m a -> m a
 withWorker cont = do
@@ -89,18 +65,19 @@ withNWorkers n cont = withNWorkers (n-1) (withWorker cont)
 logErrors :: MonadIO m => LoggingT m a -> m a
 logErrors = runStdoutLoggingT . filterLogger (\_ ll -> ll >= LevelError)
 
-performRequest :: forall m response request.
-                 ( MonadConnect m
-                 , Store request, Store response
-                 , HasTypeHash request, HasTypeHash response
-                 , Show response)
-                 => (FilePath, [(Text, Text)], Int)
-                 -> m request
-                 -> JobClient response
-                 -> m ()
-performRequest (fp, reqParas, nSlaves) generateRequest jc = do
+-- | Measure the time between submitting a request and receiving the
+-- corresponding response.
+measureRequestTime :: forall m response request.
+    ( MonadConnect m
+    , Store request, Store response
+    , HasTypeHash request, HasTypeHash response
+    , Show response)
+    => m request
+    -> JobClient response
+    -> m Double -- ^ Wall time between submitting the request and
+               -- receiving the response.
+measureRequestTime generateRequest jc = do
     liftIO initializeTime
-    tzero <- liftIO getTime
     rid <- uniqueRequestId
     req <- generateRequest
     t0 <- liftIO getTime
@@ -108,13 +85,7 @@ performRequest (fp, reqParas, nSlaves) generateRequest jc = do
     mRes <- waitForResponse_ jc rid
     liftIO . putStrLn $ unwords [ "result:", pack $ show (mRes :: Maybe response)]
     t1 <- liftIO getTime
-    liftIO . putStrLn $ "Generating the request took" ++ pack (show (t0 - tzero)) ++ " seconds."
-    liftIO . putStrLn $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
-    liftIO . writeToCsv fp $ reqParas ++ [ ("slaves", pack $ show nSlaves)
-                                         , ("time", pack $ show (t1 - t0))
-                                         ]
-
-
+    return (t1 - t0)
 
 runWithNM :: forall m context input output state request response.
     ( MonadConnect m
@@ -122,7 +93,8 @@ runWithNM :: forall m context input output state request response.
     , Store state, Store context, Store input, Store output, Store request, Store response
     , HasTypeHash state, HasTypeHash context, HasTypeHash input, HasTypeHash output, HasTypeHash request, HasTypeHash response
     , Show response)
-    => (FilePath, [(Text, Text)])
+    => FilePath
+    -> [(Text, Text)]
     -> JobQueueConfig
     -> Bool
     -> MasterArgs m state context input output
@@ -132,7 +104,7 @@ runWithNM :: forall m context input output state request response.
       -> m response)
     -> m request
     -> m ()
-runWithNM (fp, reqParas) jqc spawnWorker masterArgs nSlaves workerFunc generateRequest =
+runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateRequest =
     if spawnWorker
        then do putStrLn "spawning worker"
                let ss = CN.serverSettings 3333 "*"
@@ -144,23 +116,26 @@ runWithNM (fp, reqParas) jqc spawnWorker masterArgs nSlaves workerFunc generateR
                    masterArgs
                    (NMStatefulMasterArgs (Just nSlaves) (Just nSlaves) (1000 * 1000))
                    (\mh _rid req -> DontReenqueue <$> workerFunc req mh)
-        else withNWorkers
+        else do
+             time <- withNWorkers
                  (nSlaves + 1) -- +1 for the master
-                 (withJobClient jqc $ \(jc :: JobClient response) -> performRequest (fp, reqParas, nSlaves) generateRequest jc)
+                 (withJobClient jqc $ \(jc :: JobClient response) -> measureRequestTime generateRequest jc)
+             liftIO $ writeToCsv fp (("time", pack $ show time):csvInfo)
 
 runWithoutNM ::
-  ( MonadConnect m
-  , Show response, NFData state
-  , NFData output, Store state)
-  => (FilePath, [(Text, Text)])
-  -> MasterArgs m state context input output
-  -> Int
-  -> (request
-      -> MasterHandle m state context input output
-      -> m response)
-  -> m request
-  -> m ()
-runWithoutNM (fp, reqParas) masterArgs nSlaves masterFunc generateRequest = do
+    ( MonadConnect m
+    , Show response, NFData state
+    , NFData output, Store state)
+    => FilePath
+    -> [(Text, Text)]
+    -> MasterArgs m state context input output
+    -> Int
+    -> (request
+       -> MasterHandle m state context input output
+       -> m response)
+    -> m request
+    -> m ()
+runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
     req <- generateRequest
     liftIO initializeTime
     t0 <- liftIO getTime
@@ -168,16 +143,16 @@ runWithoutNM (fp, reqParas) masterArgs nSlaves masterFunc generateRequest = do
     print res
     t1 <- liftIO getTime
     putStrLn $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
-    liftIO . writeToCsv fp $ reqParas ++ [ ("slaves", pack $ show nSlaves)
-                                         , ("time", pack $ show (t1 - t0))
-                                         ]
+    liftIO . writeToCsv fp $ ("time", pack $ show (t1 - t0)):csvInfo
 
+-- | Write key value pairs to a csv file.
+--
+-- If the file exists, it is assumed that the header also exists, and
+-- the values are appended.  If the file does not exist yet, it is
+-- created, and the header and data is written.
 writeToCsv :: FilePath -> [(Text, Text)] -> IO ()
 writeToCsv fp vals = do
-    gitHash <- readCreateProcess (shell "git rev-parse HEAD") ""
-    nodename <- readCreateProcess (shell "uname -n") ""
-    let vals' = ("commit", take 8 $ pack gitHash):("node", pack $ init nodename):vals
     exists <- doesFileExist fp
     withFile fp (if exists then AppendMode else WriteMode) $ \h -> do
-        unless exists (hPutStrLn h $ intercalate "," $ map fst vals')
-        hPutStrLn h $ intercalate "," $ map snd vals'
+        unless exists (hPutStrLn h $ intercalate "," $ map fst vals)
+        hPutStrLn h $ intercalate "," $ map snd vals
