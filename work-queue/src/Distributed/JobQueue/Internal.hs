@@ -7,8 +7,7 @@
 module Distributed.JobQueue.Internal where
 
 import ClassyPrelude
-import Control.Monad.Logger.JSON.Extra (logWarnJ, logInfoJ
-                                       , logWarnSJ)
+import Control.Monad.Logger.JSON.Extra (logWarnJ, logInfoJ , logWarnSJ)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import Data.List.NonEmpty hiding (unwords)
@@ -18,7 +17,7 @@ import Distributed.Types
 import Distributed.Heartbeat
 import FP.Redis
 import Data.Store.TypeHash (TypeHash)
-import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Char8 as BSC8
 
 -- * Redis keys
 
@@ -185,22 +184,22 @@ reenqueueRequest reason r wid = do
       -- use a LUA script to save roundtrips, and to ensure atomicity.
       reenqueue :: CommandRequest (Maybe ByteString)
       reenqueue = eval
-          (B.unlines [ "local rid = redis.call('LPOP', KEYS[1])"
-                     , "if rid == false then"
-                     , "  return false"
-                     , "else"
-                     , "  local isUrgent = redis.call('SISMEMBER', KEYS[2], rid)"
-                     , "  if isUrgent then"
-                     , "    redis.call('RPUSH', KEYS[3], rid)"
-                     , "  else"
-                     , "    redis.call('RPUSH', KEYS[4], rid)"
-                     , "  end"
-                     , "  if redis.call('LLEN', KEYS[1]) == 0 then"
-                     , "    return rid"
-                     , "  else"
-                     , "    return 'ERROR_ACTIVEKEY_NOT_EMPTY'"
-                     , "  end"
-                     , "end"
+          (BSC8.unlines [ "local rid = redis.call('LPOP', KEYS[1])"
+                        , "if rid == false then"
+                        , "  return false"
+                        , "else"
+                        , "  if redis.call('LLEN', KEYS[1]) ~= 0 then"
+                        , "    return 'ERROR_ACTIVEKEY_NOT_EMPTY'"
+                        , "  else"
+                        , "    local isUrgent = redis.call('SISMEMBER', KEYS[2], rid)"
+                        , "    if isUrgent then"
+                        , "      redis.call('LPUSH', KEYS[3], rid)"
+                        , "    else"
+                        , "      redis.call('LPUSH', KEYS[4], rid)"
+                        , "    end"
+                        , "    return rid"
+                        , "  end"
+                        , "end"
                      ])
           [ unLKey $ activeKey r wid
           , unSKey $ urgentRequestsSetKey r
