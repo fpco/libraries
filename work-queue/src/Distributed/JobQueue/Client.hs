@@ -194,10 +194,10 @@ submitRequestWithPriority priority JobClient{..} rid request = do
         then $logWarnSJ "submitRequest" $
             "Didn't submit request " <> tshow rid <> " because it already exists in redis."
         else do
-            let pushop = case priority of
-                    PriorityNormal -> lpush (requestsKey jcRedis)
-                    PriorityUrgent -> lpush (urgentRequestsKey jcRedis)
-            run_ jcRedis (pushop (unRequestId rid :| []))
+            let queueKey = case priority of
+                    PriorityNormal -> requestsKey jcRedis
+                    PriorityUrgent -> urgentRequestsKey jcRedis
+            run_ jcRedis (lpush queueKey (unRequestId rid :| []))
             $logDebugSJ "submitRequest" $ "Notifying about request " <> tshow rid
             sendNotify jcRedis (requestChannel jcRedis)
             addRequestEnqueuedEvent jcConfig jcRedis rid
@@ -356,12 +356,9 @@ handleHeartbeatFailures :: MonadConnect m
                            => Redis
                            -> NonEmpty WorkerId -> m () -> m ()
 handleHeartbeatFailures r inactive cleanup = do
-    reenqueuedSome <- or <$> forM inactive (handleWorkerFailure r)
+    reenqueuedSome <- or <$> forM inactive
+        (\wid -> isJust <$> reenqueueRequest ReenqueuedAfterHeartbeatFailure r wid)
     cleanup
     when reenqueuedSome $ do
         $logDebugSJ "JobClient" ("Notifying that some requests were re-enqueued"::Text)
         sendNotify r (requestChannel r)
-
-handleWorkerFailure :: (MonadConnect m) => Redis -> WorkerId -> m Bool
-handleWorkerFailure r wid =
-    isJust <$> reenqueueRequest ReenqueuedAfterHeartbeatFailure r wid
