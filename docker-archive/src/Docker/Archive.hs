@@ -57,7 +57,8 @@ archive imgName pattern = liftIO $ do
     (\(_, _, _, ph) -> terminateProcess ph)
     $ \(Just stdin, _, _, ph) -> do
     LBS.hPut stdin $ write $ concat [[dockerfileEntry], entryDirs, entryFiles]
-    hClose stdin
+    hClose stdin -- hClose is used because Docker needs to see the EOF for a
+                 -- tar before it begins processing on it.
     waitForProcess ph
   where
     archiveOptions = ["build", "-t", T.unpack (unImageName imgName), "-"]
