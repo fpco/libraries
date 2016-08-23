@@ -131,7 +131,8 @@ runWithNM :: forall m a context input output state request response.
       -> MasterHandle m state context input output
       -> m response)
     -> m request
-    -> m ()
+    -> m (Int, Double)
+    -- ^ (@nSlaves@, walltime needed to perform the request)
 runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateRequest =
     if isJust spawnWorker
        then do
@@ -150,6 +151,7 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
                nSlaves
                (withJobClient jqc $ \(jc :: JobClient response) -> measureRequestTime generateRequest jc)
            liftIO $ writeToCsv fp (CSVInfo [("time", pack $ show time)] <> csvInfo)
+           return (nSlaves, time)
 
 runWithoutNM ::
     ( MonadConnect m
@@ -163,7 +165,7 @@ runWithoutNM ::
        -> MasterHandle m state context input output
        -> m response)
     -> m request
-    -> m ()
+    -> m (Int, Double)
 runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
     req <- generateRequest
     liftIO initializeTime
@@ -173,6 +175,7 @@ runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
     t1 <- liftIO getTime
     $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
     liftIO . writeToCsv fp $ CSVInfo [("time", pack $ show (t1 - t0))] <> csvInfo
+    return (nSlaves, (t1 - t0))
 
 -- | Write key value pairs to a csv file.
 --

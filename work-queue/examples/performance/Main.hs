@@ -8,6 +8,8 @@ import           Data.IORef.Lifted
 import           Data.Random.Source.PureMT
 import qualified Data.Text as T
 import           Distributed.Stateful.Master
+import           Graphics.Rendering.Chart.Easy
+import           Graphics.Rendering.Chart.Backend.Cairo
 import qualified KMeans
 import           Options.Applicative
 import qualified PFilter
@@ -21,6 +23,7 @@ data Options = Options
                , optMinSlaves :: Int
                , optMaxSlaves :: Int
                , optPurgeCSV :: Bool
+               , optPngFile :: Maybe FilePath
                , optSpawnWorker :: Maybe Int
                , optBench :: Benchmark
                }
@@ -125,6 +128,9 @@ options = Options
     <*> switch (long "purge-csv"
                 <> help (unlines [ "Usually, results are appended to existing CSV files.  If this flag is on, existing csv files will be overwritten instead."
                                  , "Keeping results can be useful to compare data from different revisions."]))
+    <*> optional (strOption
+                  (long "png-file" <> short 'p'
+                   <> help "Write a speedup plot to a png file."))
     <*> optional (option auto
                   (long "spawn-worker"
                    <> metavar "NSLAVES"
@@ -135,7 +141,7 @@ options = Options
          <> command "kmeans"  (BenchKMeans <$> benchKMeans `info` progDesc "Benchmark with a parallel KMeans algorithm.")
         )
 
-runBench :: Int -> CSVInfo -> Options -> IO ()
+runBench :: Int -> CSVInfo -> Options -> IO (Int, Double)
 runBench nSlaves commonCsvInfo Options{..} =
     case optBench of
         BenchPFilter pfOpts -> do
@@ -183,6 +189,20 @@ purgeResults Options{..} =
             BenchKMeans kOpts -> KMeans.optOutput kOpts
     in doesFileExist fp >>= \exists -> when exists (removeFile fp)
 
+plotResult :: Options -> String -> FilePath -> [(Int, Double)] -> IO ()
+plotResult opts name fp timings = toFile def fp $ do
+    layout_title .= title
+    layout_x_axis . laxis_title .= "nWorkers (=nSlaves+1)"
+    layout_y_axis . laxis_title .= "time[s]"
+    plot (points name [(LogValue . fromIntegral $ n + 1, LogValue t) | (n, t) <- timings ])
+  where
+      title = unwords [ "speedup for"
+                      , case optBench opts of
+                              BenchPFilter _ -> "particle filter"
+                              BenchVectors _ -> "vectors"
+                              BenchKMeans _ -> "k-means"
+                      , "benchmark"]
+
 main :: IO ()
 main = do
     initializeTime
@@ -200,7 +220,11 @@ main = do
     when (optPurgeCSV opts) (purgeResults opts)
     case optSpawnWorker opts of
         Just nSlaves -> -- spawn a worker that accepts nSlaves Slaves
-            runBench nSlaves commonCsvInfo opts
-        Nothing -> -- run the benchmark for every nSlaves in [optMinSlaves .. optMaxSlaves]
-            void $ forM [optMinSlaves opts .. optMaxSlaves opts] $
+            void $ runBench nSlaves commonCsvInfo opts
+        Nothing -> do -- run the benchmark for every nSlaves in [optMinSlaves .. optMaxSlaves]
+            timings <- forM [optMinSlaves opts .. optMaxSlaves opts] $
                 \nSlaves -> runBench nSlaves commonCsvInfo opts
+            case optPngFile opts of
+                Nothing -> return ()
+                Just fp -> plotResult opts (unwords [ "commit:", gitHash
+                                                   , "node:", nodename]) fp timings
