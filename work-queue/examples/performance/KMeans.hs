@@ -22,7 +22,9 @@ module KMeans ( Options (..)
 
 import           ClassyPrelude
 import           Control.DeepSeq
+import           Control.Monad.Logger
 import           Control.Monad.Random hiding (fromList)
+import qualified Control.Monad.Trans.Class as Trans
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import           Data.List (unfoldr)
@@ -193,6 +195,9 @@ masterArgs opts = MasterArgs
     , maUpdate = updateFn opts
     }
 
+instance MonadLogger m => MonadLogger (RandT StdGen m) where
+    monadLoggerLog a b c d = Trans.lift $ monadLoggerLog a b c d
+
 generateRequest :: MonadConnect m => Options -> m Request
 generateRequest Options{..} = do
     let r = mkStdGen 42
@@ -214,9 +219,9 @@ generateRequest Options{..} = do
                                                                        , show (length initialClusters)
                                                                        , "instead of"
                                                                        , show optNClusters])
-        putStrLn $ unwords [ "centerPoints:", pack $ show centerPoints
-                           , "\ninitial clusters:", pack $ show initialClusters
-                           ]
+        $logInfoS logSourceBench (unwords [ "centerPoints:", pack $ show centerPoints
+                                                 , "\ninitial clusters:", pack $ show initialClusters
+                                                 ])
         return $ Request { rInitialClusters = initialClusters
                          , rPoints = V.concat ps
                          , rGranularity = optGranularity

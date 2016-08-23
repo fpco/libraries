@@ -26,6 +26,7 @@ module PFilter
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
+import           Control.Monad.Logger
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.Map.Strict as M
 import           Data.Number.Erf
@@ -147,9 +148,10 @@ dpfMaster PFConfig{..} s PFRequest{..} mh = do
       resample weights system = do
           let nEffParticles = (sum $ pfoWeight <$> weights) / fromIntegral nParticles
           if nEffParticles > pfcEffectiveParticleThreshold
-              then trace (unwords ["***", show nEffParticles, ">", show pfcEffectiveParticleThreshold, "not resampling"]) evolve weights system
+              then $logInfoS logSourceBench (unwords ["not resampling,", tshow nEffParticles, ">", tshow pfcEffectiveParticleThreshold])
+                   >> evolve weights system
               else do
-                  putStrLn (unwords ["***", pack $ show nEffParticles, "<=", pack $ show pfcEffectiveParticleThreshold, "resampling"] )
+                  $logInfoS logSourceBench (unwords ["resampling,", tshow nEffParticles, "<=", tshow pfcEffectiveParticleThreshold] )
                   let weightedStates = V.fromList . HMS.elems $ HMS.mapWithKey (\sid (PFOutput w) -> (w, sid)) weights
                       stateRVar = weightedVectorRVar weightedStates
                   -- draw from weighted states
@@ -279,7 +281,7 @@ mySystem Options{..} =
                               in Just ((optDeltaT, UV.head ys'), (n-1, ys'))
                          else Nothing)
               (optSteps, UV.fromList [optPhi0, 0])
-    in trace (show vec) $ evolvingSystemFromList . V.toList . V.map (Just *** Just) $ vec
+    in evolvingSystemFromList . V.toList . V.map (Just *** Just) $ vec
 
 generateRequest :: (MonadConnect m, RandomSource m s) => Options -> s -> m (PFRequest MyParameter MyState MySummary MyInput)
 generateRequest Options{..} s = do

@@ -15,7 +15,8 @@
 module PerformanceUtils ( CSVInfo (..)
                         , runWithNM
                         , runWithoutNM
-                        , logErrors
+                        , logSourceBench
+                        , logErrorsOrBench
                         ) where
 
 import           ClassyPrelude
@@ -81,8 +82,13 @@ withNSlaves nSlaves action = go 0 action
     go n cont | n > nSlaves = cont
     go n cont = go (n+1) (withWorker nSlaves cont)
 
-logErrors :: MonadIO m => LoggingT m a -> m a
-logErrors = runStdoutLoggingT . filterLogger (\_ ll -> ll >= LevelError)
+logSourceBench :: LogSource
+logSourceBench = "benchmark"
+
+-- | Only log messages that either come from the benchmark directly,
+-- and errors.
+logErrorsOrBench :: MonadIO m => LoggingT m a -> m a
+logErrorsOrBench = runStdoutLoggingT . filterLogger (\ls ll -> ll >= LevelError || ls == logSourceBench)
 
 -- | Measure the time between submitting a request and receiving the
 -- corresponding response.
@@ -101,8 +107,9 @@ measureRequestTime generateRequest jc = do
     t0 <- liftIO getTime
     submitRequest (jc :: JobClient response) rid req
     mRes <- waitForResponse_ jc rid
-    liftIO . putStrLn $ unwords [ "result:", pack $ show (mRes :: Maybe response)]
+    $logInfoS logSourceBench $ unwords [ "result:", tshow (mRes :: Maybe response)]
     t1 <- liftIO getTime
+    $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
     return (t1 - t0)
 
 runWithNM :: forall m a context input output state request response.
@@ -128,7 +135,7 @@ runWithNM :: forall m a context input output state request response.
 runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateRequest =
     if isJust spawnWorker
        then do
-           putStrLn "spawning worker"
+           $logDebugS logSourceBench "spawning worker"
            let ss = CN.serverSettings 3333 "*"
            runJobQueueStatefulWorker
                jqc
@@ -162,9 +169,9 @@ runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
     liftIO initializeTime
     t0 <- liftIO getTime
     res <- runSimplePureStateful masterArgs nSlaves (masterFunc req)
-    print res
+    $logInfoS logSourceBench $ unwords [ "result:", tshow res]
     t1 <- liftIO getTime
-    putStrLn $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
+    $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
     liftIO . writeToCsv fp $ CSVInfo [("time", pack $ show (t1 - t0))] <> csvInfo
 
 -- | Write key value pairs to a csv file.

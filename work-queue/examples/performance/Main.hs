@@ -150,7 +150,7 @@ runBench nSlaves commonCsvInfo Options{..} =
                 request = PFilter.generateRequest pfOpts randomsrc
                 fp = PFilter.optOutput pfOpts
                 csvInfo = commonCsvInfo <> CSVInfo [("slaves", T.pack $ show nSlaves)] <> PFilter.csvInfo pfOpts
-            logErrors $
+            logErrorsOrBench $
                 if optNoNetworkMessage
                 then runWithoutNM fp csvInfo masterArgs nSlaves master request
                 else runWithNM fp csvInfo PFilter.jqc optSpawnWorker masterArgs nSlaves master request
@@ -160,7 +160,7 @@ runBench nSlaves commonCsvInfo Options{..} =
                 request = return $ Vectors.myStates vOpts
                 fp = Vectors.optOutput vOpts
                 csvInfo = commonCsvInfo <> CSVInfo [("slaves", T.pack $ show nSlaves)] <> Vectors.csvInfo vOpts
-            in logErrors $
+            in logErrorsOrBench $
                 if optNoNetworkMessage
                 then runWithoutNM fp csvInfo masterArgs nSlaves master request
                 else runWithNM fp csvInfo PFilter.jqc optSpawnWorker masterArgs nSlaves master request
@@ -170,7 +170,7 @@ runBench nSlaves commonCsvInfo Options{..} =
                 request = KMeans.generateRequest kOpts
                 fp = KMeans.optOutput kOpts
                 csvInfo = commonCsvInfo <> CSVInfo [("slaves", T.pack $ show nSlaves)] <> KMeans.csvInfo kOpts
-            in logErrors $
+            in logErrorsOrBench $
                    if optNoNetworkMessage
                    then runWithoutNM fp csvInfo masterArgs nSlaves master request
                    else runWithNM fp csvInfo KMeans.jqc optSpawnWorker masterArgs nSlaves master request
