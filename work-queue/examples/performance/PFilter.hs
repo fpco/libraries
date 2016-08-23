@@ -38,7 +38,7 @@ import           Distributed.JobQueue.Client
 import           Distributed.Stateful.Master
 import qualified Distributed.Stateful.Master as WQ
 import           FP.Redis (MonadConnect)
-
+import           PerformanceUtils
 -- * type definitions
 
 data Particle parameter state summary = Particle
@@ -305,8 +305,8 @@ $(mkManyHasTypeHash [ [t| PFResponse MyParameter |]
                     , [t| PFState MyParameter MyState MySummary |]
                     ])
 
-csvInfo ::  Options -> [(Text, Text)]
-csvInfo opts =
+csvInfo ::  Options -> CSVInfo
+csvInfo opts = CSVInfo
     [ ("stepsize", pack . show . optStepsize $ opts)
     , ("deltat", pack . show . optDeltaT $ opts)
     , ("steps", pack . show . optSteps $ opts)

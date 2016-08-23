@@ -37,8 +37,8 @@ import           Distributed.JobQueue.Client
 import           Distributed.Stateful
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
+import           PerformanceUtils
 import           TypeHash.Orphans ()
-
 
 -- * Command line options
 
@@ -227,8 +227,8 @@ generateRequest Options{..} = do
 jqc :: JobQueueConfig
 jqc = defaultJobQueueConfig "perf:kmeans:"
 
-csvInfo :: Options -> [(Text, Text)]
-csvInfo opts =
+csvInfo :: Options -> CSVInfo
+csvInfo opts = CSVInfo
     [ ("clusters", pack . show . optNClusters $ opts)
     , ("points", pack . show . optNPoints $ opts)
     , ("granularity", pack . show . optGranularity $ opts)

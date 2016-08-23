@@ -29,7 +29,8 @@ import           Distributed.JobQueue.Client
 import           Distributed.Stateful
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
-import TypeHash.Orphans ()
+import           PerformanceUtils
+import           TypeHash.Orphans ()
 
 type Request = [State]
 type Response = Double
@@ -100,7 +101,7 @@ data Options = Options
                , optOutput :: FilePath
                }
 
-csvInfo :: Options -> [(Text, Text)]
-csvInfo opts =
+csvInfo :: Options -> CSVInfo
+csvInfo opts = CSVInfo
     [ ("l", pack . show . optVLength $ opts)
     , ("N", pack . show . optNStates $ opts)]

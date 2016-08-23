@@ -12,7 +12,8 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-module PerformanceUtils ( runWithNM
+module PerformanceUtils ( CSVInfo (..)
+                        , runWithNM
                         , runWithoutNM
                         , logErrors
                         ) where
@@ -40,11 +41,22 @@ import           System.Exit (ExitCode(..))
 import           System.IO (withFile, IOMode (..))
 import           System.Process
 
-withWorker :: MonadConnect m => m a -> m a
-withWorker cont = do
+
+-- | Key value pairs to be written to a csv file.
+data CSVInfo = CSVInfo [(Text, Text)]
+instance Monoid CSVInfo where
+    mempty = CSVInfo []
+    CSVInfo xs `mappend` CSVInfo xs' = CSVInfo $ xs `mappend` xs'
+instance Semigroup CSVInfo
+
+withWorker :: MonadConnect m
+    => Int -- ^ number of slaves the worker should accept
+    -> m a -- ^ action to perform while the slave is running
+    -> m a
+withWorker nSlaves cont = do
     program <- liftIO getExecutablePath
     args <- liftIO getFullArgs
-    let cp = proc program ("--spawn-worker":map unpack args)
+    let cp = proc program (("--spawn-worker=" ++ show nSlaves):map unpack args)
     (x, y, z, sph) <- streamingProcess cp
     let cont' = \ClosedStream Inherited Inherited -> do
             res <- cont
@@ -57,10 +69,17 @@ withWorker cont = do
         )
         (cont' x y z `onException` (liftIO $ terminateProcess (streamingProcessHandleRaw sph)))
 
-withNWorkers :: MonadConnect m => Int -> m a -> m a
-withNWorkers n _cont | n < 0 = error "Negative number of workers requested."
-withNWorkers 0 cont = cont
-withNWorkers n cont = withNWorkers (n-1) (withWorker cont)
+-- | Will spawn n+1 workers, that live as long as the given action
+-- takes. The 'NMStatefulMasterArgs' will be set to accept exactly n
+-- slaves.
+withNSlaves :: MonadConnect m
+    => Int -- ^ @n@, the number of slaves
+    -> m a
+    -> m a
+withNSlaves nSlaves action = go 0 action
+  where
+    go n cont | n > nSlaves = cont
+    go n cont = go (n+1) (withWorker nSlaves cont)
 
 logErrors :: MonadIO m => LoggingT m a -> m a
 logErrors = runStdoutLoggingT . filterLogger (\_ ll -> ll >= LevelError)
@@ -77,7 +96,6 @@ measureRequestTime :: forall m response request.
     -> m Double -- ^ Wall time between submitting the request and
                -- receiving the response.
 measureRequestTime generateRequest jc = do
-    liftIO initializeTime
     rid <- uniqueRequestId
     req <- generateRequest
     t0 <- liftIO getTime
@@ -87,47 +105,51 @@ measureRequestTime generateRequest jc = do
     t1 <- liftIO getTime
     return (t1 - t0)
 
-runWithNM :: forall m context input output state request response.
+runWithNM :: forall m a context input output state request response.
     ( MonadConnect m
     , NFData state, NFData output
     , Store state, Store context, Store input, Store output, Store request, Store response
     , HasTypeHash state, HasTypeHash context, HasTypeHash input, HasTypeHash output, HasTypeHash request, HasTypeHash response
     , Show response)
     => FilePath
-    -> [(Text, Text)]
+    -> CSVInfo
     -> JobQueueConfig
-    -> Bool
+    -> Maybe a
+    -- ^ If @Nothing@, perform the request.
+    -- ^ Otherwise, spawn a worker that acceps @nSlaves@ slaves.
     -> MasterArgs m state context input output
     -> Int
+    -- ^ @nSlaves@
     -> (request
       -> MasterHandle m state context input output
       -> m response)
     -> m request
     -> m ()
 runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateRequest =
-    if spawnWorker
-       then do putStrLn "spawning worker"
-               let ss = CN.serverSettings 3333 "*"
-               runJobQueueStatefulWorker
-                   jqc
-                   ss
-                   "127.0.0.1"
-                   Nothing
-                   masterArgs
-                   (NMStatefulMasterArgs (Just nSlaves) (Just nSlaves) (1000 * 1000))
-                   (\mh _rid req -> DontReenqueue <$> workerFunc req mh)
-        else do
-             time <- withNWorkers
-                 (nSlaves + 1) -- +1 for the master
-                 (withJobClient jqc $ \(jc :: JobClient response) -> measureRequestTime generateRequest jc)
-             liftIO $ writeToCsv fp (("time", pack $ show time):csvInfo)
+    if isJust spawnWorker
+       then do
+           putStrLn "spawning worker"
+           let ss = CN.serverSettings 3333 "*"
+           runJobQueueStatefulWorker
+               jqc
+               ss
+               "127.0.0.1"
+               Nothing
+               masterArgs
+               (NMStatefulMasterArgs (Just nSlaves) (Just nSlaves) (1000 * 1000))
+               (\mh _rid req -> DontReenqueue <$> workerFunc req mh)
+       else do
+           time <- withNSlaves
+               nSlaves
+               (withJobClient jqc $ \(jc :: JobClient response) -> measureRequestTime generateRequest jc)
+           liftIO $ writeToCsv fp (CSVInfo [("time", pack $ show time)] <> csvInfo)
 
 runWithoutNM ::
     ( MonadConnect m
     , Show response, NFData state
     , NFData output, Store state)
     => FilePath
-    -> [(Text, Text)]
+    -> CSVInfo
     -> MasterArgs m state context input output
     -> Int
     -> (request
@@ -143,15 +165,15 @@ runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
     print res
     t1 <- liftIO getTime
     putStrLn $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
-    liftIO . writeToCsv fp $ ("time", pack $ show (t1 - t0)):csvInfo
+    liftIO . writeToCsv fp $ CSVInfo [("time", pack $ show (t1 - t0))] <> csvInfo
 
 -- | Write key value pairs to a csv file.
 --
 -- If the file exists, it is assumed that the header also exists, and
 -- the values are appended.  If the file does not exist yet, it is
 -- created, and the header and data is written.
-writeToCsv :: FilePath -> [(Text, Text)] -> IO ()
-writeToCsv fp vals = do
+writeToCsv :: FilePath -> CSVInfo -> IO ()
+writeToCsv fp (CSVInfo vals) = do
     exists <- doesFileExist fp
     withFile fp (if exists then AppendMode else WriteMode) $ \h -> do
         unless exists (hPutStrLn h $ intercalate "," $ map fst vals)
