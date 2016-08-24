@@ -8,10 +8,10 @@ import           Criterion.Measurement
 import           Data.IORef.Lifted
 import           Data.Random.Source.PureMT
 import qualified Data.Text as T
-import           Distributed.Redis
+import           Distributed.Redis (run, withRedis)
 import           Distributed.Stateful.Master
 import           Distributed.JobQueue.Internal
-import           FP.Redis
+import           FP.Redis (flushall)
 import           Graphics.Rendering.Chart.Easy
 import           Graphics.Rendering.Chart.Backend.Cairo
 import qualified KMeans
