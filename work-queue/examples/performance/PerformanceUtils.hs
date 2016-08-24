@@ -86,6 +86,11 @@ withNSlaves nSlaves action = go 0 action
     go n cont = go (n+1) (withWorker nSlaves cont)
 
 -- | Wait until exactly @n@ workers are live.
+--
+-- We want to do this before starting to measure the time that the
+-- request takes, in order not to include the workers' startup time in
+-- the benchmark.  In particular, we don't want to increase the time
+-- that the master waits for slaves.
 waitForNWorkers :: MonadConnect m => Redis -> Int -> m ()
 waitForNWorkers r n =
     void $ R.retrying policy retryWhen getNWorkers
