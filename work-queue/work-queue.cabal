@@ -204,6 +204,7 @@ executable wq-performance
                      , random-fu
                      , random-source
                      , redis-fp
+                     , retry
                      , semigroups
                      , store
                      , streaming-commons

@@ -24,6 +24,7 @@ import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.Mesosync.Lifted.Safe
 import           Control.DeepSeq
 import           Control.Monad.Logger
+import qualified Control.Retry as R
 import           Criterion.Measurement
 import qualified Data.Conduit.Network as CN
 import           Data.Store (Store)
@@ -31,7 +32,9 @@ import           Data.Store.TypeHash
 import           Data.Streaming.Process (Inherited(..), ClosedStream(..), streamingProcess, waitForStreamingProcess, ProcessExitedUnsuccessfully(..), streamingProcessHandleRaw)
 import           Data.Void
 import           Distributed.JobQueue.Client
+import           Distributed.JobQueue.Status
 import           Distributed.JobQueue.Worker
+import           Distributed.Redis (Redis)
 import           Distributed.Stateful
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
@@ -81,6 +84,15 @@ withNSlaves nSlaves action = go 0 action
   where
     go n cont | n > nSlaves = cont
     go n cont = go (n+1) (withWorker nSlaves cont)
+
+-- | Wait until exactly @n@ workers are live.
+waitForNWorkers :: MonadConnect m => Redis -> Int -> m ()
+waitForNWorkers r n =
+    void $ R.retrying policy retryWhen getNWorkers
+  where
+    policy = R.constantDelay 10000 R.<> R.limitRetries 1000 -- wait for up to ten seconds, in steps of ten milliseconds
+    retryWhen _ n' = return $ n' /= n
+    getNWorkers = length . jqsWorkers <$> getJobQueueStatus r
 
 logSourceBench :: LogSource
 logSourceBench = "benchmark"
@@ -149,7 +161,9 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
        else do
            time <- withNSlaves
                nSlaves
-               (withJobClient jqc $ \(jc :: JobClient response) -> measureRequestTime generateRequest jc)
+               (withJobClient jqc $ \(jc :: JobClient response) -> do
+                       waitForNWorkers (jcRedis jc) (nSlaves + 1) -- +1 for the worker
+                       measureRequestTime generateRequest jc)
            liftIO $ writeToCsv fp (CSVInfo [("time", pack $ show time)] <> csvInfo)
            return (nSlaves, time)
 

@@ -1,5 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleContexts #-}
 module Main where
 
 import           Control.Monad
@@ -7,7 +8,10 @@ import           Criterion.Measurement
 import           Data.IORef.Lifted
 import           Data.Random.Source.PureMT
 import qualified Data.Text as T
+import           Distributed.Redis
 import           Distributed.Stateful.Master
+import           Distributed.JobQueue.Internal
+import           FP.Redis
 import           Graphics.Rendering.Chart.Easy
 import           Graphics.Rendering.Chart.Backend.Cairo
 import qualified KMeans
@@ -203,6 +207,15 @@ plotResult opts name fp timings = toFile def fp $ do
                               BenchKMeans _ -> "k-means"
                       , "benchmark"]
 
+cleanRedis :: Benchmark -> IO ()
+cleanRedis bench =
+    let jqc = case bench of
+            BenchPFilter _ -> PFilter.jqc
+            BenchVectors _ -> Vectors.jqc
+            BenchKMeans _ -> KMeans.jqc
+    in logErrorsOrBench $
+       withRedis (jqcRedisConfig jqc) $ \redis -> run redis flushall
+
 main :: IO ()
 main = do
     initializeTime
@@ -223,7 +236,9 @@ main = do
             void $ runBench nSlaves commonCsvInfo opts
         Nothing -> do -- run the benchmark for every nSlaves in [optMinSlaves .. optMaxSlaves]
             timings <- forM [optMinSlaves opts .. optMaxSlaves opts] $
-                \nSlaves -> runBench nSlaves commonCsvInfo opts
+                \nSlaves ->
+                    cleanRedis (optBench opts)
+                    >> runBench nSlaves commonCsvInfo opts
             case optPngFile opts of
                 Nothing -> return ()
                 Just fp -> plotResult opts (unwords [ "commit:", gitHash
