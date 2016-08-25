@@ -435,8 +435,8 @@ update (MasterHandle mv) context inputs0 = do
     NoSlavesYet states -> do
       $logWarnJ ("Executing update without any slaves" :: Text)
       stateMap <- liftIO $ HT.fromList states
-      (states', outputs) <- statefulUpdate (maUpdate (mhArgs mh)) stateMap context inputList
-      statesList' <- liftIO $ HT.toList states'
+      outputs <- statefulUpdate (maUpdate (mhArgs mh)) stateMap context inputList
+      statesList' <- liftIO $ HT.toList stateMap
       let mh' = mh{ mhSlaves = NoSlavesYet statesList' }
       return (mh', outputs)
     Slaves slaves -> do

@@ -135,7 +135,7 @@ statefulUpdate ::
   -> HashTable StateId state
   -> context
   -> [(StateId, [(StateId, input)])]
-  -> m (HashTable StateId state, [(StateId, [(StateId, output)])])
+  -> m [(StateId, [(StateId, output)])]
 statefulUpdate update states context inputs = do
   results <- forM inputs $ \(oldStateId, innerInputs) -> do
     state <- liftIO (HT.lookup states oldStateId) >>= \case
@@ -147,4 +147,4 @@ statefulUpdate update states context inputs = do
         return (newStateId, (newState, output))
     return (oldStateId, updatedInnerStateAndOutput)
   let outputs = map (second (map (second  snd))) results
-  return (states, outputs)
+  return outputs

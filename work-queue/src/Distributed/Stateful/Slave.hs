@@ -80,7 +80,7 @@ runSlave SlaveArgs{..} = do
       (output, mbStates) <- case req of
           SReqResetState states' -> do
               statesMap' <- liftIO $ HT.fromList states'
-              return (SRespResetState, (Just statesMap'))
+              return (SRespResetState, Just statesMap')
           SReqGetStates -> do
               statesList <- liftIO $ HT.toList states
               return (SRespGetStates statesList, (Just states))
@@ -100,13 +100,13 @@ runSlave SlaveArgs{..} = do
             let eitherLookup sid = (liftIO $ HT.lookup states sid) >>= \case
                     Nothing -> return $ Left sid
                     Just x -> return $ Right (sid, x)
-            (missing, toSend) <- partitionEithers <$> (mapM eitherLookup $ HS.toList stateIdsToDelete)
+            (missing, toSend) <- partitionEithers <$> mapM eitherLookup (HS.toList stateIdsToDelete)
             unless (null missing) $ throw (MissingStatesToRemove missing)
             forM_ stateIdsToDelete (liftIO . HT.delete states)
             return (SRespRemoveStates requesting (second S.encode <$> toSend), Just states)
           SReqUpdate context inputs -> do
-            (states', outputs) <- statefulUpdate saUpdate states context inputs
-            return (SRespUpdate outputs, Just states')
+            outputs <- statefulUpdate saUpdate states context inputs
+            return (SRespUpdate outputs, Just states)
           SReqQuit -> do
             return (SRespQuit, Nothing)
       send output
