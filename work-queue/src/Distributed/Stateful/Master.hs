@@ -45,17 +45,18 @@ module Distributed.Stateful.Master
 
 import           ClassyPrelude
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import           Control.DeepSeq (NFData)
+import           Control.Lens (makeLenses, set, at, _Just, over)
 import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
+import qualified Data.HashTable.IO as HT
 import           Data.List.Split (chunksOf)
 import           Data.SimpleSupply
 import           Distributed.Stateful.Internal
-import           Text.Printf (printf)
 import           FP.Redis (MonadConnect)
-import           Control.Lens (makeLenses, set, at, _Just, over)
-import           Control.DeepSeq (NFData)
+import           Text.Printf (printf)
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -433,8 +434,10 @@ update (MasterHandle mv) context inputs0 = do
   case mhSlaves mh of
     NoSlavesYet states -> do
       $logWarnJ ("Executing update without any slaves" :: Text)
-      (states', outputs) <- statefulUpdate (maUpdate (mhArgs mh)) (HMS.fromList states) context inputList
-      let mh' = mh{ mhSlaves = NoSlavesYet $ HMS.toList states' }
+      stateMap <- liftIO $ HT.fromList states
+      (states', outputs) <- statefulUpdate (maUpdate (mhArgs mh)) stateMap context inputList
+      statesList' <- liftIO $ HT.toList states'
+      let mh' = mh{ mhSlaves = NoSlavesYet statesList' }
       return (mh', outputs)
     Slaves slaves -> do
       $logInfoJ ("Executing update with " ++ tshow (HMS.size slaves) ++ " slaves")

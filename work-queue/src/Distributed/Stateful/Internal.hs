@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -10,13 +11,15 @@ module Distributed.Stateful.Internal where
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger.JSON.Extra
-import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
+import qualified Data.HashTable.IO as HT
 import           Data.Proxy (Proxy(..))
 import           Data.Store (Store)
 import           Data.Store.TypeHash
 import           Data.Store.TypeHash.Orphans ()
 import           Text.Printf (PrintfArg(..))
+
+type HashTable k v = HT.CuckooHashTable k v
 
 -- | Stateful connection.
 --
@@ -127,20 +130,21 @@ data StatefulUpdateException
 instance Exception StatefulUpdateException
 
 statefulUpdate ::
-     (MonadThrow m)
+     (MonadThrow m, MonadIO m)
   => (context -> input -> state -> m (state, output))
-  -> HMS.HashMap StateId state
+  -> HashTable StateId state
   -> context
   -> [(StateId, [(StateId, input)])]
-  -> m (HMS.HashMap StateId state, [(StateId, [(StateId, output)])])
+  -> m (HashTable StateId state, [(StateId, [(StateId, output)])])
 statefulUpdate update states context inputs = do
   results <- forM inputs $ \(oldStateId, innerInputs) -> do
-    state <- case HMS.lookup oldStateId states of
+    state <- liftIO (HT.lookup states oldStateId) >>= \case
       Nothing -> throwM (InputStateNotFound oldStateId)
-      Just state0 -> return state0
-    fmap ((oldStateId, ) . HMS.fromList) $ forM innerInputs $ \(newStateId, input) ->
-      (newStateId, ) <$> update context input state
-  let resultsMap = HMS.fromList results
-  let states' = foldMap (fmap fst) resultsMap
-  let outputs = map (second (HMS.toList . fmap snd)) results
-  return (states' `HMS.union` (states `HMS.difference` HMS.fromList inputs), outputs)
+      Just state0 -> liftIO (states `HT.delete` oldStateId) >> return state0
+    updatedInnerStateAndOutput <- forM innerInputs $ \(newStateId, input) -> do
+        (newState, output) <- update context input state
+        liftIO $ HT.insert states newStateId newState
+        return (newStateId, (newState, output))
+    return (oldStateId, updatedInnerStateAndOutput)
+  let outputs = map (second (map (second  snd))) results
+  return (states, outputs)
