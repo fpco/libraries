@@ -67,7 +67,7 @@ runSlave SlaveArgs{..} = do
     go ::
          m (SlaveReq state context input)
       -> (SlaveResp state output -> m ())
-      -> (HMS.HashMap StateId state)
+      -> HMS.HashMap StateId state
       -> m ()
     go recv send states = do
       req <- recv
@@ -75,16 +75,18 @@ runSlave SlaveArgs{..} = do
       -- WARNING: All exceptions thrown here should be of type
       -- 'SlaveException', as only those will be catched.
       (output, mbStates) <- case req of
-          SReqResetState states' -> return (SRespResetState, (Just states'))
-          SReqGetStates -> return (SRespGetStates states, (Just states))
+          SReqResetState states' -> return (SRespResetState, (Just $ HMS.fromList states'))
+          SReqGetStates -> return (SRespGetStates $ HMS.toList states, (Just states))
           SReqAddStates newStates0 -> do
             let decodeOrThrow bs = case S.decode bs of
                   Left err -> throw (DecodeStateError (show err))
                   Right x -> return x
-            newStates <- mapM decodeOrThrow newStates0
-            let aliased = HMS.keys (HMS.intersection newStates states)
+            newStates <- mapM (\(sid,bs) -> do bs' <- decodeOrThrow bs
+                                               return (sid,bs')) newStates0
+            let newStatesMap = HMS.fromList newStates
+            let aliased = HMS.keys (HMS.intersection newStatesMap states)
             unless (null aliased) $ throw (AddingExistingStates aliased)
-            return (SRespAddStates (HS.fromList (HMS.keys newStates)), Just (HMS.union newStates states))
+            return (SRespAddStates (fst <$> newStates), Just (HMS.union newStatesMap states))
           SReqRemoveStates requesting stateIdsToDelete -> do
             let eitherLookup sid =
                   case HMS.lookup sid states of
@@ -93,7 +95,7 @@ runSlave SlaveArgs{..} = do
             let (missing, toSend) = partitionEithers $ map eitherLookup $ HS.toList stateIdsToDelete
             unless (null missing) $ throw (MissingStatesToRemove missing)
             let states' = foldl' (flip HMS.delete) states stateIdsToDelete
-            return (SRespRemoveStates requesting (S.encode <$> HMS.fromList toSend), Just states')
+            return (SRespRemoveStates requesting (second S.encode <$> toSend), Just states')
           SReqUpdate context inputs -> do
             (states', outputs) <- statefulUpdate saUpdate states context inputs
             return (SRespUpdate outputs, Just states')
