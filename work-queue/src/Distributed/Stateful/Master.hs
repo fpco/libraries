@@ -443,11 +443,11 @@ update (MasterHandle mv) context inputs0 = do
       $logInfoJ ("Executing update with " ++ tshow (HMS.size slaves) ++ " slaves")
       let inputMap = HMS.fromList inputList
       -- Update the slave states.
-      slaveIdsAndInputs <- either throwAndLog return $
-        assignInputsToSlaves (slaveStates <$> slaves) inputMap
       outputs :: [(SlaveId, [(StateId, [(StateId, output)])])] <-
         case maMaxBatchSize (mhArgs mh) of
           Nothing -> do
+            slaveIdsAndInputs <- either throwAndLog return $
+              assignInputsToSlaves (slaveStates <$> slaves) inputMap
             forM_ slaveIdsAndInputs $ \(slaveId, inps) -> do
               scWrite
                 (slaveConnection (slaves HMS.! slaveId))
