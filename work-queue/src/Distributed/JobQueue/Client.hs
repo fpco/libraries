@@ -31,6 +31,7 @@ module Distributed.JobQueue.Client
     , waitForResponse
     , waitForResponse_
     , checkForResponse
+    , checkForResponses
       -- * Cancel requests
     , cancelRequest
       -- * Explicitly re-enqueue requests from dead workers
@@ -45,6 +46,7 @@ import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.STM (retry, orElse)
 import           Control.Monad.Logger.JSON.Extra
 import           Data.List.NonEmpty (NonEmpty((:|)))
+import qualified Data.List.NonEmpty as NE
 import qualified Data.Store as S
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.Store.TypeHash
@@ -300,12 +302,26 @@ checkForResponse ::
     => JobClient response
     -> RequestId
     -> m (Maybe (Either DistributedException response))
-checkForResponse JobClient{..} rid = do
-    mresponse <- run jcRedis (get (responseDataKey jcRedis rid))
-    forM mresponse $ \response -> do
-        result <- decodeOrThrow "checkForResponse" response
-        addRequestEvent jcRedis rid RequestResponseRead
-        return result
+checkForResponse jc rid = HMS.lookup rid <$> checkForResponses jc [rid]
+
+checkForResponses ::
+       (MonadConnect m, Sendable response)
+    => JobClient response
+    -> [RequestId]
+    -> m (HMS.HashMap RequestId (Either DistributedException response))
+checkForResponses JobClient{..} rids0 = case NE.nonEmpty rids0 of
+    Nothing -> return mempty
+    Just rids -> do
+        mresponses0 <- zip rids0 . toList <$> run jcRedis (mget (fmap (responseDataKey jcRedis) rids))
+        let mresponses = do
+                (rid, mresponse) <- mresponses0
+                case mresponse of
+                    Nothing -> []
+                    Just resp -> [(rid, resp)]
+        fmap HMS.fromList $ forM mresponses $ \(rid, resp) -> do
+            result <- decodeOrThrow "checkForResponses" resp
+            addRequestEvent jcRedis rid RequestResponseRead
+            return (rid, result)
 
 -- | Generate a unique (UUID-based) 'RequestId'.
 uniqueRequestId :: (MonadIO m) => m RequestId
