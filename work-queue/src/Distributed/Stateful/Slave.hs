@@ -87,11 +87,13 @@ runSlave SlaveArgs{..} = do
             let decodeOrThrow bs = case S.decode bs of
                   Left err -> throw (DecodeStateError (show err))
                   Right x -> return x
-            newStates <- mapM (\(sid,bs) -> do bs' <- decodeOrThrow bs
-                                               return (sid,bs')) newStates0
-            aliased <- filter snd <$> mapM (\(sid,_) -> do
-                                                  mVal <- liftIO (states `HT.lookup` sid)
-                                                  return (sid, isJust mVal)) newStates
+            newStates <- forM newStates0 $ \(sid,bs) -> do
+                bs' <- decodeOrThrow bs
+                return (sid,bs')
+            aliased <- filter snd <$> forM newStates
+                (\(sid,_) -> do
+                        mVal <- liftIO (states `HT.lookup` sid)
+                        return (sid, isJust mVal))
             unless (null aliased) $ throw (AddingExistingStates $ map fst aliased)
             forM_ newStates $ \(sid, state) -> liftIO $ HT.insert states sid state
             return (SRespAddStates (fst <$> newStates), Just states)
