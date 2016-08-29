@@ -1,3 +1,4 @@
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
@@ -10,7 +11,9 @@ module Distributed.Stateful.Internal where
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
+import           Control.Lens
 import           Control.Monad.Logger.JSON.Extra
+import           Criterion.Measurement
 import qualified Data.HashSet as HS
 import qualified Data.HashTable.IO as HT
 import           Data.Proxy (Proxy(..))
@@ -57,6 +60,43 @@ type Update m state context input output =
     -> m (state, output)
     -- ^ Updated state and output after the computation.
 
+-- | Profiling data for the slave.
+--
+-- We measure the wall-time for the actual work, as well as for
+-- sending and waiting for messages.
+--
+-- To keep the overhead low, we use an exponential moving average.
+data SlaveProfiling = SlaveProfiling
+    { _spReceiveTime :: !Double
+    , _spWorkTime :: !Double
+    , _spSendTime :: !Double
+    , _spMovingAvgAlpha :: !Double
+    } deriving (Eq, Show, Generic, NFData)
+instance Store SlaveProfiling
+makeLenses ''SlaveProfiling
+
+-- | Exponential moving average
+updateMovingAvg :: Double -> Double -> Double -> Double
+updateMovingAvg alpha oldAvg newDatum = (1-alpha)*oldAvg + alpha*newDatum
+
+withSlaveProfiling :: MonadIO m
+    => IORef SlaveProfiling
+    -> Lens' SlaveProfiling Double
+    -> m a
+    -> m a
+withSlaveProfiling ref l action = do
+    t0 <- liftIO getTime
+    res <- action
+    t1 <- liftIO getTime
+    liftIO . modifyIORef' ref $ update (t1 - t0)
+    return res
+  where
+      update :: Double -> SlaveProfiling -> SlaveProfiling
+      update t sp = let oldAvg = view l sp
+                        alpha = view spMovingAvgAlpha sp
+                        newAvg = updateMovingAvg alpha oldAvg t
+                    in set l newAvg sp
+
 -- | A request to the slaves
 data SlaveReq state context input
   = -- | Get all the states.
@@ -78,6 +118,7 @@ data SlaveReq state context input
       -- provides the new StateIds, and the inputs which should be
       -- provided to 'saUpdate'.
   | SReqGetStates
+  | SReqGetProfile
   | SReqQuit
   deriving (Generic, Eq, Show, NFData, Store)
 
@@ -95,6 +136,7 @@ data SlaveResp state output
       -- forwarded by master.
   | SRespUpdate ![(StateId, [(StateId, output)])]
   | SRespGetStates ![(StateId, state)]
+  | SRespGetProfile SlaveProfiling
   | SRespError Text
   | SRespQuit
   deriving (Generic, Eq, Show, NFData, Store)
@@ -103,20 +145,22 @@ instance (HasTypeHash state, HasTypeHash output) => HasTypeHash (SlaveResp state
     typeHash _ = typeHash (Proxy :: Proxy (state, output))
 
 displayReq :: SlaveReq state context input -> Text
-displayReq (SReqResetState mp) = "SReqResetState (" <> pack (show (map fst mp)) <> ")"
-displayReq (SReqAddStates mp) = "SReqAddStates (" <> pack (show (map fst mp)) <> ")"
-displayReq (SReqRemoveStates k mp) = "SReqRemoveStates (" <> pack (show k) <> ") (" <> pack (show mp) <> ")"
-displayReq (SReqUpdate _ mp) = "SReqUpdate (" <> pack (show (map (map fst . snd) mp)) <> ")"
+displayReq (SReqResetState mp) = "SReqResetState (" <> tshow (map fst mp) <> ")"
+displayReq (SReqAddStates mp) = "SReqAddStates (" <> tshow (map fst mp) <> ")"
+displayReq (SReqRemoveStates k mp) = "SReqRemoveStates (" <> tshow k <> ") (" <> tshow mp <> ")"
+displayReq (SReqUpdate _ mp) = "SReqUpdate (" <> tshow (map (map fst . snd) mp) <> ")"
 displayReq SReqGetStates = "SReqGetStates"
+displayReq SReqGetProfile = "SReqGetProfile"
 displayReq SReqQuit = "SReqQuit"
 
 displayResp :: SlaveResp state output -> Text
 displayResp SRespResetState = "SRespResetState"
-displayResp (SRespAddStates states) = "SRespAddStates (" <> pack (show states) <> ")"
-displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> pack (show k) <> ") (" <> pack (show (map fst mp)) <> ")"
-displayResp (SRespUpdate mp) = "SRespUpdate (" <> pack (show (map (map fst . snd) mp)) <> ")"
-displayResp (SRespGetStates mp) = "SRespGetStates (" <> pack (show (map fst mp)) <> ")"
-displayResp (SRespError err) = "SRespError " <> pack (show err)
+displayResp (SRespAddStates states) = "SRespAddStates (" <> tshow states <> ")"
+displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> tshow k <> ") (" <> tshow (map fst mp) <> ")"
+displayResp (SRespUpdate mp) = "SRespUpdate (" <> tshow (map (map fst . snd) mp) <> ")"
+displayResp (SRespGetStates mp) = "SRespGetStates (" <> tshow (map fst mp) <> ")"
+displayResp (SRespError err) = "SRespError " <> tshow err
+displayResp (SRespGetProfile sp) = "SRespGetStates " <> tshow sp
 displayResp SRespQuit = "SRespQuit"
 
 throwAndLog :: (Exception e, MonadIO m, MonadLogger m) => e -> m a

@@ -402,6 +402,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
                 SRespRemoveStates requestingSlaveId removedStates ->
                   return (USRespRemoveStates requestingSlaveId removedStates)
                 SRespUpdate outputs_ -> return (USRespUpdate outputs_)
+                SRespGetProfile _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
               go outputs resp'
 
 -- | Send an update request to all the slaves. This will cause each of

@@ -53,6 +53,7 @@ runSlave :: forall state context input output m.
   -> m ()
 runSlave SlaveArgs{..} = do
     states <- liftIO HT.new
+    sp <- newIORef (SlaveProfiling 0 0 0 0.7)
     let recv = scRead saConn
     let send = scWrite saConn
         -- We're only catching 'SlaveException's here, since they
@@ -62,7 +63,7 @@ runSlave SlaveArgs{..} = do
         handler err = do
             send (SRespError (pack (show err)))
             throwAndLog err
-    go recv send states `catch` handler
+    go recv send states sp `catch` handler
   where
     throw = throwAndLog
     debug msg = logDebugNSJ "Distributed.Stateful.Slave" msg
@@ -70,13 +71,14 @@ runSlave SlaveArgs{..} = do
          m (SlaveReq state context input)
       -> (SlaveResp state output -> m ())
       -> HashTable StateId state
+      -> IORef SlaveProfiling
       -> m ()
-    go recv send states = do
-      req <- recv
+    go recv send states sp = do
+      req <- withSlaveProfiling sp spReceiveTime recv
       debug (displayReq req)
       -- WARNING: All exceptions thrown here should be of type
       -- 'SlaveException', as only those will be catched.
-      (output, mbStates) <- case req of
+      (output, mbStates) <- withSlaveProfiling sp spWorkTime $ case req of
           SReqResetState states' -> do
               statesMap' <- liftIO $ HT.fromList states'
               return (SRespResetState, Just statesMap')
@@ -108,10 +110,13 @@ runSlave SlaveArgs{..} = do
           SReqUpdate context inputs -> do
             outputs <- statefulUpdate saUpdate states context inputs
             return (SRespUpdate outputs, Just states)
+          SReqGetProfile -> do
+            slaveProfile <- readIORef sp
+            return (SRespGetProfile slaveProfile, Just states)
           SReqQuit -> do
             return (SRespQuit, Nothing)
-      send output
+      withSlaveProfiling sp spSendTime $ send output
       debug (displayResp output)
       case mbStates of
             Nothing -> return ()
-            Just states' -> go recv send states'
+            Just states' -> go recv send states' sp
