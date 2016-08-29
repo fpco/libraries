@@ -22,7 +22,6 @@ module Distributed.Stateful.Slave
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger.JSON.Extra (logDebugNSJ)
--- import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
 import qualified Data.HashTable.IO as HT
 import qualified Data.Store as S

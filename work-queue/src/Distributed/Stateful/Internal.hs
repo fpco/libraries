@@ -103,8 +103,8 @@ instance (HasTypeHash state, HasTypeHash output) => HasTypeHash (SlaveResp state
     typeHash _ = typeHash (Proxy :: Proxy (state, output))
 
 displayReq :: SlaveReq state context input -> Text
-displayReq (SReqResetState mp) = "SReqResetState (" <> pack (show ((map fst) mp)) <> ")"
-displayReq (SReqAddStates mp) = "SReqAddStates (" <> pack (show ((map fst) mp)) <> ")"
+displayReq (SReqResetState mp) = "SReqResetState (" <> pack (show (map fst mp)) <> ")"
+displayReq (SReqAddStates mp) = "SReqAddStates (" <> pack (show (map fst mp)) <> ")"
 displayReq (SReqRemoveStates k mp) = "SReqRemoveStates (" <> pack (show k) <> ") (" <> pack (show mp) <> ")"
 displayReq (SReqUpdate _ mp) = "SReqUpdate (" <> pack (show (map (map fst . snd) mp)) <> ")"
 displayReq SReqGetStates = "SReqGetStates"
@@ -113,9 +113,9 @@ displayReq SReqQuit = "SReqQuit"
 displayResp :: SlaveResp state output -> Text
 displayResp SRespResetState = "SRespResetState"
 displayResp (SRespAddStates states) = "SRespAddStates (" <> pack (show states) <> ")"
-displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> pack (show k) <> ") (" <> pack (show ((map fst) mp)) <> ")"
+displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> pack (show k) <> ") (" <> pack (show (map fst mp)) <> ")"
 displayResp (SRespUpdate mp) = "SRespUpdate (" <> pack (show (map (map fst . snd) mp)) <> ")"
-displayResp (SRespGetStates mp) = "SRespGetStates (" <> pack (show ((map fst) mp)) <> ")"
+displayResp (SRespGetStates mp) = "SRespGetStates (" <> pack (show (map fst mp)) <> ")"
 displayResp (SRespError err) = "SRespError " <> pack (show err)
 displayResp SRespQuit = "SRespQuit"
 

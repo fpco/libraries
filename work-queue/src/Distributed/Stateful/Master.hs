@@ -183,7 +183,7 @@ assignInputsToSlaves ::
      (MonadThrow m)
   => HMS.HashMap SlaveId (HMS.HashMap StateId ())
   -> HMS.HashMap StateId [(StateId, input)]
-  -> m ([(SlaveId, [(StateId, [(StateId, input)])])])
+  -> m [(SlaveId, [(StateId, [(StateId, input)])])]
 assignInputsToSlaves slaveStates inputMap = do
   let go (rs, inputs) (slaveId, states) = do
         -- TODO: Other Map + Set datatypes have functions for doing this
@@ -233,7 +233,7 @@ makeLenses ''SlaveStatus
 updateSlavesStep :: forall m input output.
      (MonadThrow m, MonadLogger m, MonadIO m)
   => Int -- ^ Max batch size
-  -> (HMS.HashMap StateId [(StateId, input)])  -- we need lookup here, so this should be a 'HashMap'
+  -> HMS.HashMap StateId [(StateId, input)]  -- we need lookup here, so this should be a 'HashMap'
   -> SlaveId
   -> UpdateSlaveResp output
   -> SlavesStatus
@@ -312,7 +312,7 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
             let (toTransfer, remaining) = takeEnoughStatesToUpdate (_ssRemainingStates ss)
             return (slaveId, map fst toTransfer, sum (map (length . snd) toTransfer), remaining)
       let candidates :: [(SlaveId, [StateId], Int, [StateId])]
-          candidates = catMaybes (map goodCandidate (HMS.toList uss))
+          candidates = mapMaybe goodCandidate (HMS.toList uss)
       guard (not (null candidates))
       -- Pick candidate with highest number of states to steal states from
       let (candidateSlaveId, statesToBeTransferred, _, remainingStates) =
@@ -344,7 +344,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
         , _ssWaitingForStates = False
         }
   statusVar <- newMVar (slaveStatus0 <$> slaves)
-  fmap snd $ Async.concurrently
+  snd <$> Async.concurrently
     (Async.mapConcurrently (uncurry sendLoop) (HMS.toList outgoingChans))
     (finally
       (Async.mapConcurrently (slaveLoop (snd <$> outgoingChans) statusVar) (HMS.toList slaves))
@@ -382,7 +382,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
           (statuses, requests, outputs1) <- modifyMVar statusVar $ \status -> do
             UpdateSlaveStep{..} <- updateSlavesStep maxBatchSize inputMap slaveId resp status
             return (ussSlavesStatus, (ussSlavesStatus, ussReqs, ussOutputs))
-          forM_ requests $ \(slaveId_, req0) -> do
+          forM_ requests $ \(slaveId_, req0) ->
             atomically (writeTChan (outgoingChans HMS.! slaveId_) (Just req0))
           let outputs = outputs1 <> outputs0
           let status = statuses HMS.! slaveId
@@ -421,8 +421,7 @@ update :: forall state context input output m.
   -> context
   -> HMS.HashMap StateId [input]
   -> m (HMS.HashMap StateId (HMS.HashMap StateId output))
-update (MasterHandle mv) context inputs0 = do
- res <- modifyMVar mv $ \mh -> do
+update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
   -- TODO add checks for well-formedness of inputs'
   -- Give state ids to each of the inputs, which will be used to label the
   -- state resulting from invoking saUpdate with that input.
@@ -438,7 +437,7 @@ update (MasterHandle mv) context inputs0 = do
       outputs <- statefulUpdate (maUpdate (mhArgs mh)) stateMap context inputList
       statesList' <- liftIO $ HT.toList stateMap
       let mh' = mh{ mhSlaves = NoSlavesYet statesList' }
-      return (mh', outputs)
+      return (mh', fmap HMS.fromList . HMS.fromList $ outputs)
     Slaves slaves -> do
       $logInfoJ ("Executing update with " ++ tshow (HMS.size slaves) ++ " slaves")
       let inputMap = HMS.fromList inputList
@@ -460,10 +459,9 @@ update (MasterHandle mv) context inputs0 = do
       let mh' = mh
             { mhSlaves = Slaves $
                 integrateNewStates slaves (second (fmap (const ()) . HMS.fromList . mconcat . map snd) <$> outputs)
---                 integrateNewStates slaves (second (fmap (const ()) . mconcat . HMS.elems) <$> outputs)
             }
-      return (mh', foldMap snd outputs)
- return ((fmap HMS.fromList) . HMS.fromList $ res)
+      return (mh', fmap HMS.fromList . HMS.fromList $ foldMap snd outputs)
+
 -- | Adds a connection to a slave.
 addSlaveConnection ::
      (MonadConnect m)
