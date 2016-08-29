@@ -1,8 +1,3 @@
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
@@ -11,7 +6,6 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TemplateHaskell #-}
 module Distributed.Stateful.Internal where
 
 import           ClassyPrelude
@@ -23,8 +17,6 @@ import           Data.Proxy (Proxy(..))
 import           Data.Store (Store)
 import           Data.Store.TypeHash
 import           Data.Store.TypeHash.Orphans ()
-import qualified Data.Vector.Unboxed as UV
-import           Data.Vector.Unboxed.Deriving
 import           Text.Printf (PrintfArg(..))
 
 type HashTable k v = HT.CuckooHashTable k v
@@ -50,13 +42,6 @@ instance PrintfArg SlaveId where
 -- | Identifier for the state of a sub computation.
 newtype StateId = StateId {unStateId :: Int}
   deriving (Generic, Eq, Ord, Show, Hashable, NFData, Store)
-derivingUnbox "StateId"
-    [t| StateId -> Int |]
-    [| unStateId |]
-    [| StateId |]
-deriving instance Generic (UV.Vector StateId)
-instance Store (UV.Vector StateId)
-
 instance PrintfArg StateId where
   formatArg = formatArg . unStateId
   parseFormat = parseFormat . unStateId
@@ -102,7 +87,7 @@ instance (HasTypeHash state, HasTypeHash context, HasTypeHash input) => HasTypeH
 data SlaveResp state output
   = SRespResetState
   | SRespAddStates
-      !(UV.Vector StateId)
+      ![StateId]
   | SRespRemoveStates
       !SlaveId
       ![(StateId, ByteString)]
@@ -112,8 +97,8 @@ data SlaveResp state output
   | SRespGetStates ![(StateId, state)]
   | SRespError Text
   | SRespQuit
-  deriving (Generic, Eq, Show, NFData)
-deriving instance ( Store state, Store output) => Store (SlaveResp state output)
+  deriving (Generic, Eq, Show, NFData, Store)
+
 instance (HasTypeHash state, HasTypeHash output) => HasTypeHash (SlaveResp state output) where
     typeHash _ = typeHash (Proxy :: Proxy (state, output))
 

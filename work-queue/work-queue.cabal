@@ -75,7 +75,6 @@ library
                      , unordered-containers
                      , uuid
                      , vector
-                     , vector-th-unbox
                      , void
                      , mesosync
                      , hashable
