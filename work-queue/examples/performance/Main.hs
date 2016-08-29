@@ -115,7 +115,7 @@ benchKMeans = KMeans.Options
          <|> pure 3)
     <*> (strOption (long "output" <> short 'o'
                            <> help "FilePath for the csv output")
-         <|> pure "kmeans-bench.csv")
+         <|> pure "bench-kmeans.csv")
 
 options :: Parser Options
 options = Options
