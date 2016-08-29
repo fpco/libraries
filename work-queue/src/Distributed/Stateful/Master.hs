@@ -54,6 +54,7 @@ import qualified Data.HashSet as HS
 import qualified Data.HashTable.IO as HT
 import           Data.List.Split (chunksOf)
 import           Data.SimpleSupply
+import qualified Data.Vector.Unboxed as UV
 import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
 import           Text.Printf (printf)
@@ -200,7 +201,7 @@ assignInputsToSlaves slaveStates inputMap = do
   return slavesIdsAndInputs
 
 data UpdateSlaveResp output
-  = USRespAddStates ![StateId]
+  = USRespAddStates !(UV.Vector StateId)
   | USRespRemoveStates !SlaveId [(StateId, ByteString)]
   | USRespUpdate ![(StateId, [(StateId, output)])]
   | USRespInit
@@ -224,7 +225,7 @@ type SlavesStatus = HMS.HashMap SlaveId SlaveStatus
 
 data SlaveStatus = SlaveStatus
   { _ssWaitingResps :: !Int
-  , _ssRemainingStates :: ![StateId]
+  , _ssRemainingStates :: (UV.Vector StateId)
   , _ssWaitingForStates :: !Bool
   }
 makeLenses ''SlaveStatus
@@ -247,7 +248,7 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
       addOutputs outputs <$> findSomethingToUpdate respSlaveId statuses1
     USRespAddStates statesIds -> do
       let statuses' =
-            over (at respSlaveId . _Just) (over ssRemainingStates (++ statesIds) . set ssWaitingForStates False) $
+            over (at respSlaveId . _Just) (over ssRemainingStates (UV.++ statesIds) . set ssWaitingForStates False) $
             statuses1
       addOutputs_ <$> findSomethingToUpdate respSlaveId statuses'
     USRespRemoveStates requestingSlaveId states -> do
@@ -288,15 +289,16 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
 
     {-# INLINE takeEnoughStatesToUpdate #-}
     takeEnoughStatesToUpdate ::
-         [StateId]
-      -> ([(StateId, [(StateId, input)])], [StateId])
+         UV.Vector StateId
+      -> ([(StateId, [(StateId, input)])], UV.Vector StateId)
     takeEnoughStatesToUpdate remaining00 = go remaining00 0
       where
         go remaining0 grabbed = if grabbed >= maxBatchSize
           then ([], remaining0)
-          else case remaining0 of
-            [] -> ([], remaining0)
-            stateId : remaining -> let
+          else case UV.length remaining0 of
+            0 -> ([], remaining0)
+            _ -> let
+              (stateId, remaining) = (UV.head remaining0, UV.tail remaining0)
               inps = inputs HMS.! stateId
               in first ((stateId, inps) :) (go remaining (grabbed + length inps))
 
@@ -311,7 +313,7 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
             guard (not (null (_ssRemainingStates ss)))
             let (toTransfer, remaining) = takeEnoughStatesToUpdate (_ssRemainingStates ss)
             return (slaveId, map fst toTransfer, sum (map (length . snd) toTransfer), remaining)
-      let candidates :: [(SlaveId, [StateId], Int, [StateId])]
+      let candidates :: [(SlaveId, [StateId], Int, UV.Vector StateId)]
           candidates = catMaybes (map goodCandidate (HMS.toList uss))
       guard (not (null candidates))
       -- Pick candidate with highest number of states to steal states from
@@ -340,7 +342,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
       return (slaveConnection slave, chan)
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
-        , _ssRemainingStates = HMS.keys (slaveStates slave)
+        , _ssRemainingStates = UV.fromList $ HMS.keys (slaveStates slave)
         , _ssWaitingForStates = False
         }
   statusVar <- newMVar (slaveStatus0 <$> slaves)
