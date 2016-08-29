@@ -93,7 +93,7 @@ import           FP.Redis (Milliseconds)
 
 -- | Run a slave that communicates with a master via 'TMChan's.
 runPureStatefulSlave :: forall m context input state output a.
-       (MonadConnect m, NFData state, NFData output, Store state)
+       (MonadConnect m, NFData state, NFData output, Store state, NFData input, NFData context)
     => (context -> input -> state -> m (state, output))
     -> (SlaveConn m state context input output -> m a)
     -> m a
@@ -136,7 +136,7 @@ runPureStatefulSlave update_ cont = do
 -- within the same process, and communication is performed via
 -- 'TMChan's.
 runSimplePureStateful :: forall m context input state output a.
-       (MonadConnect m, NFData state, NFData output, Store state)
+       (MonadConnect m, NFData state, NFData output, Store state, NFData input, NFData context)
     => MasterArgs m state context input output
     -> Int -- ^ Desired slaves. Must be >= 0
     -> (MasterHandle m state context input output -> m a)
@@ -162,7 +162,7 @@ nmStatefulConn ad = StatefulConn
 -- | Run a slave that uses "Data.Streaming.NetworkMessage" for sending
 -- and receiving data.
 runNMStatefulSlave ::
-       (MonadConnect m, NFData state, Store state, NFData output, Store output, Store context, Store input)
+       (MonadConnect m, NFData state, Store state, NFData output, Store output, Store context, Store input, NFData input, NFData context)
     => Update m state context input output
     -> NMApp (SlaveResp state output) (SlaveReq state context input) m ()
 runNMStatefulSlave update_ ad = runSlave SlaveArgs
@@ -256,7 +256,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
 -- wanted.
 runSimpleNMStateful :: forall m state input output context a.
        ( MonadConnect m
-       , NFData state, NFData output
+       , NFData state, NFData output, NFData input, NFData context
        , Store state, Store output, Store context, Store input
        , HasTypeHash state, HasTypeHash input, HasTypeHash output, HasTypeHash context
        )
@@ -297,7 +297,7 @@ runSimpleNMStateful host ma numSlaves cont = do
 
 -- | Spawn a slave node that will connect to a master on request.
 runRequestedStatefulSlave ::
-       (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input)
+       (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input, NFData input, NFData context)
     => Redis
     -> Milliseconds
     -> Update m state context input output
@@ -371,7 +371,7 @@ runRequestingStatefulMaster r (heartbeatingWorkerId -> wid) ss0 host mbPort ma n
 -- It uses 'runMasterOrSlave' in order to act as a master or slave for
 -- a distributed computation, depending on what is currently needed.
 runJobQueueStatefulWorker ::
-       (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input, Sendable request, Sendable response)
+       (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input, Sendable request, Sendable response, NFData input, NFData context)
     => JobQueueConfig
     -> CN.ServerSettings
     -- ^ The settings used to create the server. You can use 0 as port number to have

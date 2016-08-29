@@ -32,6 +32,7 @@ module Distributed.Stateful.Master
     , resetStates
     , getStateIds
     , getStates
+    , getSlavesProfiling
     , addSlaveConnection
     , getNumSlaves
       -- * Types
@@ -41,6 +42,7 @@ module Distributed.Stateful.Master
     , StateId
     , SlaveId
     , StatefulConn(..)
+    , SlaveProfiling(..), emptySlaveProfiling
     ) where
 
 import           ClassyPrelude
@@ -402,6 +404,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
                 SRespRemoveStates requestingSlaveId removedStates ->
                   return (USRespRemoveStates requestingSlaveId removedStates)
                 SRespUpdate outputs_ -> return (USRespUpdate outputs_)
+                SRespGetProfile _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
               go outputs resp'
 
 -- | Send an update request to all the slaves. This will cause each of
@@ -416,7 +419,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
 -- inconsistent state, and the whole computation should be aborted.
 {-# INLINE update #-}
 update :: forall state context input output m.
-     (MonadConnect m, NFData input, NFData output)
+     (MonadConnect m, NFData input, NFData output, NFData state, NFData context)
   => MasterHandle m state context input output
   -> context
   -> HMS.HashMap StateId [input]
@@ -432,9 +435,10 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
       (stateId,) <$> mapM (\input -> (, input) <$> askSupplyM) inps
   case mhSlaves mh of
     NoSlavesYet states -> do
+      _sp <- newIORef emptySlaveProfiling -- we'll not read this, but we need it to pass to 'statefulUpdate'.
       $logWarnJ ("Executing update without any slaves" :: Text)
       stateMap <- liftIO $ HT.fromList states
-      outputs <- statefulUpdate (maUpdate (mhArgs mh)) stateMap context inputList
+      outputs <- statefulUpdate _sp (maUpdate (mhArgs mh)) stateMap context inputList
       statesList' <- liftIO $ HT.toList stateMap
       let mh' = mh{ mhSlaves = NoSlavesYet statesList' }
       return (mh', fmap HMS.fromList . HMS.fromList $ outputs)
@@ -557,6 +561,20 @@ getStates (MasterHandle mhv) = withMVar mhv $ \mh -> do
           SRespGetStates states -> Just states
           _ -> Nothing
       return (HMS.fromList $ mconcat responses)
+
+getSlavesProfiling ::
+       MonadConnect m
+    => MasterHandle m state context input output
+    -> m (HMS.HashMap SlaveId SlaveProfiling)  -- [(SlaveId, SlaveProfiling)]
+getSlavesProfiling (MasterHandle mhv) = withMVar mhv $ \mh ->
+    case mhSlaves mh of
+        NoSlavesYet _states -> return HMS.empty
+        Slaves slaves -> do
+            forM_ slaves $ \slave -> scWrite (slaveConnection slave) SReqGetProfile
+            forM slaves $ \slave ->
+                readExpect "getSlavesProfiling" (slaveConnection slave) $ \case
+                    SRespGetProfile sp -> return sp
+                    _ -> Nothing
 
 -- | Get the number of slaves connected to a master.
 getNumSlaves ::
