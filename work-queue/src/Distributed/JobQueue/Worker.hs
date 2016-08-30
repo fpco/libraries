@@ -29,8 +29,11 @@ module Distributed.JobQueue.Worker
     , defaultJobQueueConfig
     , jobWorker
     , jobWorkerWithHeartbeats
+    , executeNextJob
+    , executeNextJobWithHeartbeats
     , Reenqueue(..)
     , jobWorkerWait
+    , executeNextJobWait
     ) where
 
 import ClassyPrelude
@@ -76,6 +79,17 @@ jobWorker :: forall m request response void.
     -> m void
 jobWorker config redis hb f = jobWorkerWait config redis hb (return ()) f
 
+executeNextJob :: forall m request response.
+       (MonadConnect m, Sendable request, Sendable response)
+    => JobQueueConfig
+    -> Redis
+    -> Heartbeating
+    -> (RequestId -> request -> m (Reenqueue response))
+    -- ^ This function is run by the worker, for every request it
+    -- receives.
+    -> m ()
+executeNextJob config redis hb f = executeNextJobWait config redis hb (return ()) f
+
 jobWorkerWithHeartbeats ::
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
@@ -86,6 +100,17 @@ jobWorkerWithHeartbeats ::
     -> m void
 jobWorkerWithHeartbeats config redis f = do
     withHeartbeats (jqcHeartbeatConfig config) redis (\hb -> jobWorker config redis hb f)
+
+executeNextJobWithHeartbeats ::
+       (MonadConnect m, Sendable request, Sendable response)
+    => JobQueueConfig
+    -> Redis
+    -> (RequestId -> request -> m (Reenqueue response))
+    -- ^ This function is run by the worker, for every request it
+    -- receives.
+    -> m ()
+executeNextJobWithHeartbeats config redis f = do
+    withHeartbeats (jqcHeartbeatConfig config) redis (\hb -> executeNextJob config redis hb f)
 
 -- | Exactly like 'jobWorker', but also allows to delay the loop using the second argument.
 jobWorkerWait :: forall m request response void.
@@ -111,6 +136,30 @@ jobWorkerWait config@JobQueueConfig{..} r (heartbeatingWorkerId -> wid) wait f =
         (\waitForReq -> do
             -- writeIORef everConnectedRef True
             jobWorkerThread config r wid waitForReq f wait)
+
+executeNextJobWait :: forall m request response.
+       (MonadConnect m, Sendable request, Sendable response)
+    => JobQueueConfig
+    -> Redis
+    -> Heartbeating
+    -> m ()
+    -- ^ The worker has a loop that keeps popping requests. This action
+    -- will be called at the beginning of every loop iteration, and can
+    -- be useful to "limit" the loop (e.g. have some timer in between,
+    -- or wait for the worker to be free of processing requests if we
+    -- are doing something else too).
+    -> (RequestId -> request -> m (Reenqueue response))
+    -- ^ This function is run by the worker, for every request it
+    -- receives.
+    -> m ()
+executeNextJobWait config@JobQueueConfig{..} r (heartbeatingWorkerId -> wid) wait f = do
+    withSubscribedNotifyChannel
+        (rcConnectInfo jqcRedisConfig)
+        jqcRequestNotificationFailsafeTimeout
+        (requestChannel r)
+        (\waitForReq -> do
+            -- writeIORef everConnectedRef True
+            jobWorkerSingle config r wid waitForReq f wait)
 
 -- | A specialised 'Maybe' to indicate the result of a job: If the job
 -- successfull produced a result @a@, it will yield it via
@@ -138,8 +187,34 @@ jobWorkerThread :: forall request response m void.
     -> (RequestId -> request -> m (Reenqueue response))
     -> m ()
     -> m void
-jobWorkerThread JobQueueConfig{..} r wid waitForNewRequest f wait = forever $ do
-    wait
+jobWorkerThread config r wid waitForNewRequest f wait = forever $ do
+  wait
+  jobWorkerIteration config r wid waitForNewRequest f
+
+jobWorkerSingle :: forall request response m.
+       (MonadConnect m, Sendable request, Sendable response)
+    => JobQueueConfig
+    -> Redis
+    -> WorkerId
+    -> m ()
+    -- ^ This action, when executed, blocks until we think a new response is present.
+    -> (RequestId -> request -> m (Reenqueue response))
+    -> m ()
+    -> m ()
+jobWorkerSingle config r wid waitForNewRequest f wait = do
+  wait
+  jobWorkerIteration config r wid waitForNewRequest f
+
+jobWorkerIteration :: forall request response m.
+       (MonadConnect m, Sendable request, Sendable response)
+    => JobQueueConfig
+    -> Redis
+    -> WorkerId
+    -> m ()
+    -- ^ This action, when executed, blocks until we think a new response is present.
+    -> (RequestId -> request -> m (Reenqueue response))
+    -> m ()
+jobWorkerIteration JobQueueConfig{..} r wid waitForNewRequest f = do
     -- try to get a request from the urgent queue first.  If no urgent
     -- request is there, try one from the normal queue.
     mbRidbs <- run r (rpoplpush (urgentRequestsKey r) (activeKey r wid)) >>= \case
