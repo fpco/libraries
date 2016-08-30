@@ -70,7 +70,7 @@ benchPFilter = PFilter.Options
     <*> (option auto
          (long "nparticles" <> short 'N'
           <> help "Number of particles")
-         <|> pure 1000)
+         <|> pure 10000)
     <*> (strOption
          (long "output" <> short 'o'
           <> help "FilePath for the csv output")
