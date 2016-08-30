@@ -32,6 +32,7 @@ module Distributed.Stateful.Master
     , resetStates
     , getStateIds
     , getStates
+    , getSlavesProfiling
     , addSlaveConnection
     , getNumSlaves
       -- * Types
@@ -41,6 +42,7 @@ module Distributed.Stateful.Master
     , StateId
     , SlaveId
     , StatefulConn(..)
+    , SlaveProfiling (..), spReceiveTime, spWorkTime, spSendTime, emptySlaveProfiling
     ) where
 
 import           ClassyPrelude
@@ -558,6 +560,20 @@ getStates (MasterHandle mhv) = withMVar mhv $ \mh -> do
           SRespGetStates states -> Just states
           _ -> Nothing
       return (HMS.fromList $ mconcat responses)
+
+getSlavesProfiling ::
+       MonadConnect m
+    => MasterHandle m state context input output
+    -> m (HMS.HashMap SlaveId SlaveProfiling)  -- [(SlaveId, SlaveProfiling)]
+getSlavesProfiling (MasterHandle mhv) = withMVar mhv $ \mh ->
+    case mhSlaves mh of
+        NoSlavesYet _states -> return HMS.empty
+        Slaves slaves -> do
+            forM_ slaves $ \slave -> scWrite (slaveConnection slave) SReqGetProfile
+            forM slaves $ \slave ->
+                readExpect "getSlavesProfiling" (slaveConnection slave) $ \case
+                    SRespGetProfile sp -> return sp
+                    _ -> Nothing
 
 -- | Get the number of slaves connected to a master.
 getNumSlaves ::

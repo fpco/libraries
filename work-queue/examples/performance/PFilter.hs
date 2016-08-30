@@ -127,20 +127,21 @@ dpfMaster :: forall m s parameter state summary input .
              , NFData parameter, NFData state, NFData summary)
              => PFConfig parameter state summary input
              -> s
+             -> IORef SlaveProfiling
              -> PFRequest parameter state summary input
              -> WQ.MasterHandle m (PFState parameter state summary)
                                   (PFContext parameter state summary input)
                                   PFInput
                                   PFOutput
              -> m (PFResponse parameter)
-dpfMaster PFConfig{..} s PFRequest{..} mh = do
+dpfMaster PFConfig{..} s spref PFRequest{..} mh = do
     sids <- WQ.resetStates mh $ PFState <$> V.toList rparticles
     let initialWeights = (const (PFOutput $ 1/fromIntegral nParticles) <$> sids :: HMS.HashMap WQ.StateId PFOutput)
     evolve initialWeights pfcSystem
   where
       evolve :: HMS.HashMap WQ.StateId PFOutput -> EvolvingSystem input summary -> m (PFResponse parameter)
       evolve weights system = case evolveStep system of
-          Nothing -> sendResponse
+          Nothing -> writeSP mh spref >> sendResponse
           Just (system', (minput, msummary)) -> do
               weights' <- fold <$> WQ.update mh (PFContext minput msummary) (const [PFInput] <$> weights)
               resample weights' system'

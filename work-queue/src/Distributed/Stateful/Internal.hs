@@ -75,6 +75,20 @@ data SlaveProfiling = SlaveProfiling
 instance Store SlaveProfiling
 makeLenses ''SlaveProfiling
 
+emptySlaveProfiling :: SlaveProfiling
+emptySlaveProfiling = SlaveProfiling 0 0 0 0.7
+
+instance Semigroup SlaveProfiling where
+    -- combine profiling data by averaging
+    sp <> sp' = SlaveProfiling
+        { _spReceiveTime = 0.5*(view spReceiveTime sp + view spReceiveTime sp')
+        , _spWorkTime = 0.5*(view spWorkTime sp + view spWorkTime sp')
+        , _spSendTime = 0.5*(view spSendTime sp + view spSendTime sp')
+        -- averaging here doesn't really make sense, but it makes <> associative.
+        , _spMovingAvgAlpha = 0.5*(view spMovingAvgAlpha sp + view spMovingAvgAlpha sp')
+        }
+
+
 -- | Exponential moving average
 updateMovingAvg :: Double -> Double -> Double -> Double
 updateMovingAvg alpha oldAvg newDatum = (1-alpha)*oldAvg + alpha*newDatum

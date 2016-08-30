@@ -17,16 +17,19 @@ module PerformanceUtils ( CSVInfo (..)
                         , runWithoutNM
                         , logSourceBench
                         , logErrorsOrBench
+                        , writeSP
                         ) where
 
 import           ClassyPrelude
 import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.Mesosync.Lifted.Safe
 import           Control.DeepSeq
+import           Control.Lens
 import           Control.Monad.Logger
 import qualified Control.Retry as R
 import           Criterion.Measurement
 import qualified Data.Conduit.Network as CN
+import qualified Data.HashMap.Strict as HMS
 import           Data.Store (Store)
 import           Data.Store.TypeHash
 import           Data.Streaming.Process (Inherited(..), ClosedStream(..), streamingProcess, waitForStreamingProcess, ProcessExitedUnsuccessfully(..), streamingProcessHandleRaw)
@@ -102,6 +105,15 @@ waitForNWorkers r n =
 logSourceBench :: LogSource
 logSourceBench = "benchmark"
 
+-- | Get the 'SlaveProfiling' data of the slaves, average them, and write to a given 'IORef'.
+writeSP :: MonadConnect m => MasterHandle m state input output context -> IORef SlaveProfiling -> m ()
+writeSP mh spref = do
+    spMap <- getSlavesProfiling mh
+    case HMS.elems spMap of
+        [] -> $logErrorS logSourceBench "No slave profiling data!"
+        sp:sps -> writeIORef spref $ foldl' (<>) sp sps
+
+
 -- | Only log messages that either come from the benchmark directly,
 -- and errors.
 logErrorsOrBench :: MonadIO m => LoggingT m a -> m a
@@ -144,7 +156,8 @@ runWithNM :: forall m a context input output state request response.
     -> MasterArgs m state context input output
     -> Int
     -- ^ @nSlaves@
-    -> (request
+    -> ( IORef SlaveProfiling
+      -> request
       -> MasterHandle m state context input output
       -> m response)
     -> m request
@@ -154,6 +167,7 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
     if isJust spawnWorker
        then do
            $logDebugS logSourceBench "spawning worker"
+           _spref <- newIORef emptySlaveProfiling -- this will not really be used
            let ss = CN.serverSettings 3333 "*"
            runJobQueueStatefulWorker
                jqc
@@ -162,14 +176,17 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
                Nothing
                masterArgs
                (NMStatefulMasterArgs (Just nSlaves) (Just nSlaves) (1000 * 1000))
-               (\mh _rid req -> DontReenqueue <$> workerFunc req mh)
+               (\mh _rid req -> DontReenqueue <$> workerFunc _spref req mh)
        else do
+           spref <- newIORef emptySlaveProfiling
            time <- withNSlaves
                nSlaves
                (withJobClient jqc $ \(jc :: JobClient response) -> do
                        waitForNWorkers (jcRedis jc) (nSlaves + 1) -- +1 for the worker
-                       measureRequestTime generateRequest jc)
-           liftIO $ writeToCsv fp (CSVInfo [("time", pack $ show time)] <> csvInfo)
+                       measureRequestTime generateRequest jc
+               )
+           sp <- readIORef spref
+           liftIO $ writeToCsv fp (CSVInfo [("time", pack $ show time)] <> csvInfo <> slaveProfilingCsv sp)
            return (nSlaves, time)
 
 runWithoutNM ::
@@ -180,21 +197,34 @@ runWithoutNM ::
     -> CSVInfo
     -> MasterArgs m state context input output
     -> Int
-    -> (request
+    -> ( IORef SlaveProfiling
+       -> request
        -> MasterHandle m state context input output
        -> m response)
     -> m request
     -> m (Int, Double)
 runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
+    spref <- newIORef emptySlaveProfiling
     req <- generateRequest
     liftIO initializeTime
     t0 <- liftIO getTime
-    res <- runSimplePureStateful masterArgs nSlaves (masterFunc req)
+    res <- runSimplePureStateful masterArgs nSlaves (masterFunc spref req)
     $logInfoS logSourceBench $ unwords [ "result:", tshow res]
     t1 <- liftIO getTime
     $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
-    liftIO . writeToCsv fp $ CSVInfo [("time", pack $ show (t1 - t0))] <> csvInfo
+    sp <- readIORef spref
+    liftIO . writeToCsv fp $ CSVInfo [("time", pack $ show (t1 - t0))] <> csvInfo <> slaveProfilingCsv sp
     return (nSlaves, (t1 - t0))
+
+slaveProfilingCsv :: SlaveProfiling -> CSVInfo
+slaveProfilingCsv sp = CSVInfo
+    [ ("slaveReceiveFraction", tshow $ fraction spReceiveTime)
+    , ("slaveWorkFraction", tshow $ fraction spWorkTime)
+    , ("slaveSendFraction", tshow $ fraction spSendTime)
+    ]
+  where
+    totalTime = sum [view l sp | l <- [spReceiveTime, spWorkTime, spSendTime]]
+    fraction l = view l sp / totalTime
 
 -- | Write key value pairs to a csv file.
 --
