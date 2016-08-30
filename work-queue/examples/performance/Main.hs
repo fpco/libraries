@@ -228,7 +228,7 @@ main = do
     let commonCsvInfo = CSVInfo
             [ ("commit", T.pack $ take 8 gitHash)
             , ("node", T.pack $ init nodename)
-            , ("NetworkMessage", T.pack . show . optNoNetworkMessage $ opts)
+            , ("NetworkMessage", T.pack . show . not . optNoNetworkMessage $ opts)
             ]
     when (optPurgeCSV opts) (purgeResults opts)
     case optSpawnWorker opts of
