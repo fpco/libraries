@@ -278,6 +278,7 @@ priorityReenqueueTest r = do
                         Nothing -> fail "RequestStats not found"
                         Just stats -> rsComputeStartTime stats `shouldSatisfy` isJust
                     )
+        reenqueueRequests r -- manually check for dead worker
         -- wait until the job is re-enqueued by the heartbeat checker
         waitForHUnitPass upToAMinute $ do
             getRequestStats r ridHigh >>= \case
