@@ -70,7 +70,7 @@ benchPFilter = PFilter.Options
     <*> (option auto
          (long "nparticles" <> short 'N'
           <> help "Number of particles")
-         <|> pure 1000)
+         <|> pure 10000)
     <*> (strOption
          (long "output" <> short 'o'
           <> help "FilePath for the csv output")
@@ -115,7 +115,7 @@ benchKMeans = KMeans.Options
          <|> pure 3)
     <*> (strOption (long "output" <> short 'o'
                            <> help "FilePath for the csv output")
-         <|> pure "kmeans-bench.csv")
+         <|> pure "bench-kmeans.csv")
 
 options :: Parser Options
 options = Options
@@ -228,7 +228,7 @@ main = do
     let commonCsvInfo = CSVInfo
             [ ("commit", T.pack $ take 8 gitHash)
             , ("node", T.pack $ init nodename)
-            , ("NetworkMessage", T.pack . show . optNoNetworkMessage $ opts)
+            , ("NetworkMessage", T.pack . show . not . optNoNetworkMessage $ opts)
             ]
     when (optPurgeCSV opts) (purgeResults opts)
     case optSpawnWorker opts of
