@@ -79,6 +79,20 @@ jobWorker :: forall m request response void.
     -> m void
 jobWorker config redis hb f = jobWorkerWait config redis hb (return ()) f
 
+-- | Implements a compute node which responds to a single request and
+-- then returns.
+--
+-- This function will monitor the job queue and only fire when redis
+-- notifies it of a job to be performed.
+--
+-- The results of the job to be executed are sent back to the result
+-- queue.
+-- While performing a job, it will repeatedly check if the job has
+-- been canceled, in which case it will abort the job and pick the
+-- next.
+--
+-- Heartbeats are sent periodically to signal that the worker is alive
+-- and connected to the job queue.
 executeNextJob :: forall m request response.
        (MonadConnect m, Sendable request, Sendable response)
     => JobQueueConfig
@@ -128,14 +142,10 @@ jobWorkerWait :: forall m request response void.
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m void
-jobWorkerWait config@JobQueueConfig{..} r (heartbeatingWorkerId -> wid) wait f = do
-    withSubscribedNotifyChannel
-        (rcConnectInfo jqcRedisConfig)
-        jqcRequestNotificationFailsafeTimeout
-        (requestChannel r)
-        (\waitForReq -> do
-            -- writeIORef everConnectedRef True
-            jobWorkerThread config r wid waitForReq f wait)
+jobWorkerWait config r (heartbeatingWorkerId -> wid) wait f = do
+    withWait config r $ \waitForReq -> do
+        -- writeIORef everConnectedRef True
+        jobWorkerThread config r wid waitForReq f wait
 
 executeNextJobWait :: forall m request response.
        (MonadConnect m, Sendable request, Sendable response)
@@ -152,14 +162,21 @@ executeNextJobWait :: forall m request response.
     -- ^ This function is run by the worker, for every request it
     -- receives.
     -> m ()
-executeNextJobWait config@JobQueueConfig{..} r (heartbeatingWorkerId -> wid) wait f = do
+executeNextJobWait config r (heartbeatingWorkerId -> wid) wait f = do
+    withWait config r $ \waitForReq -> do
+        -- writeIORef everConnectedRef True
+        jobWorkerSingle config r wid waitForReq f wait
+
+withWait :: forall m void.
+    (MonadConnect m) => JobQueueConfig -> Redis -> (m () -> m void) -> m void
+withWait JobQueueConfig{..} r action =
     withSubscribedNotifyChannel
         (rcConnectInfo jqcRedisConfig)
         jqcRequestNotificationFailsafeTimeout
         (requestChannel r)
         (\waitForReq -> do
             -- writeIORef everConnectedRef True
-            jobWorkerSingle config r wid waitForReq f wait)
+            action waitForReq)
 
 -- | A specialised 'Maybe' to indicate the result of a job: If the job
 -- successfull produced a result @a@, it will yield it via
