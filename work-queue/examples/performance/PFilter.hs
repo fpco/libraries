@@ -127,27 +127,24 @@ dpfMaster :: forall m s parameter state summary input .
              , NFData parameter, NFData state, NFData summary)
              => PFConfig parameter state summary input
              -> s
-             -> IORef SlaveProfiling
              -> PFRequest parameter state summary input
              -> WQ.MasterHandle m (PFState parameter state summary)
                                   (PFContext parameter state summary input)
                                   PFInput
                                   PFOutput
-             -> m (PFResponse parameter)
-dpfMaster PFConfig{..} s spref PFRequest{..} mh = do
+             -> m (PFResponse parameter, SlaveProfiling)
+dpfMaster PFConfig{..} s PFRequest{..} mh = do
     sids <- WQ.resetStates mh $ PFState <$> V.toList rparticles
     let initialWeights = (const (PFOutput $ 1/fromIntegral nParticles) <$> sids :: HMS.HashMap WQ.StateId PFOutput)
     evolve initialWeights pfcSystem
   where
-      evolve :: HMS.HashMap WQ.StateId PFOutput -> EvolvingSystem input summary -> m (PFResponse parameter)
       evolve weights system = case evolveStep system of
-          Nothing -> writeSP mh spref >> sendResponse
+          Nothing -> sendResponse
           Just (system', (minput, msummary)) -> do
               weights' <- fold <$> WQ.update mh (PFContext minput msummary) (const [PFInput] <$> weights)
               resample weights' system'
-      resample :: HashMap StateId PFOutput -> EvolvingSystem input summary -> m (PFResponse parameter)
       resample weights system = do
-          let nEffParticles = (sum $ pfoWeight <$> weights) / fromIntegral nParticles
+          let nEffParticles = sum (pfoWeight <$> weights) / fromIntegral nParticles
           if nEffParticles > pfcEffectiveParticleThreshold
               then $logInfoS logSourceBench (unwords ["not resampling,", tshow nEffParticles, ">", tshow pfcEffectiveParticleThreshold])
                    >> evolve weights system
@@ -161,7 +158,7 @@ dpfMaster PFConfig{..} s spref PFRequest{..} mh = do
                   let newParticles =
                           pfsParticle
                           . fromMaybe (error "lookup in states failed")
-                          . (flip HMS.lookup states) <$> sids :: Particles parameter state summary
+                          . flip HMS.lookup states <$> sids :: Particles parameter state summary
                       regulator = pfcRegulator newParticles :: parameter -> RVar parameter
                   regulatedParticles <- V.mapM (\p@Particle{..} -> do
                                                       parameter' <- sampleFrom s $ regulator pparameter
@@ -175,7 +172,10 @@ dpfMaster PFConfig{..} s spref PFRequest{..} mh = do
       sendResponse = do
           states <- WQ.getStates mh
           let parameterEstimate = pfcSampleParameter $ (\(PFState p) -> (pweight p, pparameter p)) <$> states
-          return $ PFResponse parameterEstimate
+          sp <- HMS.elems <$> getSlavesProfiling mh >>= \case
+              [] -> $logErrorS logSourceBench "No slave profiling data!" >> return emptySlaveProfiling
+              sp:sps -> return $ foldl' (<>) sp sps
+          return (PFResponse parameterEstimate, sp)
       nParticles = V.length rparticles
 
 weightedVectorRVar :: Show a => V.Vector (Double, a) -> RVar a

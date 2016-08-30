@@ -20,6 +20,7 @@ module Vectors ( Options (..)
 import           ClassyPrelude
 import           Control.DeepSeq
 import           Control.Exception (evaluate)
+import           Control.Monad.Logger
 import           Control.Monad.Random
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -81,8 +82,8 @@ myStates Options{..} =
 myInputs :: [Input]
 myInputs = [V.enumFromN 1 20]
 
-myAction :: MonadConnect m => IORef SlaveProfiling -> Request -> MasterHandle m State Context Input Output -> m Response
-myAction spref req mh = do
+myAction :: MonadConnect m => Request -> MasterHandle m State Context Input Output -> m (Response, SlaveProfiling)
+myAction req mh = do
     _ <- resetStates mh req
     finalStates <- mapM (\_ -> do
                                 stateIds <- getStateIds mh
@@ -90,8 +91,10 @@ myAction spref req mh = do
                                 newStates <- update mh 5 inputs
                                 return newStates
                         ) [1..5::Int]
-    writeSP mh spref
-    return (sum $ sum <$> (unsafeHead finalStates :: HashMap StateId (HashMap StateId Output)))
+    sp <- HMS.elems <$> getSlavesProfiling mh >>= \case
+        [] -> $logErrorS logSourceBench "No slave profiling data!" >> return emptySlaveProfiling
+        sp:sps -> return $ foldl' (<>) sp sps
+    return (sum $ sum <$> (unsafeHead finalStates :: HashMap StateId (HashMap StateId Output)), sp)
 
 jqc :: JobQueueConfig
 jqc = defaultJobQueueConfig "perf:unmotivated:"

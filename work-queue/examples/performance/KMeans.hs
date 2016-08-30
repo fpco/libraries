@@ -165,13 +165,17 @@ chunksOfVec n vec = unfoldr (\v -> case splitAt n v of
                                     (emptyvec, _) | V.null emptyvec -> Nothing
                                     (chunk, rest) -> Just (chunk, rest)) vec
 
-distributeKMeans :: forall m . MonadConnect m => IORef SlaveProfiling -> Request -> MasterHandle m State Context Input Output -> m Response
-distributeKMeans spref Request{..} mh = do
+distributeKMeans :: forall m . MonadConnect m => Request -> MasterHandle m State Context Input Output -> m (Response, SlaveProfiling)
+distributeKMeans Request{..} mh = do
     resetStates mh (replicate nStates ()) >> distrib rMaxIterations rInitialClusters
   where
       inputs = chunksOfVec rGranularity rPoints :: [(V.Vector Point)]
       nStates = length inputs
-      distrib 0 clusters = writeSP mh spref >> return clusters
+      distrib 0 clusters = do
+          sp <- HMS.elems <$> getSlavesProfiling mh >>= \case
+              [] -> $logErrorS logSourceBench "No slave profiling data!" >> return emptySlaveProfiling
+              sp:sps -> return $ foldl' (<>) sp sps
+          return (clusters, sp)
       distrib n clusters = do
           stateIds <- getStateIds mh
           let inputMap = (HMS.fromList $ zipWith (\sid ps -> (sid, [DistributePoints ps]))

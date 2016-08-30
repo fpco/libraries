@@ -17,7 +17,6 @@ module PerformanceUtils ( CSVInfo (..)
                         , runWithoutNM
                         , logSourceBench
                         , logErrorsOrBench
-                        , writeSP
                         ) where
 
 import           ClassyPrelude
@@ -29,7 +28,6 @@ import           Control.Monad.Logger
 import qualified Control.Retry as R
 import           Criterion.Measurement
 import qualified Data.Conduit.Network as CN
-import qualified Data.HashMap.Strict as HMS
 import           Data.Store (Store)
 import           Data.Store.TypeHash
 import           Data.Streaming.Process (Inherited(..), ClosedStream(..), streamingProcess, waitForStreamingProcess, ProcessExitedUnsuccessfully(..), streamingProcessHandleRaw)
@@ -47,6 +45,7 @@ import           System.Environment (getExecutablePath)
 import           System.Exit (ExitCode(..))
 import           System.IO (withFile, IOMode (..))
 import           System.Process
+import           TypeHash.Orphans ()
 
 
 -- | Key value pairs to be written to a csv file.
@@ -105,15 +104,6 @@ waitForNWorkers r n =
 logSourceBench :: LogSource
 logSourceBench = "benchmark"
 
--- | Get the 'SlaveProfiling' data of the slaves, average them, and write to a given 'IORef'.
-writeSP :: MonadConnect m => MasterHandle m state input output context -> IORef SlaveProfiling -> m ()
-writeSP mh spref = do
-    spMap <- getSlavesProfiling mh
-    case HMS.elems spMap of
-        [] -> $logErrorS logSourceBench "No slave profiling data!"
-        sp:sps -> writeIORef spref $ foldl' (<>) sp sps
-
-
 -- | Only log messages that either come from the benchmark directly,
 -- and errors.
 logErrorsOrBench :: MonadIO m => LoggingT m a -> m a
@@ -127,19 +117,21 @@ measureRequestTime :: forall m response request.
     , HasTypeHash request, HasTypeHash response
     , Show response)
     => m request
-    -> JobClient response
-    -> m Double -- ^ Wall time between submitting the request and
+    -> JobClient (response, SlaveProfiling)
+    -> m (Double, SlaveProfiling) -- ^ Wall time between submitting the request and
                -- receiving the response.
 measureRequestTime generateRequest jc = do
     rid <- uniqueRequestId
     req <- generateRequest
     t0 <- liftIO getTime
-    submitRequest (jc :: JobClient response) rid req
-    mRes <- waitForResponse_ jc rid
-    $logInfoS logSourceBench $ unwords [ "result:", tshow (mRes :: Maybe response)]
-    t1 <- liftIO getTime
-    $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
-    return (t1 - t0)
+    submitRequest (jc :: JobClient (response, SlaveProfiling)) rid req
+    waitForResponse_ jc rid >>= \case
+        Just (resp :: response, sp) -> do
+            $logInfoS logSourceBench $ unwords [ "result:", tshow resp]
+            t1 <- liftIO getTime
+            $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
+            return (t1 - t0, sp)
+        Nothing -> error "no response"
 
 runWithNM :: forall m a context input output state request response.
     ( MonadConnect m
@@ -156,10 +148,9 @@ runWithNM :: forall m a context input output state request response.
     -> MasterArgs m state context input output
     -> Int
     -- ^ @nSlaves@
-    -> ( IORef SlaveProfiling
-      -> request
+    -> (request
       -> MasterHandle m state context input output
-      -> m response)
+      -> m (response, SlaveProfiling))
     -> m request
     -> m (Int, Double)
     -- ^ (@nSlaves@, walltime needed to perform the request)
@@ -167,7 +158,6 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
     if isJust spawnWorker
        then do
            $logDebugS logSourceBench "spawning worker"
-           _spref <- newIORef emptySlaveProfiling -- this will not really be used
            let ss = CN.serverSettings 3333 "*"
            runJobQueueStatefulWorker
                jqc
@@ -176,16 +166,13 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
                Nothing
                masterArgs
                (NMStatefulMasterArgs (Just nSlaves) (Just nSlaves) (1000 * 1000))
-               (\mh _rid req -> DontReenqueue <$> workerFunc _spref req mh)
+               (\mh _rid req -> DontReenqueue <$> workerFunc req mh)
        else do
-           spref <- newIORef emptySlaveProfiling
-           time <- withNSlaves
+           (time, sp) <- withNSlaves
                nSlaves
-               (withJobClient jqc $ \(jc :: JobClient response) -> do
+               (withJobClient jqc $ \(jc :: JobClient (response, SlaveProfiling)) -> do
                        waitForNWorkers (jcRedis jc) (nSlaves + 1) -- +1 for the worker
-                       measureRequestTime generateRequest jc
-               )
-           sp <- readIORef spref
+                       measureRequestTime generateRequest jc)
            liftIO $ writeToCsv fp (CSVInfo [("time", pack $ show time)] <> csvInfo <> slaveProfilingCsv sp)
            return (nSlaves, time)
 
@@ -197,22 +184,19 @@ runWithoutNM ::
     -> CSVInfo
     -> MasterArgs m state context input output
     -> Int
-    -> ( IORef SlaveProfiling
-       -> request
+    -> (request
        -> MasterHandle m state context input output
-       -> m response)
+       -> m (response, SlaveProfiling))
     -> m request
     -> m (Int, Double)
 runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
-    spref <- newIORef emptySlaveProfiling
     req <- generateRequest
     liftIO initializeTime
     t0 <- liftIO getTime
-    res <- runSimplePureStateful masterArgs nSlaves (masterFunc spref req)
+    (res, sp) <- runSimplePureStateful masterArgs nSlaves (masterFunc req)
     $logInfoS logSourceBench $ unwords [ "result:", tshow res]
     t1 <- liftIO getTime
     $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
-    sp <- readIORef spref
     liftIO . writeToCsv fp $ CSVInfo [("time", pack $ show (t1 - t0))] <> csvInfo <> slaveProfilingCsv sp
     return (nSlaves, (t1 - t0))
 
