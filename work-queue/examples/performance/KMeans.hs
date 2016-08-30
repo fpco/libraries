@@ -175,6 +175,7 @@ distributeKMeans Request{..} mh = do
           sp <- HMS.elems <$> getSlavesProfiling mh >>= \case
               [] -> $logErrorS logSourceBench "No slave profiling data!" >> return emptySlaveProfiling
               sp:sps -> return $ foldl' (<>) sp sps
+          $logInfoS logSourceBench ("slave profiling raw data: " ++ tshow sp)
           return (clusters, sp)
       distrib n clusters = do
           stateIds <- getStateIds mh

@@ -88,12 +88,12 @@ myAction req mh = do
     finalStates <- mapM (\_ -> do
                                 stateIds <- getStateIds mh
                                 let inputs = HMS.fromList $ zip (HS.toList stateIds) (repeat myInputs)
-                                newStates <- update mh 5 inputs
-                                return newStates
+                                update mh 5 inputs
                         ) [1..5::Int]
     sp <- HMS.elems <$> getSlavesProfiling mh >>= \case
         [] -> $logErrorS logSourceBench "No slave profiling data!" >> return emptySlaveProfiling
         sp:sps -> return $ foldl' (<>) sp sps
+    $logInfoS logSourceBench ("slave profiling raw data: " ++ tshow sp)
     return (sum $ sum <$> (unsafeHead finalStates :: HashMap StateId (HashMap StateId Output)), sp)
 
 jqc :: JobQueueConfig

@@ -49,7 +49,7 @@ import           TypeHash.Orphans ()
 
 
 -- | Key value pairs to be written to a csv file.
-data CSVInfo = CSVInfo [(Text, Text)]
+data CSVInfo = CSVInfo [(Text, Text)] deriving Show
 instance Monoid CSVInfo where
     mempty = CSVInfo []
     CSVInfo xs `mappend` CSVInfo xs' = CSVInfo $ xs `mappend` xs'
