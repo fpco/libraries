@@ -205,6 +205,9 @@ slaveProfilingCsv sp = CSVInfo
     [ ("slaveReceiveFraction", tshow $ fraction spReceiveTime)
     , ("slaveWorkFraction", tshow $ fraction spWorkTime)
     , ("slaveSendFraction", tshow $ fraction spSendTime)
+    , ("slaveReceiveTime", tshow $ view spReceiveTime sp)
+    , ("slaveWorkTime", tshow $ view spWorkTime sp)
+    , ("slaveSendTime", tshow $ view spSendTime sp)
     ]
   where
     totalTime = sum [view l sp | l <- [spReceiveTime, spWorkTime, spSendTime]]

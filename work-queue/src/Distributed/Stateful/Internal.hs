@@ -78,12 +78,12 @@ makeLenses ''SlaveProfiling
 emptySlaveProfiling :: SlaveProfiling
 emptySlaveProfiling = SlaveProfiling 0 0 0
 
+-- combine profiling data by summing
 instance Semigroup SlaveProfiling where
-    -- combine profiling data by averaging
     sp <> sp' = SlaveProfiling
-        { _spReceiveTime = 0.5*(view spReceiveTime sp + view spReceiveTime sp')
-        , _spWorkTime = 0.5*(view spWorkTime sp + view spWorkTime sp')
-        , _spSendTime = 0.5*(view spSendTime sp + view spSendTime sp')
+        { _spReceiveTime = view spReceiveTime sp + view spReceiveTime sp'
+        , _spWorkTime = view spWorkTime sp + view spWorkTime sp'
+        , _spSendTime = view spSendTime sp + view spSendTime sp'
         }
 
 withSlaveProfiling :: MonadIO m
