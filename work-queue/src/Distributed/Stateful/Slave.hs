@@ -53,7 +53,7 @@ runSlave :: forall state context input output m.
   -> m ()
 runSlave SlaveArgs{..} = do
     states <- liftIO HT.new
-    sp <- newIORef (SlaveProfiling 0 0 0 0.7)
+    sp <- newIORef emptySlaveProfiling
     let recv = scRead saConn
     let send = scWrite saConn
         -- We're only catching 'SlaveException's here, since they

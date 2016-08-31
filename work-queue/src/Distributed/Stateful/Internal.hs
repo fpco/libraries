@@ -65,18 +65,18 @@ type Update m state context input output =
 -- We measure the wall-time for the actual work, as well as for
 -- sending and waiting for messages.
 --
--- To keep the overhead low, we use an exponential moving average.
+-- The times are total times, accumulated over the whole distributed
+-- calculation.
 data SlaveProfiling = SlaveProfiling
     { _spReceiveTime :: !Double
     , _spWorkTime :: !Double
     , _spSendTime :: !Double
-    , _spMovingAvgAlpha :: !Double
     } deriving (Eq, Show, Generic, NFData)
 instance Store SlaveProfiling
 makeLenses ''SlaveProfiling
 
 emptySlaveProfiling :: SlaveProfiling
-emptySlaveProfiling = SlaveProfiling 0 0 0 0.7
+emptySlaveProfiling = SlaveProfiling 0 0 0
 
 instance Semigroup SlaveProfiling where
     -- combine profiling data by averaging
@@ -84,14 +84,7 @@ instance Semigroup SlaveProfiling where
         { _spReceiveTime = 0.5*(view spReceiveTime sp + view spReceiveTime sp')
         , _spWorkTime = 0.5*(view spWorkTime sp + view spWorkTime sp')
         , _spSendTime = 0.5*(view spSendTime sp + view spSendTime sp')
-        -- averaging here doesn't really make sense, but it makes <> associative.
-        , _spMovingAvgAlpha = 0.5*(view spMovingAvgAlpha sp + view spMovingAvgAlpha sp')
         }
-
-
--- | Exponential moving average
-updateMovingAvg :: Double -> Double -> Double -> Double
-updateMovingAvg alpha oldAvg newDatum = (1-alpha)*oldAvg + alpha*newDatum
 
 withSlaveProfiling :: MonadIO m
     => IORef SlaveProfiling
@@ -107,8 +100,7 @@ withSlaveProfiling ref l action = do
   where
       update :: Double -> SlaveProfiling -> SlaveProfiling
       update t sp = let oldAvg = view l sp
-                        alpha = view spMovingAvgAlpha sp
-                        newAvg = updateMovingAvg alpha oldAvg t
+                        newAvg = oldAvg + t
                     in set l newAvg sp
 
 -- | A request to the slaves
