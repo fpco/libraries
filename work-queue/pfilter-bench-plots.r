@@ -78,8 +78,12 @@ timingsPlot +
                 , minor_breaks = (1:20)/10) +
     geom_smooth() +
     geom_smooth(data=timings,
-                aes(x = slaves, y = (time/(particles/1000)/steps)*slaveWorkFraction,
-                    colour=commit))
+                aes(x = slaves, y = (time/(particles/1000)/steps)*slaveWorkFraction/mean(timings[timings$slaves==1,]$slaveWorkFraction, na.rm=TRUE),
+                    colour=commit),
+                linetype="dashed") +
+    geom_abline(intercept = log10(mean(timings[(timings$slaves==1),]$time)/100)
+              , slope=-1
+              , linetype="dotted")
 
 ggsave("pfilter-scaling.png")
 
