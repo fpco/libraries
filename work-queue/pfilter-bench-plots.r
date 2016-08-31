@@ -27,7 +27,7 @@
 ## - adjust the following line to match the first 8 digits of the
 ##   commit hash you want to compare performance against.
 ##
-masterHash <- "492133ed"
+masterHash <- "51a07603"
 ##
 ## - Use R to run this file, as in
 ##
@@ -73,11 +73,13 @@ timingsPlot +
     ggtitle("wall-time of particle filter benchmark") +
     ylab("time[s] per iteration per 1000 particles") +
     xlab("number of slaves")+
-    scale_x_log10(breaks = 1:30, minor_breaks = NULL
-                , limits = c(4,18)) +
+    scale_x_log10(breaks = 1:30, minor_breaks = NULL) +
     scale_y_log10(breaks = c(.1, .2, .4, .8, 1.6, 3.2)
                 , minor_breaks = (1:20)/10) +
-    geom_smooth()
+    geom_smooth() +
+    geom_smooth(data=timings,
+                aes(x = slaves, y = (time/(particles/1000)/steps)*slaveWorkFraction,
+                    colour=commit))
 
 ggsave("pfilter-scaling.png")
 
@@ -96,3 +98,19 @@ qplot(slaves, Ratio, data=normalizedTimings[normalizedTimings$commit != masterTe
     geom_smooth()
 
 ggsave('pfilter-improvements.png')
+
+## Show average 'productivity' of the slaves (i.e., t_work/(t_total),
+## where t_work is the time spent calculating responses to requests,
+## and t_total is t_work plus the time spent receiving requests and
+## sending responses).
+qplot(slaves, slaveWorkFraction,
+      data=timings,
+      colour=commit,
+      alpha = I(1/3)) +
+    ggtitle("average productivity of slaves") +
+    labs(y=expression(t[work]/(t[work]+t[receive]+t[send])),
+         x="number of slaves")+
+    geom_smooth()
+
+ggsave('pfilter-productivity.png')
+
