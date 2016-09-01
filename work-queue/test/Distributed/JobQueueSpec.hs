@@ -58,6 +58,9 @@ $(mkManyHasTypeHash [[t|Request|], [t|Response|]])
 jobWorker_ :: (MonadConnect m) => (Request -> m (Reenqueue Response)) -> m void
 jobWorker_ work = withRedis (jqcRedisConfig testJobQueueConfig) $ \r -> jobWorkerWithHeartbeats testJobQueueConfig r (\_wid -> work)
 
+executeNextJob_ :: (MonadConnect m) => (Request -> m (Reenqueue Response)) -> m ()
+executeNextJob_ work = withRedis (jqcRedisConfig testJobQueueConfig) $ \r -> executeNextJobWithHeartbeats testJobQueueConfig r (\_wid -> work)
+
 processRequest :: (MonadConnect m) => Request -> m (Reenqueue Response)
 processRequest Request{..} = do
     threadDelay requestDelay
@@ -229,6 +232,19 @@ spec = do
     redisIt "Can manually check for heartbeats" manualHeartbeatTest
     redisIt "Handles urgent jobs first" priorityTest
     redisIt "Handles urgent jobs first, even if they are re-enqueued." priorityReenqueueTest
+    redisIt_ "Executes a single job then returns, when using executeNextJob* functions." $ do
+        let resp = Response "test"
+        let req = Request
+                { requestDelay = 0
+                , requestResponse = DontReenqueue resp
+                }
+        fmap (either id absurd) $ Async.race
+            (executeNextJob_ $ \req' -> do
+                threadDelay (requestDelay req')
+                return $ DontReenqueue resp)
+            (withTestJobClient $ \jc -> forever $ do
+                _rid <- submitTestRequest jc req
+                threadDelay (1000 * 1000))
 
 priorityTest :: forall m. MonadConnect m => Redis -> m ()
 priorityTest r = do
