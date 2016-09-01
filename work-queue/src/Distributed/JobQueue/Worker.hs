@@ -99,8 +99,7 @@ executeNextJob :: forall m request response.
     -> Redis
     -> Heartbeating
     -> (RequestId -> request -> m (Reenqueue response))
-    -- ^ This function is run by the worker, for every request it
-    -- receives.
+    -- ^ This function is run for the request associated with the next job.
     -> m ()
 executeNextJob config redis hb f = executeNextJobWait config redis hb (return ()) f
 
@@ -120,8 +119,7 @@ executeNextJobWithHeartbeats ::
     => JobQueueConfig
     -> Redis
     -> (RequestId -> request -> m (Reenqueue response))
-    -- ^ This function is run by the worker, for every request it
-    -- receives.
+    -- ^ This function is run for the request associated with the next job.
     -> m ()
 executeNextJobWithHeartbeats config redis f = do
     withHeartbeats (jqcHeartbeatConfig config) redis (\hb -> executeNextJob config redis hb f)
@@ -153,14 +151,11 @@ executeNextJobWait :: forall m request response.
     -> Redis
     -> Heartbeating
     -> m ()
-    -- ^ The worker has a loop that keeps popping requests. This action
-    -- will be called at the beginning of every loop iteration, and can
-    -- be useful to "limit" the loop (e.g. have some timer in between,
-    -- or wait for the worker to be free of processing requests if we
-    -- are doing something else too).
+    -- ^ This action will be called first, and used as a delay, only
+    -- after this action returns will we pull the next available job
+    -- from the queue.
     -> (RequestId -> request -> m (Reenqueue response))
-    -- ^ This function is run by the worker, for every request it
-    -- receives.
+    -- ^ This function is run for the request associated with the next job.
     -> m ()
 executeNextJobWait config r (heartbeatingWorkerId -> wid) wait f = do
     withWait config r $ \waitForReq -> do
