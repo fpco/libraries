@@ -118,3 +118,51 @@ qplot(slaves, slaveWorkFraction,
 
 ggsave('pfilter-productivity.png')
 
+## Average time a slave performs "true work"
+qplot(slaves, slaveWorkTime/slaves,
+      data=timings[timings$slaves > 0,],
+      colour=commit,
+      alpha = I(1/3)) +
+    ggtitle("average time eachs slave spent working") +
+    labs(y=expression(mean(t[work])),
+         x="number of slaves")+
+    scale_x_log10() +
+    scale_y_log10() +
+    geom_smooth() +
+    geom_abline(intercept = log10(mean(timings[(timings$slaves==1),]$slaveWorkTime, na.rm = TRUE)),
+                slope = -1,
+                linetype = "dotted")
+ggsave('pfilter-average-twork.png')
+
+## Summed wall-time of slaves performing "true work"
+qplot(slaves, slaveWorkTime/(particles/1000)/steps,
+      data=timings[timings$slaves > 0,],
+      colour=commit,
+      alpha = I(1/3)) +
+    ggtitle("accumulated time spent working") +
+    labs(y=expression(sum(t[work])),
+         x="number of slaves")+
+    geom_smooth()
+ggsave('pfilter-summed-twork.png')
+
+## Average t[receive]
+qplot(slaves, slaveReceiveTime/slaves,
+      data=timings[timings$slaves > 0,],
+      colour=commit,
+      alpha = I(1/3)) +
+    ggtitle("average time each slave spent waiting for messages") +
+    labs(y=expression(t[receive]),
+         x="number of slaves")+
+    geom_smooth() ## +
+ggsave('pfilter-average-treceive.png')
+
+## Average t[send]
+qplot(slaves, slaveSendTime/slaves,
+      data=timings[timings$slaves > 0,],
+      colour=commit,
+      alpha = I(1/3)) +
+    ggtitle("average time each slave spent sending messages") +
+    labs(y=expression(t[send]),
+         x="number of slaves")+
+    geom_smooth() ## +
+ggsave('pfilter-average-tsend.png')
