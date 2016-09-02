@@ -1,6 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -13,9 +14,10 @@ module Distributed.Stateful.Internal
        ) where
 
 import           ClassyPrelude
-import           Control.DeepSeq (NFData, deepseq)
-import           Control.Exception (evaluate)
+import           Control.DeepSeq (NFData, deepseq, force)
+import           Control.Exception.Lifted (evaluate)
 import           Control.Monad.Logger.JSON.Extra
+import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashSet as HS
 import qualified Data.HashTable.IO as HT
 import           Data.Proxy (Proxy(..))
@@ -140,7 +142,7 @@ data StatefulUpdateException
 instance Exception StatefulUpdateException
 
 statefulUpdate ::
-     (MonadThrow m, MonadIO m, NFData state, NFData output, NFData input)
+     (MonadThrow m, MonadIO m, MonadBaseControl IO m, NFData state, NFData output, NFData input)
   => IORef SlaveProfiling
   -> (context -> input -> state -> m (state, output))
   -> HashTable StateId state
@@ -157,7 +159,7 @@ statefulUpdate sp update states context inputs = withSlaveProfiling sp spStatefu
       withSlaveProfiling sp spUpdateInnerBody $ do
         (!newState, !output) <-
             withSlaveProfileCounter sp spNUpdates . withSlaveProfiling sp spUpdate $
-            (\(a,b) -> a `deepseq` b `deepseq` (a, b)) <$> update context input state
+            evaluate . force =<< update context input state
         liftIO . withSlaveProfiling sp spHTInserts $ HT.insert states newStateId newState
         return (newStateId, output)
     return (oldStateId, updatedInnerStateAndOutput)
