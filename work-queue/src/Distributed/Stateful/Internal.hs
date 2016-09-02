@@ -145,15 +145,13 @@ statefulUpdate ::
   -> context
   -> [(StateId, [(StateId, input)])]
   -> m [(StateId, [(StateId, output)])]
-statefulUpdate sp update states context inputs = withSlaveProfiling sp spStatefulUpdate $ do
-  results <- forM inputs $ \(oldStateId, innerInputs) -> do
+statefulUpdate sp update states context inputs = withSlaveProfiling sp spStatefulUpdate $
+  forM inputs $ \(oldStateId, innerInputs) -> do
     state <- (liftIO . withSlaveProfiling sp spHTLookups $ HT.lookup states oldStateId) >>= \case
       Nothing -> throwM (InputStateNotFound oldStateId)
       Just state0 -> (liftIO . withSlaveProfiling sp spHTDeletes $ states `HT.delete` oldStateId) >> return state0
     updatedInnerStateAndOutput <- forM innerInputs $ \(newStateId, input) -> do
         (newState, output) <- update context input state
         liftIO . withSlaveProfiling sp spHTInserts $ HT.insert states newStateId newState
-        return (newStateId, (newState, output))
+        return (newStateId, output)
     return (oldStateId, updatedInnerStateAndOutput)
-  let outputs = map (second (map (second  snd))) results
-  return outputs
