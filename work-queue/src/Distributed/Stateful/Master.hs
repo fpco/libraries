@@ -42,7 +42,7 @@ module Distributed.Stateful.Master
     , StateId
     , SlaveId
     , StatefulConn(..)
-    , SlaveProfiling (..), spReceiveTime, spWorkTime, spSendTime, emptySlaveProfiling
+    , SlaveProfiling(..), emptySlaveProfiling
     ) where
 
 import           ClassyPrelude
@@ -435,9 +435,10 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
       (stateId,) <$> mapM (\input -> (, input) <$> askSupplyM) inps
   case mhSlaves mh of
     NoSlavesYet states -> do
+      _sp <- newIORef emptySlaveProfiling -- we'll not read this, but we need it to pass to 'statefulUpdate'.
       $logWarnJ ("Executing update without any slaves" :: Text)
       stateMap <- liftIO $ HT.fromList states
-      outputs <- statefulUpdate (maUpdate (mhArgs mh)) stateMap context inputList
+      outputs <- statefulUpdate _sp (maUpdate (mhArgs mh)) stateMap context inputList
       statesList' <- liftIO $ HT.toList stateMap
       let mh' = mh{ mhSlaves = NoSlavesYet statesList' }
       return (mh', fmap HMS.fromList . HMS.fromList $ outputs)

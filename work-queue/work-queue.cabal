@@ -30,6 +30,7 @@ library
                        Distributed.Stateful.Slave
                        Distributed.Stateful
                        Distributed.Stateful.Internal
+                       Distributed.Stateful.Internal.Profiling
                        Data.WorkQueue
                        Control.Concurrent.ThreadPool
                        Control.Exception.Mask

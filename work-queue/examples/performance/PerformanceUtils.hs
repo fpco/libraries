@@ -9,7 +9,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 module PerformanceUtils ( CSVInfo (..)
@@ -37,6 +36,7 @@ import           Distributed.JobQueue.Status
 import           Distributed.JobQueue.Worker
 import           Distributed.Redis (Redis)
 import           Distributed.Stateful
+import           Distributed.Stateful.Internal (slaveProfilingToCsv)
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
 import           GHC.Environment (getFullArgs)
@@ -201,17 +201,7 @@ runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
     return (nSlaves, (t1 - t0))
 
 slaveProfilingCsv :: SlaveProfiling -> CSVInfo
-slaveProfilingCsv sp = CSVInfo
-    [ ("slaveReceiveFraction", tshow $ fraction spReceiveTime)
-    , ("slaveWorkFraction", tshow $ fraction spWorkTime)
-    , ("slaveSendFraction", tshow $ fraction spSendTime)
-    , ("slaveReceiveTime", tshow $ view spReceiveTime sp)
-    , ("slaveWorkTime", tshow $ view spWorkTime sp)
-    , ("slaveSendTime", tshow $ view spSendTime sp)
-    ]
-  where
-    totalTime = sum [view l sp | l <- [spReceiveTime, spWorkTime, spSendTime]]
-    fraction l = view l sp / totalTime
+slaveProfilingCsv = CSVInfo . slaveProfilingToCsv
 
 -- | Write key value pairs to a csv file.
 --
