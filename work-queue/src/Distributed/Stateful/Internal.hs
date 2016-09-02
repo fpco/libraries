@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
@@ -13,7 +12,7 @@ module Distributed.Stateful.Internal
        ) where
 
 import           ClassyPrelude
-import           Control.DeepSeq (NFData)
+import           Control.DeepSeq (NFData, deepseq)
 import           Control.Monad.Logger.JSON.Extra
 import qualified Data.HashSet as HS
 import qualified Data.HashTable.IO as HT
@@ -139,7 +138,7 @@ data StatefulUpdateException
 instance Exception StatefulUpdateException
 
 statefulUpdate ::
-     (MonadThrow m, MonadIO m)
+     (MonadThrow m, MonadIO m, NFData state, NFData output)
   => IORef SlaveProfiling
   -> (context -> input -> state -> m (state, output))
   -> HashTable StateId state
@@ -152,7 +151,7 @@ statefulUpdate sp update states context inputs = withSlaveProfiling sp spStatefu
       Nothing -> throwM (InputStateNotFound oldStateId)
       Just state0 -> (liftIO . withSlaveProfiling sp spHTDeletes $ states `HT.delete` oldStateId) >> return state0
     updatedInnerStateAndOutput <- forM innerInputs $ \(newStateId, input) -> do
-        (!newState, !output) <- update context input state
-        liftIO . withSlaveProfiling sp spHTInserts $ HT.insert states newStateId newState
+        (newState, output) <- update context input state
+        newState `deepseq` output `deepseq` (liftIO . withSlaveProfiling sp spHTInserts $ HT.insert states newStateId newState)
         return (newStateId, output)
     return (oldStateId, updatedInnerStateAndOutput)
