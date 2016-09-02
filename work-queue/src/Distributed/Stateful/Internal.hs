@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
@@ -151,7 +152,7 @@ statefulUpdate sp update states context inputs = withSlaveProfiling sp spStatefu
       Nothing -> throwM (InputStateNotFound oldStateId)
       Just state0 -> (liftIO . withSlaveProfiling sp spHTDeletes $ states `HT.delete` oldStateId) >> return state0
     updatedInnerStateAndOutput <- forM innerInputs $ \(newStateId, input) -> do
-        (newState, output) <- update context input state
+        (!newState, !output) <- update context input state
         liftIO . withSlaveProfiling sp spHTInserts $ HT.insert states newStateId newState
         return (newStateId, output)
     return (oldStateId, updatedInnerStateAndOutput)
