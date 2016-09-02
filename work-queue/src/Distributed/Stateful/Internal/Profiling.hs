@@ -30,12 +30,14 @@ data SlaveProfiling = SlaveProfiling
     , _spHTDeletes :: !Double
     , _spHTFromList :: !Double
     , _spHTToList :: !Double
+    , _spUpdate :: !Double
+    , _spNUpdates :: !Int
     } deriving (Eq, Show, Generic, NFData)
 instance Store SlaveProfiling
 makeLenses ''SlaveProfiling
 
 emptySlaveProfiling :: SlaveProfiling
-emptySlaveProfiling = SlaveProfiling 0 0 0 0 0 0 0 0 0
+emptySlaveProfiling = SlaveProfiling 0 0 0 0 0 0 0 0 0 0 0
 
 -- combine profiling data by summing
 instance Semigroup SlaveProfiling where
@@ -49,6 +51,8 @@ instance Semigroup SlaveProfiling where
         , _spHTDeletes = view spHTDeletes sp + view spHTDeletes sp'
         , _spHTFromList = view spHTFromList sp + view spHTFromList sp'
         , _spHTToList = view spHTToList sp + view spHTToList sp'
+        , _spUpdate = view spUpdate sp + view spUpdate sp'
+        , _spNUpdates = view spNUpdates sp + view spNUpdates sp'
         }
 
 slaveProfilingToCsv :: SlaveProfiling -> [(Text, Text)]
@@ -65,6 +69,8 @@ slaveProfilingToCsv sp =
     , ("HTDeletes", tshow $ view spHTDeletes sp)
     , ("HTFromLis", tshow $ view spHTFromList sp)
     , ("HTToList", tshow $ view spHTToList sp)
+    , ("Update", tshow $ view spUpdate sp)
+    , ("NUpdates", tshow $ view spNUpdates sp)
     ]
   where
     total = sum [view l sp | l <- [spReceive, spWork, spSend]]
@@ -85,3 +91,13 @@ withSlaveProfiling ref l action = do
   where
       update :: Double -> SlaveProfiling -> SlaveProfiling
       update t sp = sp & l +~ t
+
+withSlaveProfileCounter :: MonadIO m
+    => IORef SlaveProfiling
+    -> Lens' SlaveProfiling Int
+    -> m a
+    -> m a
+withSlaveProfileCounter ref l action = do
+    res <- action
+    liftIO . modifyIORef' ref $ \sp -> sp & l +~ 1
+    return res
