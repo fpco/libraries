@@ -14,6 +14,7 @@ module Distributed.Stateful.Internal
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData, deepseq)
+import           Control.Exception (evaluate)
 import           Control.Monad.Logger.JSON.Extra
 import qualified Data.HashSet as HS
 import qualified Data.HashTable.IO as HT
@@ -139,14 +140,15 @@ data StatefulUpdateException
 instance Exception StatefulUpdateException
 
 statefulUpdate ::
-     (MonadThrow m, MonadIO m, NFData state, NFData output)
+     (MonadThrow m, MonadIO m, NFData state, NFData output, NFData input)
   => IORef SlaveProfiling
   -> (context -> input -> state -> m (state, output))
   -> HashTable StateId state
   -> context
   -> [(StateId, [(StateId, input)])]
   -> m [(StateId, [(StateId, output)])]
-statefulUpdate sp update states context inputs = withSlaveProfiling sp spStatefulUpdate $
+statefulUpdate sp update states context inputs = withSlaveProfiling sp spStatefulUpdate $ do
+  withSlaveProfiling sp spEvalInputs . liftIO $ evaluate (inputs `deepseq` ())
   forM inputs $ \(!oldStateId, !innerInputs) -> do
     state <- (liftIO . withSlaveProfiling sp spHTLookups $ HT.lookup states oldStateId) >>= \case
       Nothing -> throwM (InputStateNotFound oldStateId)
