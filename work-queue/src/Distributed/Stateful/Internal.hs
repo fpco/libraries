@@ -154,7 +154,7 @@ statefulUpdate sp update states context inputs = withSlaveProfiling sp spStatefu
     updatedInnerStateAndOutput <- forM innerInputs $ \(!newStateId, !input) -> do
         (!newState, !output) <-
             withSlaveProfileCounter sp spNUpdates . withSlaveProfiling sp spUpdate $
-            update context input state
+            (\(a,b) -> a `deepseq` b `deepseq` (a, b)) <$> update context input state
         liftIO . withSlaveProfiling sp spHTInserts $ HT.insert states newStateId newState
         return (newStateId, output)
     return (oldStateId, updatedInnerStateAndOutput)
