@@ -151,7 +151,8 @@ statefulUpdate sp update states context inputs = withSlaveProfiling sp spStatefu
     state <- (liftIO . withSlaveProfiling sp spHTLookups $ HT.lookup states oldStateId) >>= \case
       Nothing -> throwM (InputStateNotFound oldStateId)
       Just state0 -> (liftIO . withSlaveProfiling sp spHTDeletes $ states `HT.delete` oldStateId) >> return state0
-    updatedInnerStateAndOutput <- withSlaveProfiling sp spUpdateInner $ forM innerInputs $ \(!newStateId, !input) -> do
+    updatedInnerStateAndOutput <- withSlaveProfiling sp spUpdateInner $ forM innerInputs $ \(!newStateId, !input) ->
+      withSlaveProfiling sp spUpdateInnerBody $ do
         (!newState, !output) <-
             withSlaveProfileCounter sp spNUpdates . withSlaveProfiling sp spUpdate $
             (\(a,b) -> a `deepseq` b `deepseq` (a, b)) <$> update context input state
