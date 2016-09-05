@@ -142,7 +142,7 @@ data StatefulUpdateException
 instance Exception StatefulUpdateException
 
 statefulUpdate ::
-     (MonadThrow m, MonadIO m, MonadBaseControl IO m, NFData state, NFData output, NFData input)
+     (MonadThrow m, MonadIO m, MonadBaseControl IO m, NFData state, NFData output, NFData input, NFData context)
   => IORef SlaveProfiling
   -> (context -> input -> state -> m (state, output))
   -> HashTable StateId state
@@ -150,13 +150,16 @@ statefulUpdate ::
   -> [(StateId, [(StateId, input)])]
   -> m [(StateId, [(StateId, output)])]
 statefulUpdate sp update states context inputs = withSlaveProfiling sp spStatefulUpdate $ do
-  withSlaveProfiling sp spEvalInputs . liftIO $ evaluate (inputs `deepseq` ())
+  withSlaveProfiling sp spEvalInputs . liftIO $ evaluate $ force inputs
   forM inputs $ \(!oldStateId, !innerInputs) -> do
     state <- (liftIO . withSlaveProfiling sp spHTLookups $ HT.lookup states oldStateId) >>= \case
       Nothing -> throwM (InputStateNotFound oldStateId)
       Just state0 -> (liftIO . withSlaveProfiling sp spHTDeletes $ states `HT.delete` oldStateId) >> return state0
     updatedInnerStateAndOutput <- withSlaveProfiling sp spUpdateInner $ forM innerInputs $ \(!newStateId, !input) ->
       withSlaveProfiling sp spUpdateInnerBody $ do
+        withSlaveProfiling sp spEvalContext . evaluate . force $ context
+        withSlaveProfiling sp spEvalInput . evaluate . force $ input
+        withSlaveProfiling sp spEvalState . evaluate . force $ state
         (!newState, !output) <-
             withSlaveProfileCounter sp spNUpdates . withSlaveProfiling sp spUpdate $
             evaluate . force =<< update context input state

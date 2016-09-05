@@ -48,7 +48,7 @@ instance Exception SlaveException
 -- | Runs a stateful slave. Returns when the master sends the "quit" command.
 {-# INLINE runSlave #-}
 runSlave :: forall state context input output m.
-     (MonadConnect m, NFData state, NFData output, S.Store state, NFData input)
+     (MonadConnect m, NFData state, NFData output, S.Store state, NFData input, NFData context)
   => SlaveArgs m state context input output
   -> m ()
 runSlave SlaveArgs{..} = do

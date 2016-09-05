@@ -124,7 +124,7 @@ newtype PFResponse parameter = PFResponse parameter
 
 dpfMaster :: forall m s parameter state summary input .
              (MonadConnect m, RandomSource m s
-             , NFData parameter, NFData state, NFData summary)
+             , NFData parameter, NFData state, NFData summary, NFData input)
              => PFConfig parameter state summary input
              -> s
              -> PFRequest parameter state summary input

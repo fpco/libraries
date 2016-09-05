@@ -35,12 +35,15 @@ data SlaveProfiling = SlaveProfiling
     , _spUpdateInner :: !Double
     , _spUpdateInnerBody :: !Double
     , _spEvalInputs :: !Double
+    , _spEvalContext :: !Double
+    , _spEvalInput :: !Double
+    , _spEvalState :: !Double
     } deriving (Eq, Show, Generic, NFData)
 instance Store SlaveProfiling
 makeLenses ''SlaveProfiling
 
 emptySlaveProfiling :: SlaveProfiling
-emptySlaveProfiling = SlaveProfiling 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+emptySlaveProfiling = SlaveProfiling 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 
 -- combine profiling data by summing
 instance Semigroup SlaveProfiling where
@@ -59,6 +62,9 @@ instance Semigroup SlaveProfiling where
         , _spUpdateInner = view spUpdateInner sp + view spUpdateInner sp'
         , _spUpdateInnerBody = view spUpdateInnerBody sp + view spUpdateInnerBody sp'
         , _spEvalInputs = view spEvalInputs sp + view spEvalInputs sp'
+        , _spEvalContext = view spEvalContext sp + view spEvalContext sp'
+        , _spEvalInput = view spEvalInput sp + view spEvalInput sp'
+        , _spEvalState = view spEvalState sp + view spEvalState sp'
         }
 
 slaveProfilingToCsv :: SlaveProfiling -> [(Text, Text)]
@@ -80,6 +86,9 @@ slaveProfilingToCsv sp =
     , ("UpdateInner", tshow $ view spUpdateInner sp)
     , ("UpdateInnerBody", tshow $ view spUpdateInnerBody sp)
     , ("EvalInputs", tshow $ view spEvalInputs sp)
+    , ("EvalContext", tshow $ view spEvalContext sp)
+    , ("EvalInput", tshow $ view spEvalInput sp)
+    , ("EvalState", tshow $ view spEvalState sp)
     ]
   where
     total = sum [view l sp | l <- [spReceive, spWork, spSend]]

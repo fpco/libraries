@@ -419,7 +419,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
 -- inconsistent state, and the whole computation should be aborted.
 {-# INLINE update #-}
 update :: forall state context input output m.
-     (MonadConnect m, NFData input, NFData output, NFData state)
+     (MonadConnect m, NFData input, NFData output, NFData state, NFData context)
   => MasterHandle m state context input output
   -> context
   -> HMS.HashMap StateId [input]

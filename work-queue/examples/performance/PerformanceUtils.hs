@@ -135,7 +135,7 @@ measureRequestTime generateRequest jc = do
 
 runWithNM :: forall m a context input output state request response.
     ( MonadConnect m
-    , NFData state, NFData output, NFData input
+    , NFData state, NFData output, NFData input, NFData context
     , Store state, Store context, Store input, Store output, Store request, Store response
     , HasTypeHash state, HasTypeHash context, HasTypeHash input, HasTypeHash output, HasTypeHash request, HasTypeHash response
     , Show response)
@@ -178,7 +178,7 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
 
 runWithoutNM ::
     ( MonadConnect m
-    , Show response, NFData state, NFData input
+    , Show response, NFData state, NFData input, NFData context
     , NFData output, Store state)
     => FilePath
     -> CSVInfo
