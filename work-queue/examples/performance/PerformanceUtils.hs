@@ -45,8 +45,8 @@ import           System.Environment (getExecutablePath)
 import           System.Exit (ExitCode(..))
 import           System.IO (withFile, IOMode (..))
 import           System.Process
+import           System.Process.Internals
 import           TypeHash.Orphans ()
-
 
 -- | Key value pairs to be written to a csv file.
 data CSVInfo = CSVInfo [(Text, Text)] deriving Show
@@ -68,13 +68,11 @@ withWorker nSlaves mCPU cont = do
     program <- liftIO getExecutablePath
     args <- liftIO getFullArgs
     let args' = ("--spawn-worker=" ++ show nSlaves):map unpack args
-    cp <- case mCPU of
-            Nothing -> return $ proc program args'
-            Just cpu -> do
-                let str = unwords $ ["taskset -c", show cpu, program] ++ args'
-                $logDebugS logSourceBench $ pack str
-                return $ shell str
+        cp = proc program args'
     (x, y, z, sph) <- streamingProcess cp
+    case mCPU of
+        Nothing -> return ()
+        Just n -> liftIO $ setAffinity (streamingProcessHandleRaw sph) n
     let cont' ClosedStream Inherited Inherited = do
             res <- cont
             liftIO $ terminateProcess (streamingProcessHandleRaw sph)
@@ -85,6 +83,11 @@ withWorker nSlaves mCPU cont = do
                 ec -> liftIO . throwIO $ ProcessExitedUnsuccessfully cp ec
         )
         (cont' x y z `onException` liftIO (terminateProcess (streamingProcessHandleRaw sph)))
+  where
+      setAffinity :: ProcessHandle -> Int -> IO ()
+      setAffinity sph n = withProcessHandle sph $ \case
+          OpenHandle pid -> void $ runCommand $ unwords ["taskset", "-p", "-c", show n, show pid]
+          ClosedHandle _ -> error "Worker Process already died"
 
 -- | Will spawn n+1 workers, that live as long as the given action
 -- takes. The 'NMStatefulMasterArgs' will be set to accept exactly n
