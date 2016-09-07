@@ -22,8 +22,12 @@ import           System.Directory
 import           System.Process (readCreateProcess, shell)
 import qualified Vectors
 
+data CommChannel = CommNetworkMessage
+                 | CommSTM
+                 deriving Show
+
 data Options = Options
-               { optNoNetworkMessage :: Bool
+               { optCommChannel :: CommChannel
                , optMinSlaves :: Int
                , optMaxSlaves :: Int
                , optPurgeCSV :: Bool
@@ -120,8 +124,9 @@ benchKMeans = KMeans.Options
 
 options :: Parser Options
 options = Options
-    <$> switch (long "no-network-message"
-                <> help "Run in a single process, communicating via STM (instead of using NetworkMessage")
+    <$> flag CommNetworkMessage CommSTM
+        (long "no-network-message"
+         <> help "Run in a single process, communicating via STM (instead of using NetworkMessage")
     <*> (option auto
          (long "minslaves" <> short 'm'
           <> help "Minimal number of slaves used in the benchmark.  The benchmark will be run with n slaves, where n is taken from [minslaves .. maxslaves].")
@@ -163,30 +168,27 @@ runBench nSlaves commonCsvInfo Options{..} =
                 request = PFilter.generateRequest pfOpts randomsrc
                 fp = PFilter.optOutput pfOpts
                 csvInfo = commonCsvInfo <> CSVInfo [("slaves", T.pack $ show nSlaves)] <> PFilter.csvInfo pfOpts
-            logErrorsOrBench $
-                if optNoNetworkMessage
-                then runWithoutNM fp csvInfo masterArgs nSlaves master request
-                else runWithNM fp csvInfo PFilter.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
+            logErrorsOrBench $ case optCommChannel of
+                CommNetworkMessage -> runWithNM fp csvInfo PFilter.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
+                CommSTM -> runWithoutNM fp csvInfo masterArgs nSlaves master request
         BenchVectors vOpts ->
             let masterArgs = Vectors.masterArgs vOpts
                 master = Vectors.myAction
                 request = return $ Vectors.myStates vOpts
                 fp = Vectors.optOutput vOpts
                 csvInfo = commonCsvInfo <> CSVInfo [("slaves", T.pack $ show nSlaves)] <> Vectors.csvInfo vOpts
-            in logErrorsOrBench $
-                if optNoNetworkMessage
-                then runWithoutNM fp csvInfo masterArgs nSlaves master request
-                else runWithNM fp csvInfo PFilter.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
+            in logErrorsOrBench $ case optCommChannel of
+                CommNetworkMessage -> runWithNM fp csvInfo PFilter.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
+                CommSTM -> runWithoutNM fp csvInfo masterArgs nSlaves master request
         BenchKMeans kOpts ->
             let masterArgs = KMeans.masterArgs kOpts
                 master = KMeans.distributeKMeans
                 request = KMeans.generateRequest kOpts
                 fp = KMeans.optOutput kOpts
                 csvInfo = commonCsvInfo <> CSVInfo [("slaves", T.pack $ show nSlaves)] <> KMeans.csvInfo kOpts
-            in logErrorsOrBench $
-                   if optNoNetworkMessage
-                   then runWithoutNM fp csvInfo masterArgs nSlaves master request
-                   else runWithNM fp csvInfo KMeans.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
+            in logErrorsOrBench $ case optCommChannel of
+                   CommNetworkMessage -> runWithNM fp csvInfo KMeans.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
+                   CommSTM -> runWithoutNM fp csvInfo masterArgs nSlaves master request
 
 purgeResults :: Options -> IO ()
 purgeResults Options{..} =
@@ -231,7 +233,7 @@ main = do
     let commonCsvInfo = CSVInfo
             [ ("commit", T.pack $ take 8 gitHash)
             , ("node", T.pack $ init nodename)
-            , ("NetworkMessage", T.pack . show . not . optNoNetworkMessage $ opts)
+            , ("CommChannel", T.pack . show . optCommChannel $ opts)
             , ("Pin", T.pack . show . optPinWorkers $ opts)
             ]
     when (optPurgeCSV opts) (purgeResults opts)

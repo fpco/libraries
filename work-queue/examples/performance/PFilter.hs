@@ -135,7 +135,7 @@ dpfMaster :: forall m s parameter state summary input .
              -> m (PFResponse parameter, SlaveProfiling)
 dpfMaster PFConfig{..} s PFRequest{..} mh = do
     sids <- WQ.resetStates mh $ PFState <$> V.toList rparticles
-    let initialWeights = (const (PFOutput $ 1/fromIntegral nParticles) <$> sids :: HMS.HashMap WQ.StateId PFOutput)
+    let initialWeights = const (PFOutput $ 1/fromIntegral nParticles) <$> sids :: HMS.HashMap WQ.StateId PFOutput
     evolve initialWeights pfcSystem
   where
       evolve weights system = case evolveStep system of

@@ -23,7 +23,6 @@ import           ClassyPrelude
 import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.Mesosync.Lifted.Safe
 import           Control.DeepSeq
-import           Control.Lens
 import           Control.Monad.Logger
 import qualified Control.Retry as R
 import           Criterion.Measurement
@@ -56,6 +55,10 @@ instance Monoid CSVInfo where
     CSVInfo xs `mappend` CSVInfo xs' = CSVInfo $ xs `mappend` xs'
 instance Semigroup CSVInfo
 
+data PinWorkers = PinWorkers
+                | DontPinWorkers
+                deriving Show
+
 withWorker :: MonadConnect m
     => Int -- ^ number of slaves the worker should accept
     -> Maybe Int -- ^ Restrict the worker process to a specific CPU core
@@ -72,20 +75,16 @@ withWorker nSlaves mCPU cont = do
                 $logDebugS logSourceBench $ pack str
                 return $ shell str
     (x, y, z, sph) <- streamingProcess cp
-    let cont' = \ClosedStream Inherited Inherited -> do
+    let cont' ClosedStream Inherited Inherited = do
             res <- cont
             liftIO $ terminateProcess (streamingProcessHandleRaw sph)
             return res
     either absurd id <$> race
-        (do waitForStreamingProcess sph >>= \case
+        (waitForStreamingProcess sph >>= \case
                 ExitSuccess -> forever (threadDelay maxBound)
                 ec -> liftIO . throwIO $ ProcessExitedUnsuccessfully cp ec
         )
-        (cont' x y z `onException` (liftIO $ terminateProcess (streamingProcessHandleRaw sph)))
-
-data PinWorkers = PinWorkers
-                | DontPinWorkers
-                deriving Show
+        (cont' x y z `onException` liftIO (terminateProcess (streamingProcessHandleRaw sph)))
 
 -- | Will spawn n+1 workers, that live as long as the given action
 -- takes. The 'NMStatefulMasterArgs' will be set to accept exactly n
@@ -95,7 +94,7 @@ withNSlaves :: MonadConnect m
     -> PinWorkers
     -> m a
     -> m a
-withNSlaves nSlaves pinWorkers action = go 0 action
+withNSlaves nSlaves pinWorkers = go 0
   where
     go n cont | n > nSlaves = cont
     go n cont = go (n+1) (withWorker nSlaves (maybePin n) cont)
@@ -216,7 +215,7 @@ runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
     t1 <- liftIO getTime
     $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
     liftIO . writeToCsv fp $ CSVInfo [("time", pack $ show (t1 - t0))] <> csvInfo <> slaveProfilingCsv sp
-    return (nSlaves, (t1 - t0))
+    return (nSlaves, t1 - t0)
 
 slaveProfilingCsv :: SlaveProfiling -> CSVInfo
 slaveProfilingCsv = CSVInfo . slaveProfilingToCsv

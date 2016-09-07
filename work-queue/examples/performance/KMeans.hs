@@ -124,7 +124,7 @@ emptyOutput opts = Output $ V.replicate (optNClusters opts) (emptyPointSum opts)
 pointSumToCluster :: Int -> PointSum -> Cluster
 pointSumToCluster i (PointSum count v) =
     Cluster { clId = i
-            , clCent = Point $ UV.map (/(fromIntegral count)) v
+            , clCent = Point $ UV.map (/fromIntegral count) v
             }
 
 -- | Assign points to their nearest cluster.
@@ -136,40 +136,40 @@ assign Options{..} clusters points = V.create $ do
                 cid = clId c
             ps <- MVector.read vec cid
             MVector.write vec cid $! addToPointSum ps p
-    (mapM_ addpoint points)
+    mapM_ addpoint points
     return vec
   where
       nearest p = fst $ minimumByEx (compare `on` snd) $ V.map (\c -> (c, sqDistance (clCent c) p)) clusters
 
 makeNewClusters :: Output -> V.Vector Cluster
 makeNewClusters (Output vec) =
-    V.imap (\i ps -> pointSumToCluster i ps) . V.filter (\(PointSum count _) -> count > 0) $ vec
+    V.imap pointSumToCluster . V.filter (\(PointSum count _) -> count > 0) $ vec
 
 updateFn :: MonadConnect m => Options -> Update m State Context Input Output
 updateFn opts (OldClusters clusters) (DistributePoints points) () = distributePoints opts clusters points
 updateFn opts NoContext (SumPointSums pss) () = sumPointSums opts pss
 updateFn _ _ _ _ = error "Internal error: Wrong call of update function."
 
-distributePoints :: MonadConnect m => Options -> (V.Vector Cluster) -> V.Vector Point -> m (State, Output)
+distributePoints :: MonadConnect m => Options -> V.Vector Cluster -> V.Vector Point -> m (State, Output)
 distributePoints opts clusters points = do
     let output = assign opts clusters points
     return ((), Output output)
 
 sumPointSums :: Monad m => Options -> [Output] -> m (State, Output)
 sumPointSums opts pss =
-    let output = foldl' (<>) (emptyOutput opts) $ pss
+    let output = foldl' (<>) (emptyOutput opts) pss
     in return ((), output)
 
 chunksOfVec :: Int -> Vector a -> [Vector a]
-chunksOfVec n vec = unfoldr (\v -> case splitAt n v of
-                                    (emptyvec, _) | V.null emptyvec -> Nothing
-                                    (chunk, rest) -> Just (chunk, rest)) vec
+chunksOfVec n = unfoldr (\v -> case splitAt n v of
+                                (emptyvec, _) | V.null emptyvec -> Nothing
+                                (chunk, rest) -> Just (chunk, rest))
 
 distributeKMeans :: forall m . MonadConnect m => Request -> MasterHandle m State Context Input Output -> m (Response, SlaveProfiling)
-distributeKMeans Request{..} mh = do
+distributeKMeans Request{..} mh =
     resetStates mh (replicate nStates ()) >> distrib rMaxIterations rInitialClusters
   where
-      inputs = chunksOfVec rGranularity rPoints :: [(V.Vector Point)]
+      inputs = chunksOfVec rGranularity rPoints :: [V.Vector Point]
       nStates = length inputs
       distrib 0 clusters = do
           sp <- HMS.elems <$> getSlavesProfiling mh >>= \case
@@ -187,8 +187,8 @@ distributeKMeans Request{..} mh = do
 
       reduce n pointgroups = do
           stateIds <- getStateIds mh
-          let pgs' = chunksOf rGranularity . concat . map HMS.elems . HMS.elems $ pointgroups :: [[Output]]
-              inputMap = (HMS.fromList $ zipWith (\sid ps -> (sid, [SumPointSums ps])) (HS.toList stateIds) (pgs' ++ repeat []))
+          let pgs' = chunksOf rGranularity . concatMap HMS.elems . HMS.elems $ pointgroups :: [[Output]]
+              inputMap = HMS.fromList $ zipWith (\sid ps -> (sid, [SumPointSums ps])) (HS.toList stateIds) (pgs' ++ repeat [])
           pointgroups' <- update mh NoContext inputMap :: m (HMS.HashMap StateId (HMS.HashMap StateId Output))
           let summedPgs = sconcat . NE.fromList . HMS.elems $ sconcat . NE.fromList . HMS.elems $ pointgroups'
           let clusters' = makeNewClusters summedPgs
@@ -206,19 +206,19 @@ instance MonadLogger m => MonadLogger (RandT StdGen m) where
 generateRequest :: MonadConnect m => Options -> m Request
 generateRequest Options{..} = do
     let r = mkStdGen 42
-        randPoint range = Point <$> (UV.generateM optDim $ (const $ getRandomR range))
+        randPoint range = Point <$> UV.generateM optDim (const $ getRandomR range)
         randPointAround (Point v) = do
             (Point v') <- randPoint (-1,1)
             return $ Point (UV.zipWith (+) v v')
-    (flip evalRandT) r $ do
+    flip evalRandT r $ do
         centerPoints <-
             mapM (const $ randPoint (-1000,1000)) [0..optNClusters-1]
         let pointsPerCluster = optNPoints `div` optNClusters
             clusterAroundPoint p = V.generateM pointsPerCluster (const $ randPointAround p)
         ps <- mapM clusterAroundPoint centerPoints
-        initialClusters <- V.mapM (\(i, (Point p)) -> do
+        initialClusters <- V.mapM (\(i, Point p) -> do
                                           (Point jitter) <- randPoint (-10,10)
-                                          let p' = UV.zipWith (\x y -> (x + y)) p jitter
+                                          let p' = UV.zipWith (+) p jitter
                                           return $ Cluster i (Point p')) (V.fromList $ zip [0..] centerPoints)
         when (length initialClusters /= optNClusters) (error $ unwords ["wrong numnber of clusters:"
                                                                        , show (length initialClusters)
@@ -227,11 +227,11 @@ generateRequest Options{..} = do
         $logInfoS logSourceBench (unwords [ "centerPoints:", pack $ show centerPoints
                                                  , "\ninitial clusters:", pack $ show initialClusters
                                                  ])
-        return $ Request { rInitialClusters = initialClusters
-                         , rPoints = V.concat ps
-                         , rGranularity = optGranularity
-                         , rMaxIterations = optNIterations
-                         }
+        return Request { rInitialClusters = initialClusters
+                       , rPoints = V.concat ps
+                       , rGranularity = optGranularity
+                       , rMaxIterations = optNIterations
+                       }
 
 
 jqc :: JobQueueConfig
