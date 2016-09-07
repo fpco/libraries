@@ -12,6 +12,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 module PerformanceUtils ( ProfilingColumns
+                        , PinWorkers (..)
                         , runWithNM
                         , runWithoutNM
                         , logSourceBench
@@ -43,19 +44,35 @@ import           System.Environment (getExecutablePath)
 import           System.Exit (ExitCode(..))
 import           System.IO (withFile, IOMode (..))
 import           System.Process
+import           System.Process.Internals
 import           TypeHash.Orphans ()
 
+-- | Key value pairs to be written to a csv file.
+data CSVInfo = CSVInfo [(Text, Text)]
+instance Monoid CSVInfo where
+    mempty = CSVInfo []
+    CSVInfo xs `mappend` CSVInfo xs' = CSVInfo $ xs `mappend` xs'
+instance Semigroup CSVInfo
+
+data PinWorkers = PinWorkers
+                | DontPinWorkers
+                deriving Show
 
 withWorker :: MonadConnect m
     => Int -- ^ number of slaves the worker should accept
+    -> Maybe Int -- ^ Restrict the worker process to a specific CPU core
     -> m a -- ^ action to perform while the slave is running
     -> m a
-withWorker nSlaves cont = do
+withWorker nSlaves mCPU cont = do
     program <- liftIO getExecutablePath
     args <- liftIO getFullArgs
-    let cp = proc program (("--spawn-worker=" ++ show nSlaves):map unpack args)
+    let args' = ("--spawn-worker=" ++ show nSlaves):map unpack args
+        cp = proc program args'
     (x, y, z, sph) <- streamingProcess cp
-    let cont' = \ClosedStream Inherited Inherited -> do
+    case mCPU of
+        Nothing -> return ()
+        Just n -> liftIO $ setAffinity (streamingProcessHandleRaw sph) n
+    let cont' ClosedStream Inherited Inherited = do
             res <- cont
             liftIO $ terminateProcess (streamingProcessHandleRaw sph)
             return res
@@ -64,19 +81,28 @@ withWorker nSlaves cont = do
                 ExitSuccess -> forever (threadDelay maxBound)
                 ec -> liftIO . throwIO $ ProcessExitedUnsuccessfully cp ec
         )
-        (cont' x y z `onException` (liftIO $ terminateProcess (streamingProcessHandleRaw sph)))
+        (cont' x y z `onException` liftIO (terminateProcess (streamingProcessHandleRaw sph)))
+  where
+      setAffinity :: ProcessHandle -> Int -> IO ()
+      setAffinity sph n = withProcessHandle sph $ \case
+          OpenHandle pid -> void $ runCommand $ unwords ["taskset", "-p", "-c", show n, show pid]
+          ClosedHandle _ -> error "Worker Process already died"
 
 -- | Will spawn n+1 workers, that live as long as the given action
 -- takes. The 'NMStatefulMasterArgs' will be set to accept exactly n
 -- slaves.
 withNSlaves :: MonadConnect m
     => Int -- ^ @n@, the number of slaves
+    -> PinWorkers
     -> m a
     -> m a
-withNSlaves nSlaves action = go 0 action
+withNSlaves nSlaves pinWorkers action = go 0 action
   where
     go n cont | n > nSlaves = cont
-    go n cont = go (n+1) (withWorker nSlaves cont)
+    go n cont = go (n+1) (withWorker nSlaves (maybePin n) cont)
+    maybePin n = case pinWorkers of
+        PinWorkers -> Just n
+        DontPinWorkers -> Nothing
 
 -- | Wait until exactly @n@ workers are live.
 --
@@ -136,6 +162,7 @@ runWithNM :: forall m a context input output state request response.
     -> Maybe a
     -- ^ If @Nothing@, perform the request.
     -- ^ Otherwise, spawn a worker that acceps @nSlaves@ slaves.
+    -> PinWorkers
     -> MasterArgs m state context input output
     -> Int
     -- ^ @nSlaves@
@@ -145,7 +172,7 @@ runWithNM :: forall m a context input output state request response.
     -> m request
     -> m (Int, Double)
     -- ^ (@nSlaves@, walltime needed to perform the request)
-runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateRequest =
+runWithNM fp csvInfo jqc spawnWorker pinWorkers masterArgs nSlaves workerFunc generateRequest =
     if isJust spawnWorker
        then do
            $logDebugS logSourceBench "spawning worker"
@@ -161,10 +188,11 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
        else do
            (time, msp) <- withNSlaves
                nSlaves
+               pinWorkers
                (withJobClient jqc $ \(jc :: JobClient (response, Maybe Profiling)) -> do
                        waitForNWorkers (jcRedis jc) (nSlaves + 1) -- +1 for the worker
                        measureRequestTime generateRequest jc)
-           liftIO $ writeToCsv fp ([("time", pack $ show time)] <> csvInfo <> mProfilingColumns msp)
+           liftIO $ writeToCsv fp ([("time", pack $ show time)] <> csvInfo <> mProfilingColumns msp <> [("Pin", tshow pinWorkers)])
            return (nSlaves, time)
 
 runWithoutNM ::

@@ -29,6 +29,7 @@ data Options = Options
                , optPurgeCSV :: Bool
                , optPngFile :: Maybe FilePath
                , optSpawnWorker :: Maybe Int
+               , optPinWorkers :: PinWorkers
                , optBench :: Benchmark
                }
 
@@ -139,6 +140,8 @@ options = Options
                   (long "spawn-worker"
                    <> metavar "NSLAVES"
                    <> help "Used internally to spawn a worker, that will work with NSLAVES slaves."))
+    <*> flag PinWorkers DontPinWorkers (long "dont-pin-workers"
+                   <> help "By default, workers will be pinned to different CPU cores.")
     <*> subparser
         (   command "pfilter" (BenchPFilter <$> benchPFilter `info` progDesc "Benchmark with a simple particle filter.")
          <> command "vectors" (BenchVectors <$> benchVectors `info` progDesc "Benchmark that performs some arithmetic with vectors.")
@@ -163,7 +166,7 @@ runBench nSlaves commonCsvInfo Options{..} =
             logErrorsOrBench $
                 if optNoNetworkMessage
                 then runWithoutNM fp csvInfo masterArgs nSlaves master request
-                else runWithNM fp csvInfo PFilter.jqc optSpawnWorker masterArgs nSlaves master request
+                else runWithNM fp csvInfo PFilter.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
         BenchVectors vOpts ->
             let masterArgs = Vectors.masterArgs vOpts
                 master = Vectors.myAction
@@ -173,7 +176,7 @@ runBench nSlaves commonCsvInfo Options{..} =
             in logErrorsOrBench $
                 if optNoNetworkMessage
                 then runWithoutNM fp csvInfo masterArgs nSlaves master request
-                else runWithNM fp csvInfo PFilter.jqc optSpawnWorker masterArgs nSlaves master request
+                else runWithNM fp csvInfo PFilter.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
         BenchKMeans kOpts ->
             let masterArgs = KMeans.masterArgs kOpts
                 master = KMeans.distributeKMeans
@@ -183,7 +186,7 @@ runBench nSlaves commonCsvInfo Options{..} =
             in logErrorsOrBench $
                    if optNoNetworkMessage
                    then runWithoutNM fp csvInfo masterArgs nSlaves master request
-                   else runWithNM fp csvInfo KMeans.jqc optSpawnWorker masterArgs nSlaves master request
+                   else runWithNM fp csvInfo KMeans.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
 
 purgeResults :: Options -> IO ()
 purgeResults Options{..} =
