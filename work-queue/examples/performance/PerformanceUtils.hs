@@ -12,6 +12,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 module PerformanceUtils ( CSVInfo (..)
+                        , PinWorkers (..)
                         , runWithNM
                         , runWithoutNM
                         , logSourceBench
@@ -57,12 +58,19 @@ instance Semigroup CSVInfo
 
 withWorker :: MonadConnect m
     => Int -- ^ number of slaves the worker should accept
+    -> Maybe Int -- ^ Restrict the worker process to a specific CPU core
     -> m a -- ^ action to perform while the slave is running
     -> m a
-withWorker nSlaves cont = do
+withWorker nSlaves mCPU cont = do
     program <- liftIO getExecutablePath
     args <- liftIO getFullArgs
-    let cp = proc program (("--spawn-worker=" ++ show nSlaves):map unpack args)
+    let args' = ("--spawn-worker=" ++ show nSlaves):map unpack args
+    cp <- case mCPU of
+            Nothing -> return $ proc program args'
+            Just cpu -> do
+                let str = unwords $ ["taskset -c", show cpu, program] ++ args'
+                $logDebugS logSourceBench $ pack str
+                return $ shell str
     (x, y, z, sph) <- streamingProcess cp
     let cont' = \ClosedStream Inherited Inherited -> do
             res <- cont
@@ -75,17 +83,25 @@ withWorker nSlaves cont = do
         )
         (cont' x y z `onException` (liftIO $ terminateProcess (streamingProcessHandleRaw sph)))
 
+data PinWorkers = PinWorkers
+                | DontPinWorkers
+                deriving Show
+
 -- | Will spawn n+1 workers, that live as long as the given action
 -- takes. The 'NMStatefulMasterArgs' will be set to accept exactly n
 -- slaves.
 withNSlaves :: MonadConnect m
     => Int -- ^ @n@, the number of slaves
+    -> PinWorkers
     -> m a
     -> m a
-withNSlaves nSlaves action = go 0 action
+withNSlaves nSlaves pinWorkers action = go 0 action
   where
     go n cont | n > nSlaves = cont
-    go n cont = go (n+1) (withWorker nSlaves cont)
+    go n cont = go (n+1) (withWorker nSlaves (maybePin n) cont)
+    maybePin n = case pinWorkers of
+        PinWorkers -> Just n
+        DontPinWorkers -> Nothing
 
 -- | Wait until exactly @n@ workers are live.
 --
@@ -145,6 +161,7 @@ runWithNM :: forall m a context input output state request response.
     -> Maybe a
     -- ^ If @Nothing@, perform the request.
     -- ^ Otherwise, spawn a worker that acceps @nSlaves@ slaves.
+    -> PinWorkers
     -> MasterArgs m state context input output
     -> Int
     -- ^ @nSlaves@
@@ -154,7 +171,7 @@ runWithNM :: forall m a context input output state request response.
     -> m request
     -> m (Int, Double)
     -- ^ (@nSlaves@, walltime needed to perform the request)
-runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateRequest =
+runWithNM fp csvInfo jqc spawnWorker pinWorkers masterArgs nSlaves workerFunc generateRequest =
     if isJust spawnWorker
        then do
            $logDebugS logSourceBench "spawning worker"
@@ -170,6 +187,7 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
        else do
            (time, sp) <- withNSlaves
                nSlaves
+               pinWorkers
                (withJobClient jqc $ \(jc :: JobClient (response, SlaveProfiling)) -> do
                        waitForNWorkers (jcRedis jc) (nSlaves + 1) -- +1 for the worker
                        measureRequestTime generateRequest jc)
