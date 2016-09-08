@@ -212,25 +212,9 @@ requestExists
     :: MonadConnect m
     => Redis -> RequestId -> m Bool
 requestExists r k = do
-    dataExists <- run r $ exists_ (unVKey (requestDataKey r k))
+    dataExists <- run r $ exists (unVKey (requestDataKey r k))
     if dataExists then return True else do
-        run r $ exists_ (unVKey (responseDataKey r k))
-
-
--- | Returns 'True' if _all_ the provided requests exist.
-allRequestsExist
-    :: MonadConnect m
-    => Redis -> HMS.HashMap RequestId () -> m Bool
-allRequestsExist r ks = case NE.nonEmpty (HMS.keys ks) of
-    Nothing -> return True
-    Just neKs -> do
-        let nks = fromIntegral (HMS.size ks)
-        reqEx <- run r $ exists (map (unVKey . requestDataKey r) neKs)
-        if reqEx == nks
-            then return True
-            else do
-                respEx <- run r $ exists (map (unVKey . responseDataKey r) neKs)
-                return (respEx == nks)
+        run r $ exists (unVKey (responseDataKey r k))
 
 -- | A simpler 'waitForResponse', that automatically blocks on the response
 -- arriving, and throws the 'DistributedException'.
@@ -255,13 +239,8 @@ waitForResponse jc rid cont = waitForResponses jc [rid] $ \hm -> case HMS.lookup
     Just m -> Just <$> cont m
 
 -- | Wait for a bunch of responses. The 'RequestId's that do not exist
--- in will not be present in the 'HMS.HashMap'.
---
--- Important note: this function will be efficient only if all the
--- requests given are present in the JobQueue. Otherwise, many requests
--- to redis will be necessary to determine which are present. It will still
--- be more efficient than calling `waitForResponse` many times, but it's
--- something worth being aware of.
+-- _at the time when waitForResponses is called_ iwill not be present in the
+-- 'HMS.HashMap'.
 waitForResponses :: forall m response a.
        (MonadConnect m, Sendable response)
     => JobClient response
@@ -270,15 +249,8 @@ waitForResponses :: forall m response a.
     -> m a
 waitForResponses jc@JobClient{..} rids0 cont = do
     let candidateRequests :: HMS.HashMap RequestId () = HMS.fromList (zip rids0 (repeat ()))
-    existantRequests <- do
-        -- First check if _all_ the requests exist. This is an optimization, since we cannot
-        -- easily check which request exist in bulk.
-        allReqsExist <- allRequestsExist jcRedis candidateRequests
-        if allReqsExist
-            then return candidateRequests
-            else
-                -- If only some exist, check all of them
-                fmap HMS.fromList $ filterM (\(reqId, ()) -> requestExists jcRedis reqId) (HMS.toList candidateRequests)
+    existantRequests <-
+        fmap HMS.fromList $ filterM (\(reqId, ()) -> requestExists jcRedis reqId) (HMS.toList candidateRequests)
     -- One TVar per request
     tvars :: HMS.HashMap RequestId (TMVar (Either DistributedException response)) <-
         traverse (\() -> liftIO newEmptyTMVarIO) existantRequests
@@ -322,19 +294,14 @@ waitForResponses jc@JobClient{..} rids0 cont = do
             liftIO (threadDelay (fromIntegral (unMilliseconds (jqcWaitForResponseNotificationFailsafeTimeout jcConfig) * 1000)))
             -- Before resuming, see if some request got deleted -- this can happen,
             -- and we don't want to be stuck on them forever
-            allMissingReqsExist <- allRequestsExist jcRedis missingReqs
-            if allMissingReqsExist
-                then delayLoop missingReqs vars
-                else do
-                    -- Find out which requests do not exist anymore
-                    vanishedRequests <- filterM (\(rid, ()) -> not <$> requestExists jcRedis rid) (HMS.toList missingReqs)
-                    forM_ vanishedRequests $ \(rid, ()) -> do
-                        -- Record them as vanished
-                        let err = "Was waiting on request " <> tshow rid <> ", but it disappeared. This is possible if the caching duration for requests is too low and the request expired while waiting for it."
-                        $logWarnJ err
-                        var <- lookupReqTMVar vars rid
-                        void (atomically (tryPutTMVar var (Left (InternalJobQueueException err))))
-                    delayLoop (missingReqs `HMS.difference` HMS.fromList vanishedRequests) vars
+            vanishedRequests <- filterM (\(rid, ()) -> not <$> requestExists jcRedis rid) (HMS.toList missingReqs)
+            forM_ vanishedRequests $ \(rid, ()) -> do
+                -- Record them as vanished
+                let err = "Was waiting on request " <> tshow rid <> ", but it disappeared. This is possible if the caching duration for requests is too low and the request expired while waiting for it."
+                $logWarnJ err
+                var <- lookupReqTMVar vars rid
+                void (atomically (tryPutTMVar var (Left (InternalJobQueueException err))))
+            delayLoop (missingReqs `HMS.difference` HMS.fromList vanishedRequests) vars
 
     watcher ::
            HMS.HashMap RequestId (TMVar (Either DistributedException response))

@@ -436,7 +436,7 @@ watchForExpiry r rid ivl = loop
     loop :: m (WorkerResult response)
     loop = do
         $logDebugJ $ "Checking for expiry of " ++ tshow rid
-        jobStillThere <- run r . exists_ . unVKey $ requestDataKey r rid
+        jobStillThere <- run r . exists . unVKey $ requestDataKey r rid
         if jobStillThere
             then do
                 $logDebugJ ("Not expired, waiting" :: Text)

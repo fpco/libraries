@@ -20,7 +20,7 @@ import qualified Data.List.NonEmpty as NE
 import Data.Store (Store)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Test.Hspec hiding (shouldBe, shouldSatisfy, shouldMatchList)
-import FP.Redis (MonadConnect, Seconds(..), exists_, VKey (..))
+import FP.Redis (MonadConnect, Seconds(..), exists, VKey (..))
 import Control.Concurrent.Lifted (threadDelay)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID.V4
@@ -345,7 +345,7 @@ expiredTest r = either absurd id <$> Async.race timeoutJobWorker (withTimeoutCli
             Just s -> isNothing $ rsComputeFinishTime s
             )
         -- and the request data has expired, too
-        jobStillThere <- run r . exists_ . unVKey $ requestDataKey r rid
+        jobStillThere <- run r . exists . unVKey $ requestDataKey r rid
         jobStillThere `shouldBe` False
 
 manualHeartbeatTest :: forall m . MonadConnect m => Redis -> m ()
