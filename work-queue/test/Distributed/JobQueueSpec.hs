@@ -249,9 +249,9 @@ spec = do
                 _rid <- submitTestRequest jc req
                 threadDelay (1000 * 1000))
     redisIt_ "Can wait on multiple requests (all present, few)" (waitOnManyRequestsTest 100 100)
-    redisIt_ "Can wait on multiple requests (all present, many)" (waitOnManyRequestsTest 10000 10000)
+    stressfulTest $ redisIt_ "Can wait on multiple requests (all present, many)" (waitOnManyRequestsTest 10000 10000)
     redisIt_ "Can wait on multiple requests (some present, few)" (waitOnManyRequestsTest 100 30)
-    redisIt_ "Can wait on multiple requests (some present, many)" (waitOnManyRequestsTest 10000 300)
+    stressfulTest $ redisIt_ "Can wait on multiple requests (some present, many)" (waitOnManyRequestsTest 10000 300)
 
 priorityTest :: forall m. MonadConnect m => Redis -> m ()
 priorityTest r = do
