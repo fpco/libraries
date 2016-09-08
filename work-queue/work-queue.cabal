@@ -147,6 +147,7 @@ test-suite wq-test
                      , uuid
                      , vector
                      , work-queue
+                     , random-shuffle
 
 executable hpc-example-stateful
   main-is:             Main.hs

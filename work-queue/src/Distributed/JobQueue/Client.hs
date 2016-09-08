@@ -286,7 +286,8 @@ waitForResponses jc@JobClient{..} rids0 cont = do
     Async.withAsync (delayLoop existantRequests tvars) $ \delayLoopAsync ->
         Async.withAsync (watcher tvars) $ \watcherAsync ->
             Async.withAsync (cont getResps) $ \contAsync -> do
-                -- Explicitly wait on workers to catch exceptions
+                -- Explicitly wait on workers to catch and re-throw exceptions they might
+                -- throw
                 let waitOnAll mbWorker1 mbWorker2 action = do
                         let waitWorker = maybe retry Async.waitSTM
                         res <- orElse
