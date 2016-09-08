@@ -9,11 +9,13 @@ module FP.Redis.Command.String
     ( set
     , setEx
     , get
+    , mget
     , getset
     , incr )
     where
 
 import ClassyPrelude.Conduit
+import Data.List.NonEmpty (NonEmpty)
 
 import FP.Redis.Internal
 import FP.Redis.Types.Internal
@@ -44,6 +46,11 @@ setEx key ttl_ val =
 -- See <http://redis.io/commands/get>.
 get :: VKey -> CommandRequest (Maybe ByteString)
 get key = makeCommand "GET" [encodeArg key]
+
+-- | Gets the value of multiple keys.
+-- See <http://redis.io/commands/mget>.
+mget :: NonEmpty VKey -> CommandRequest [Maybe ByteString]
+mget keys = makeCommand "MGET" (map encodeArg (toList keys))
 
 -- | Atomically sets key to value and returns the old value stored at key.
 -- See <http://redis.io/commands/getset>.

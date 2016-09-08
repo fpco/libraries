@@ -6,6 +6,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE LambdaCase #-}
 {-|
 Module: Distributed.JobQueue.Client
 Description: Submit requests to a job queue, and collect their results.
@@ -30,7 +31,9 @@ module Distributed.JobQueue.Client
     , submitRequestUrgent
     , waitForResponse
     , waitForResponse_
+    , waitForResponses
     , checkForResponse
+    , checkForResponses
       -- * Cancel requests
     , cancelRequest
       -- * Explicitly re-enqueue requests from dead workers
@@ -45,6 +48,7 @@ import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.STM (retry, orElse)
 import           Control.Monad.Logger.JSON.Extra
 import           Data.List.NonEmpty (NonEmpty((:|)))
+import qualified Data.List.NonEmpty as NE
 import qualified Data.Store as S
 import           Data.Streaming.NetworkMessage (Sendable)
 import           Data.Store.TypeHash
@@ -230,69 +234,132 @@ waitForResponse :: forall m response a.
     -> RequestId
     -> (STM (Either DistributedException response) -> m a)
     -> m (Maybe a)
-waitForResponse jc@JobClient{..} rid cont = do
-    -- First, ensure that the request actually exists.
-    reqExists <- requestExists jcRedis rid
-    if not reqExists
-        then return Nothing
-        else fmap Just $
-            Async.withAsync delayLoop $ \delayLoopAsync ->
-            Async.withAsync watcher $ \watcherAsync ->
-            cont (orElse (Async.waitSTM delayLoopAsync) (Async.waitSTM watcherAsync))
+waitForResponse jc rid cont = waitForResponses jc [rid] $ \hm -> case HMS.lookup rid hm of
+    Nothing -> return Nothing
+    Just m -> Just <$> cont m
+
+-- | Wait for a bunch of responses. The 'RequestId's that do not exist
+-- _at the time when waitForResponses is called_ iwill not be present in the
+-- 'HMS.HashMap'.
+waitForResponses :: forall m response a.
+       (MonadConnect m, Sendable response)
+    => JobClient response
+    -> [RequestId]
+    -> (HMS.HashMap RequestId (STM (Either DistributedException response)) -> m a)
+    -> m a
+waitForResponses jc@JobClient{..} rids0 cont = do
+    let candidateRequests :: HMS.HashMap RequestId () = HMS.fromList (zip rids0 (repeat ()))
+    existantRequests <-
+        fmap HMS.fromList $ filterM (\(reqId, ()) -> requestExists jcRedis reqId) (HMS.toList candidateRequests)
+    -- One TVar per request
+    tvars :: HMS.HashMap RequestId (TMVar (Either DistributedException response)) <-
+        traverse (\() -> liftIO newEmptyTMVarIO) existantRequests
+    let getResps :: HMS.HashMap RequestId (STM (Either DistributedException response)) = fmap readTMVar tvars
+    Async.withAsync (delayLoop existantRequests tvars) $ \delayLoopAsync ->
+        Async.withAsync (watcher tvars) $ \watcherAsync ->
+            Async.withAsync (cont getResps) $ \contAsync -> do
+                -- Explicitly wait on workers to catch and re-throw exceptions they might
+                -- throw
+                let waitOnAll mbWorker1 mbWorker2 action = do
+                        let waitWorker = maybe retry Async.waitSTM
+                        res <- orElse
+                            (Left <$> (orElse (Left <$> waitWorker mbWorker1) (Right <$> waitWorker mbWorker2)))
+                            (Right <$> Async.waitSTM action)
+                        case res of
+                            Left (Left ()) -> waitOnAll Nothing mbWorker2 action
+                            Left (Right ()) -> waitOnAll mbWorker1 Nothing action
+                            Right x -> return x
+                atomically (waitOnAll (Just delayLoopAsync) (Just watcherAsync) contAsync)
   where
-    delayLoop :: m (Either DistributedException response)
-    delayLoop = do
-        mbResp <- checkForResponse jc rid
-        case mbResp of
-            Just resp -> return resp
-            Nothing -> do
-                liftIO (threadDelay (fromIntegral (unMilliseconds (jqcWaitForResponseNotificationFailsafeTimeout jcConfig) * 1000)))
-                -- Before resuming, see if the request got deleted -- this can happen,
-                -- and we don't want to be stuck forever.
-                reqExists <- requestExists jcRedis rid
-                if reqExists
-                    then delayLoop
-                    else do
-                        let err = "Was waiting on request " <> tshow rid <> ", but it disappeared. This is possible if the caching duration for requests is too low and the request expired while waiting for it."
-                        $logWarnJ err
-                        return (Left (InternalJobQueueException err))
+    lookupReqTMVar ::
+           HMS.HashMap RequestId (TMVar (Either DistributedException response))
+        -> RequestId
+        -> m (TMVar (Either DistributedException response))
+    lookupReqTMVar vars rid = case HMS.lookup rid vars of
+        Nothing -> throwM (InternalJobQueueException ("Could not find TVar for request " <> tshow rid <> " in response watcher."))
+        Just var -> return var
 
-    watcher :: m (Either DistributedException response)
-    watcher = do
-        mbResp <- bracket startWatching stopWatching $ \var -> do
-            atomically $ do
-                rw <- readTVar var
-                unless (rwGotNotification rw) retry
-            checkForResponse jc rid
-        case mbResp of
-            Nothing -> do
-                $logWarnJ ("Got notification for request " <> tshow rid <> ", but then found no response. This is possible but unlikely, re-subscribing.")
-                watcher
-            Just resp -> return resp
+    delayLoop ::
+           HMS.HashMap RequestId () -- ^ Requests still to wait on
+        -> HMS.HashMap RequestId (TMVar (Either DistributedException response))
+        -> m ()
+    delayLoop rids vars = if HMS.null rids
+        then return ()
+        else do
+            finishedReqs <- checkForResponses jc (HMS.keys rids)
+            forM_ (HMS.toList finishedReqs) $ \(rid, resp) -> do
+                var <- lookupReqTMVar vars rid
+                void (atomically (tryPutTMVar var resp))
+            let missingReqs = rids `HMS.difference` finishedReqs
+            liftIO (threadDelay (fromIntegral (unMilliseconds (jqcWaitForResponseNotificationFailsafeTimeout jcConfig) * 1000)))
+            -- Before resuming, see if some request got deleted -- this can happen,
+            -- and we don't want to be stuck on them forever
+            vanishedRequests <- filterM (\(rid, ()) -> not <$> requestExists jcRedis rid) (HMS.toList missingReqs)
+            forM_ vanishedRequests $ \(rid, ()) -> do
+                -- Record them as vanished
+                let err = "Was waiting on request " <> tshow rid <> ", but it disappeared. This is possible if the caching duration for requests is too low and the request expired while waiting for it."
+                $logWarnJ err
+                var <- lookupReqTMVar vars rid
+                void (atomically (tryPutTMVar var (Left (InternalJobQueueException err))))
+            delayLoop (missingReqs `HMS.difference` HMS.fromList vanishedRequests) vars
+
+    watcher ::
+           HMS.HashMap RequestId (TMVar (Either DistributedException response))
+        -> m ()
+    watcher tvars = bracket startWatching stopWatching watchLoop
       where
-        startWatching :: m (TVar ResponseWatcher)
-        startWatching = modifyMVar jcResponseWatchers $ \hm -> do
-            case HMS.lookup rid hm of
-                Nothing -> do
-                    var <- liftIO (newTVarIO ResponseWatcher{rwWatchers = 1, rwGotNotification = False})
-                    return (HMS.insert rid var hm, var)
-                Just var -> do
-                    atomically (modifyTVar var (\rw -> rw{rwWatchers = rwWatchers rw + 1}))
-                    return (hm, var)
+        startWatching :: m (HMS.HashMap RequestId (TVar ResponseWatcher))
+        startWatching = modifyMVar jcResponseWatchers $ \hm0 -> do
+            let addToWatchers (hm, watchers) rid = do
+                    case HMS.lookup rid hm of
+                        Nothing -> do
+                            var <- liftIO (newTVarIO ResponseWatcher{rwWatchers = 1, rwGotNotification = False})
+                            return (HMS.insert rid var hm, HMS.insert rid var watchers)
+                        Just var -> do
+                            atomically (modifyTVar var (\rw -> rw{rwWatchers = rwWatchers rw + 1}))
+                            return (hm, HMS.insert rid var watchers)
+            foldM addToWatchers (hm0, HMS.empty) (HMS.keys tvars)
 
-        stopWatching :: TVar ResponseWatcher -> m ()
-        stopWatching _var = modifyMVar_ jcResponseWatchers $ \hm -> do
-            case HMS.lookup rid hm of
-                Just var -> do
-                    watchers <- atomically $ do
-                        rw <- readTVar var
-                        let rw' = rw{rwWatchers = rwWatchers rw - 1}
-                        writeTVar var rw'
-                        return (rwWatchers rw')
-                    return $ if (watchers < 1)
-                        then HMS.delete rid hm
-                        else hm
-                Nothing -> throwM (InternalJobQueueException ("Could not find entry for request " <> tshow rid <> " in response watchers."))
+        stopWatching :: HMS.HashMap RequestId (TVar ResponseWatcher) -> m ()
+        stopWatching watchers = modifyMVar_ jcResponseWatchers $ \hm0 -> do
+            let removeWatcher hm rid = case HMS.lookup rid hm of
+                    Just var -> do
+                        watchersCount <- atomically $ do
+                            rw <- readTVar var
+                            let rw' = rw{rwWatchers = rwWatchers rw - 1}
+                            writeTVar var rw'
+                            return (rwWatchers rw')
+                        return $ if (watchersCount < 1)
+                            then HMS.delete rid hm
+                            else hm
+                    Nothing -> throwM (InternalJobQueueException ("Could not find entry for request " <> tshow rid <> " in response watchers."))
+            foldM removeWatcher hm0 (HMS.keys watchers)
+
+        watchLoop :: HMS.HashMap RequestId (TVar ResponseWatcher) -> m ()
+        watchLoop watchers = if HMS.null watchers
+            then return ()
+            else do
+                rid <- atomically $ do
+                    let waitOnAll = \case
+                            [] -> retry
+                            (rid, rwVar) : rwVars -> do
+                                rw <- readTVar rwVar
+                                if rwGotNotification rw
+                                    then return rid
+                                    else waitOnAll rwVars
+                    waitOnAll (HMS.toList watchers)
+                mbResp <- checkForResponse jc rid
+                case mbResp of
+                    Nothing -> do
+                        $logWarnJ ("Got notification for request " <> tshow rid <> ", but then found no response. This is possible but unlikely, re-subscribing.")
+                        watchLoop watchers
+                    Just resp -> do
+                        var <- lookupReqTMVar tvars rid
+                        void (atomically (tryPutTMVar var resp))
+                        -- This remove is just an optimization. Consider for example
+                        -- that we do not care about the responses that the 'delayLoop' gets
+                        -- -- we just wait on them redundantly.
+                        watchLoop (HMS.delete rid watchers)
 
 -- | Returns immediately with the response, if present.
 checkForResponse ::
@@ -300,12 +367,26 @@ checkForResponse ::
     => JobClient response
     -> RequestId
     -> m (Maybe (Either DistributedException response))
-checkForResponse JobClient{..} rid = do
-    mresponse <- run jcRedis (get (responseDataKey jcRedis rid))
-    forM mresponse $ \response -> do
-        result <- decodeOrThrow "checkForResponse" response
-        addRequestEvent jcRedis rid RequestResponseRead
-        return result
+checkForResponse jc rid = HMS.lookup rid <$> checkForResponses jc [rid]
+
+checkForResponses ::
+       (MonadConnect m, Sendable response)
+    => JobClient response
+    -> [RequestId]
+    -> m (HMS.HashMap RequestId (Either DistributedException response))
+checkForResponses JobClient{..} rids0 = case NE.nonEmpty rids0 of
+    Nothing -> return mempty
+    Just rids -> do
+        mresponses0 <- zip rids0 . toList <$> run jcRedis (mget (fmap (responseDataKey jcRedis) rids))
+        let mresponses = do
+                (rid, mresponse) <- mresponses0
+                case mresponse of
+                    Nothing -> []
+                    Just resp -> [(rid, resp)]
+        fmap HMS.fromList $ forM mresponses $ \(rid, resp) -> do
+            result <- decodeOrThrow "checkForResponses" resp
+            addRequestEvent jcRedis rid RequestResponseRead
+            return (rid, result)
 
 -- | Generate a unique (UUID-based) 'RequestId'.
 uniqueRequestId :: (MonadIO m) => m RequestId

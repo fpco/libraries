@@ -11,6 +11,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module Distributed.JobQueueSpec (spec) where
 
@@ -27,6 +28,8 @@ import Data.Void (absurd)
 import qualified Data.ByteString.Char8 as BSC8
 import qualified Data.HashSet as HS
 import qualified Control.Concurrent.STM as STM
+import           System.Random (randomRIO)
+import           System.Random.Shuffle (shuffleM)
 
 import Data.Store.TypeHash (mkManyHasTypeHash)
 import Distributed.Heartbeat (deadWorkers)
@@ -50,7 +53,7 @@ instance Store Request
 
 newtype Response = Response
     { _responseEcho :: ByteString
-    } deriving (Eq, Ord, Show, Generic, Typeable)
+    } deriving (Eq, Ord, Show, Generic, Typeable, Hashable)
 instance Store Response
 
 $(mkManyHasTypeHash [[t|Request|], [t|Response|]])
@@ -245,6 +248,10 @@ spec = do
             (withTestJobClient $ \jc -> forever $ do
                 _rid <- submitTestRequest jc req
                 threadDelay (1000 * 1000))
+    redisIt_ "Can wait on multiple requests (all present, few)" (waitOnManyRequestsTest 100 100)
+    stressfulTest $ redisIt_ "Can wait on multiple requests (all present, many)" (waitOnManyRequestsTest 10000 10000)
+    redisIt_ "Can wait on multiple requests (some present, few)" (waitOnManyRequestsTest 100 30)
+    stressfulTest $ redisIt_ "Can wait on multiple requests (some present, many)" (waitOnManyRequestsTest 10000 300)
 
 priorityTest :: forall m. MonadConnect m => Redis -> m ()
 priorityTest r = do
@@ -475,3 +482,27 @@ chaosTest = do
                 sort resps `shouldBe` sort expectedResps
         mapConcurrently_ runChaosClient [1..numClients]
 
+waitOnManyRequestsTest :: forall m. (MonadConnect m) => Int -> Int -> m ()
+waitOnManyRequestsTest numWaitOn numRequests = if numWaitOn < 1 || numRequests < 1 || numRequests > numWaitOn
+    then fail ("Invalid parameters to waitOnManyRequestsTest: " ++ show (numWaitOn, numRequests))
+    else flip raceAgainstVoids (map (const testJobWorker) [1..workers]) $ withTestJobClient $ \jc -> do
+        reqIds <- forM [1..numRequests] $ \i -> do
+            delay <- liftIO (randomRIO (minReqTime, maxReqTime))
+            submitTestRequest jc Request
+                { requestDelay = delay
+                , requestResponse = DontReenqueue (Response (BSC8.pack (show i)))
+                }
+        syntheticReqsId <- replicateM (numWaitOn - numRequests) $ liftIO $ do
+            uu <- UUID.V4.nextRandom
+            return (RequestId (UUID.toASCIIBytes uu))
+        shuffledReqIds <- liftIO (shuffleM (reqIds ++ syntheticReqsId))
+        resps <- waitForResponses jc shuffledReqIds (traverse atomically)
+        cleanedResps <- forM resps $ \case
+            Left err -> fail ("A resp failed: " ++ show err)
+            Right x -> return x
+        length reqIds `shouldBe` HS.size (HS.fromList (toList cleanedResps))
+  where
+    minReqTime = 0
+    maxReqTime = 100 * 1000 -- one tenth of a second
+
+    workers :: Int = 10
