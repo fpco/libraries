@@ -33,6 +33,7 @@ module Distributed.Stateful.Master
     , getStateIds
     , getStates
     , getSlavesProfiling
+    , getMasterProfiling
     , addSlaveConnection
     , getNumSlaves
       -- * Types
@@ -43,6 +44,7 @@ module Distributed.Stateful.Master
     , SlaveId
     , StatefulConn(..)
     , SlaveProfiling(..), emptySlaveProfiling
+    , MasterProfiling(..)
     ) where
 
 import           ClassyPrelude
@@ -83,6 +85,7 @@ data MasterHandle_ m state context input output = MasterHandle_
   , mhSlaveIdSupply :: !(Supply SlaveId)
   , mhStateIdSupply :: !(Supply StateId)
   , mhArgs :: !(MasterArgs m state context input output)
+  , mhProfiling :: !(IORef MasterProfiling)
   }
 
 -- | Connection to a slave.  Requests to the slave can be written, and
@@ -120,11 +123,13 @@ initMaster ma@MasterArgs{..} = do
     _ -> return ()
   slaveIdSupply <- newSupply (SlaveId 0) (\(SlaveId n) -> SlaveId (n + 1))
   stateIdSupply <- newSupply (StateId 0) (\(StateId n) -> StateId (n + 1))
+  mhp <- newIORef emptyMasterProfiling
   let mh = MasterHandle_
         { mhSlaves = NoSlavesYet mempty
         , mhSlaveIdSupply = slaveIdSupply
         , mhStateIdSupply = stateIdSupply
         , mhArgs = ma
+        , mhProfiling = mhp
         }
   MasterHandle <$> newMVar mh
 
@@ -234,14 +239,15 @@ makeLenses ''SlaveStatus
 {-# INLINE updateSlavesStep #-}
 updateSlavesStep :: forall m input output.
      (MonadThrow m, MonadLogger m, MonadIO m)
-  => Int -- ^ Number of slaves
+  => IORef MasterProfiling
+  -> Int -- ^ Number of slaves
   -> Int -- ^ Min batch size
   -> HMS.HashMap StateId [(StateId, input)]  -- we need lookup here, so this should be a 'HashMap'
   -> SlaveId
   -> UpdateSlaveResp output
   -> SlavesStatus
   -> m (UpdateSlaveStep input output)
-updateSlavesStep nSlaves maxBatchSize inputs respSlaveId resp statuses0 = do
+updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId resp statuses0 = do
   let statuses1 = over (at respSlaveId . _Just . ssWaitingResps) (\c -> c - 1) statuses0
   (statuses2, requests, outputs) <- case resp of
     USRespInit -> do
@@ -329,7 +335,8 @@ updateSlavesStep nSlaves maxBatchSize inputs respSlaveId resp statuses0 = do
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
      (MonadConnect m, NFData input, NFData output)
-  => Int -- ^ Number of slaves
+  => IORef MasterProfiling
+  -> Int -- ^ Number of slaves
   -> Int -- ^ Max batch size
   -> HMS.HashMap SlaveId (Slave m state context input output)
   -- ^ Slaves connections
@@ -338,7 +345,7 @@ updateSlaves :: forall state context input output m.
   -> HMS.HashMap StateId [(StateId, input)]
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
-updateSlaves nSlaves maxBatchSize slaves context inputMap = do
+updateSlaves mp nSlaves maxBatchSize slaves context inputMap = do
   outgoingChans :: HMS.HashMap SlaveId (SlaveConn m state context input output, TChan (Maybe (UpdateSlaveReq input))) <-
     forM slaves $ \slave -> do
       chan <- liftIO newTChanIO
@@ -385,7 +392,7 @@ updateSlaves nSlaves maxBatchSize slaves context inputMap = do
       where
         go !outputs0 resp = do
           (statuses, requests, outputs1) <- modifyMVar statusVar $ \status -> do
-            UpdateSlaveStep{..} <- updateSlavesStep nSlaves maxBatchSize inputMap slaveId resp status
+            UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves maxBatchSize inputMap slaveId resp status
             return (ussSlavesStatus, (ussSlavesStatus, ussReqs, ussOutputs))
           forM_ requests $ \(slaveId_, req0) ->
             atomically (writeTChan (outgoingChans HMS.! slaveId_) (Just req0))
@@ -462,7 +469,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
               liftM (slaveId,) $ readExpect "update (1)" (slaveConnection (slaves HMS.! slaveId)) $ \case
                 SRespUpdate outputs -> Just outputs
                 _ -> Nothing
-          Just maxBatchSize -> updateSlaves (HMS.size slaves) maxBatchSize slaves context inputMap
+          Just maxBatchSize -> updateSlaves (mhProfiling mh) (HMS.size slaves) maxBatchSize slaves context inputMap
       let mh' = mh
             { mhSlaves = Slaves $
                 integrateNewStates slaves (second (fmap (const ()) . HMS.fromList . mconcat . map snd) <$> outputs)
@@ -578,6 +585,16 @@ getSlavesProfiling (MasterHandle mhv) = withMVar mhv $ \mh ->
                 readExpect "getSlavesProfiling" (slaveConnection slave) $ \case
                     SRespGetProfile sp -> return sp
                     _ -> Nothing
+
+getMasterProfiling ::
+       MonadConnect m
+    => MasterHandle m state contect input output
+    -> m MasterProfiling
+getMasterProfiling (MasterHandle mhv) =
+    readMVar mhv >>= \mh ->
+    readIORef (mhProfiling mh)
+
+
 
 -- | Get the number of slaves connected to a master.
 getNumSlaves ::

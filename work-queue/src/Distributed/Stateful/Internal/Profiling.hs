@@ -3,6 +3,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 module Distributed.Stateful.Internal.Profiling where
 
@@ -94,20 +95,32 @@ slaveProfilingToCsv sp =
     total = sum [view l sp | l <- [spReceive, spWork, spSend]]
     fraction l = view l sp / total
 
+data MasterProfiling = MasterProfiling
+                       deriving (Generic, Show)
+instance Store MasterProfiling
+makeLenses ''MasterProfiling
 
-withSlaveProfiling :: MonadIO m
-    => IORef SlaveProfiling
-    -> Lens' SlaveProfiling Double
+emptyMasterProfiling :: MasterProfiling
+emptyMasterProfiling = MasterProfiling
+
+masterProfilingToCsv :: MasterProfiling -> [(Text, Text)]
+masterProfilingToCsv mp =
+    [
+    ]
+
+withProfiling :: forall a b m. MonadIO m
+    => IORef b
+    -> Lens' b Double
     -> m a
     -> m a
-withSlaveProfiling ref l action = do
+withProfiling ref l action = do
     t0 <- liftIO getTime
     res <- action
     t1 <- liftIO getTime
     liftIO . modifyIORef' ref $ update (t1 - t0)
     return res
   where
-      update :: Double -> SlaveProfiling -> SlaveProfiling
+      update :: Double -> b -> b
       update t sp = sp & l +~ t
 
 withSlaveProfileCounter :: MonadIO m

@@ -36,7 +36,7 @@ import           Distributed.JobQueue.Status
 import           Distributed.JobQueue.Worker
 import           Distributed.Redis (Redis)
 import           Distributed.Stateful
-import           Distributed.Stateful.Internal (slaveProfilingToCsv)
+import           Distributed.Stateful.Internal (slaveProfilingToCsv, masterProfilingToCsv)
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
 import           GHC.Environment (getFullArgs)
@@ -135,20 +135,20 @@ measureRequestTime :: forall m response request.
     , HasTypeHash request, HasTypeHash response
     , Show response)
     => m request
-    -> JobClient (response, SlaveProfiling)
-    -> m (Double, SlaveProfiling) -- ^ Wall time between submitting the request and
+    -> JobClient (response, SlaveProfiling, MasterProfiling)
+    -> m (Double, SlaveProfiling, MasterProfiling) -- ^ Wall time between submitting the request and
                -- receiving the response.
 measureRequestTime generateRequest jc = do
     rid <- uniqueRequestId
     req <- generateRequest
     t0 <- liftIO getTime
-    submitRequest (jc :: JobClient (response, SlaveProfiling)) rid req
+    submitRequest (jc :: JobClient (response, SlaveProfiling, MasterProfiling)) rid req
     waitForResponse_ jc rid >>= \case
-        Just (resp :: response, sp) -> do
+        Just (resp :: response, sp, mp) -> do
             $logInfoS logSourceBench $ unwords [ "result:", tshow resp]
             t1 <- liftIO getTime
             $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
-            return (t1 - t0, sp)
+            return (t1 - t0, sp, mp)
         Nothing -> error "no response"
 
 runWithNM :: forall m a context input output state request response.
@@ -169,7 +169,7 @@ runWithNM :: forall m a context input output state request response.
     -- ^ @nSlaves@
     -> (request
       -> MasterHandle m state context input output
-      -> m (response, SlaveProfiling))
+      -> m (response, SlaveProfiling, MasterProfiling))
     -> m request
     -> m (Int, Double)
     -- ^ (@nSlaves@, walltime needed to perform the request)
@@ -187,13 +187,16 @@ runWithNM fp csvInfo jqc spawnWorker pinWorkers masterArgs nSlaves workerFunc ge
                (NMStatefulMasterArgs (Just nSlaves) (Just nSlaves) (1000 * 1000))
                (\mh _rid req -> DontReenqueue <$> workerFunc req mh)
        else do
-           (time, sp) <- withNSlaves
+           (time, sp, mp) <- withNSlaves
                nSlaves
                pinWorkers
-               (withJobClient jqc $ \(jc :: JobClient (response, SlaveProfiling)) -> do
+               (withJobClient jqc $ \(jc :: JobClient (response, SlaveProfiling, MasterProfiling)) -> do
                        waitForNWorkers (jcRedis jc) (nSlaves + 1) -- +1 for the worker
                        measureRequestTime generateRequest jc)
-           liftIO $ writeToCsv fp (CSVInfo [("time", pack $ show time)] <> csvInfo <> slaveProfilingCsv sp)
+           liftIO $ writeToCsv fp (CSVInfo [("time", pack $ show time)]
+                                   <> csvInfo
+                                   <> slaveProfilingCsv sp
+                                   <> masterProfilingCsv mp)
            return (nSlaves, time)
 
 runWithoutNM ::
@@ -206,22 +209,30 @@ runWithoutNM ::
     -> Int
     -> (request
        -> MasterHandle m state context input output
-       -> m (response, SlaveProfiling))
+       -> m (response, SlaveProfiling, MasterProfiling))
     -> m request
     -> m (Int, Double)
 runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
     req <- generateRequest
     liftIO initializeTime
     t0 <- liftIO getTime
-    (res, sp) <- runSimplePureStateful masterArgs nSlaves (masterFunc req)
+    (res, sp, mp) <- runSimplePureStateful masterArgs nSlaves (masterFunc req)
     $logInfoS logSourceBench $ unwords [ "result:", tshow res]
     t1 <- liftIO getTime
     $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
-    liftIO . writeToCsv fp $ CSVInfo [("time", pack $ show (t1 - t0))] <> csvInfo <> slaveProfilingCsv sp
+    liftIO . writeToCsv fp $
+        CSVInfo [("time", pack $ show (t1 - t0))]
+        <> csvInfo
+        <> slaveProfilingCsv sp
+        <> masterProfilingCsv mp
     return (nSlaves, t1 - t0)
 
 slaveProfilingCsv :: SlaveProfiling -> CSVInfo
 slaveProfilingCsv = CSVInfo . slaveProfilingToCsv
+
+masterProfilingCsv :: MasterProfiling -> CSVInfo
+masterProfilingCsv = CSVInfo . masterProfilingToCsv
+
 
 -- | Write key value pairs to a csv file.
 --

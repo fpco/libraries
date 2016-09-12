@@ -82,7 +82,7 @@ myStates Options{..} =
 myInputs :: [Input]
 myInputs = [V.enumFromN 1 20]
 
-myAction :: MonadConnect m => Request -> MasterHandle m State Context Input Output -> m (Response, SlaveProfiling)
+myAction :: MonadConnect m => Request -> MasterHandle m State Context Input Output -> m (Response, SlaveProfiling, MasterProfiling)
 myAction req mh = do
     _ <- resetStates mh req
     finalStates <- mapM (\_ -> do
@@ -94,7 +94,9 @@ myAction req mh = do
         [] -> $logErrorS logSourceBench "No slave profiling data!" >> return emptySlaveProfiling
         sp:sps -> return $ foldl' (<>) sp sps
     $logInfoS logSourceBench ("slave profiling raw data: " ++ tshow sp)
-    return (sum $ sum <$> (unsafeHead finalStates :: HashMap StateId (HashMap StateId Output)), sp)
+    mp <- getMasterProfiling mh
+    $logInfoS logSourceBench ("master profiling raw data: " ++ tshow mp)
+    return (sum $ sum <$> (unsafeHead finalStates :: HashMap StateId (HashMap StateId Output)), sp, mp)
 
 jqc :: JobQueueConfig
 jqc = defaultJobQueueConfig "perf:unmotivated:"

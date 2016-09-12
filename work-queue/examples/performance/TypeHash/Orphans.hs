@@ -8,10 +8,11 @@ module TypeHash.Orphans where
 import           ClassyPrelude
 import           Data.Store.TypeHash (mkManyHasTypeHash)
 import qualified Data.Vector as V
-import           Distributed.Stateful.Master (SlaveProfiling (..))
+import           Distributed.Stateful.Master (SlaveProfiling (..), MasterProfiling (..))
 
 $(mkManyHasTypeHash [ [t| ByteString |]
                     , [t| Double |]
                     , [t| V.Vector Double |]
                     , [t| SlaveProfiling |]
+                    , [t| MasterProfiling |]
                     ])

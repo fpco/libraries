@@ -149,20 +149,20 @@ statefulUpdate ::
   -> context
   -> [(StateId, [(StateId, input)])]
   -> m [(StateId, [(StateId, output)])]
-statefulUpdate sp update states context inputs = withSlaveProfiling sp spStatefulUpdate $ do
-  withSlaveProfiling sp spEvalInputs . liftIO $ evaluate $ force inputs
+statefulUpdate sp update states context inputs = withProfiling sp spStatefulUpdate $ do
+  withProfiling sp spEvalInputs . liftIO $ evaluate $ force inputs
   forM inputs $ \(!oldStateId, !innerInputs) -> do
-    state <- (liftIO . withSlaveProfiling sp spHTLookups $ HT.lookup states oldStateId) >>= \case
+    state <- (liftIO . withProfiling sp spHTLookups $ HT.lookup states oldStateId) >>= \case
       Nothing -> throwM (InputStateNotFound oldStateId)
-      Just state0 -> (liftIO . withSlaveProfiling sp spHTDeletes $ states `HT.delete` oldStateId) >> return state0
-    updatedInnerStateAndOutput <- withSlaveProfiling sp spUpdateInner $ forM innerInputs $ \(!newStateId, !input) ->
-      withSlaveProfiling sp spUpdateInnerBody $ do
-        withSlaveProfiling sp spEvalContext . evaluate . force $ context
-        withSlaveProfiling sp spEvalInput . evaluate . force $ input
-        withSlaveProfiling sp spEvalState . evaluate . force $ state
+      Just state0 -> (liftIO . withProfiling sp spHTDeletes $ states `HT.delete` oldStateId) >> return state0
+    updatedInnerStateAndOutput <- withProfiling sp spUpdateInner $ forM innerInputs $ \(!newStateId, !input) ->
+      withProfiling sp spUpdateInnerBody $ do
+        withProfiling sp spEvalContext . evaluate . force $ context
+        withProfiling sp spEvalInput . evaluate . force $ input
+        withProfiling sp spEvalState . evaluate . force $ state
         (!newState, !output) <-
-            withSlaveProfileCounter sp spNUpdates . withSlaveProfiling sp spUpdate $
+            withSlaveProfileCounter sp spNUpdates . withProfiling sp spUpdate $
             evaluate . force =<< update context input state
-        liftIO . withSlaveProfiling sp spHTInserts $ HT.insert states newStateId newState
+        liftIO . withProfiling sp spHTInserts $ HT.insert states newStateId newState
         return (newStateId, output)
     return (oldStateId, updatedInnerStateAndOutput)
