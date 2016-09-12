@@ -247,7 +247,7 @@ updateSlavesStep :: forall m input output.
   -> UpdateSlaveResp output
   -> SlavesStatus
   -> m (UpdateSlaveStep input output)
-updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId resp statuses0 = do
+updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId resp statuses0 = withProfiling mp mpUpdateSlavesStep $ do
   let statuses1 = over (at respSlaveId . _Just . ssWaitingResps) (\c -> c - 1) statuses0
   (statuses2, requests, outputs) <- case resp of
     USRespInit -> do
@@ -345,7 +345,7 @@ updateSlaves :: forall state context input output m.
   -> HMS.HashMap StateId [(StateId, input)]
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
-updateSlaves mp nSlaves maxBatchSize slaves context inputMap = do
+updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp mpUpdateSlaves $ do
   outgoingChans :: HMS.HashMap SlaveId (SlaveConn m state context input output, TChan (Maybe (UpdateSlaveReq input))) <-
     forM slaves $ \slave -> do
       chan <- liftIO newTChanIO
@@ -366,7 +366,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = do
          SlaveId
       -> (SlaveConn m state context input output, TChan (Maybe (UpdateSlaveReq input)))
       -> m ()
-    sendLoop slaveId (conn, chan) = go
+    sendLoop slaveId (conn, chan) = withProfiling mp mpSendLoop $ go
       where
         go = do
           mbReq <- atomically (readTChan chan)
@@ -386,7 +386,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = do
       -> MVar SlavesStatus
       -> (SlaveId, Slave m state context input output)
       -> m (SlaveId, [(StateId, [(StateId, output)])])
-    slaveLoop outgoingChans statusVar (slaveId, slave) = do
+    slaveLoop outgoingChans statusVar (slaveId, slave) = withProfiling mp mpSlaveLoop $ do
       outs <- go mempty USRespInit
       return (slaveId, outs)
       where
@@ -434,7 +434,7 @@ update :: forall state context input output m.
   -> context
   -> HMS.HashMap StateId [input]
   -> m (HMS.HashMap StateId (HMS.HashMap StateId output))
-update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
+update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> withProfiling (mhProfiling mh) mpTotalUpdate $ do
   -- TODO add checks for well-formedness of inputs'
   -- Give state ids to each of the inputs, which will be used to label the
   -- state resulting from invoking saUpdate with that input.

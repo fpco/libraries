@@ -96,16 +96,25 @@ slaveProfilingToCsv sp =
     fraction l = view l sp / total
 
 data MasterProfiling = MasterProfiling
-                       deriving (Generic, Show)
+    { _mpTotalUpdate :: !Double
+    , _mpUpdateSlaves :: !Double
+    , _mpUpdateSlavesStep :: !Double
+    , _mpSendLoop :: !Double
+    , _mpSlaveLoop :: !Double
+    } deriving (Generic, Show)
 instance Store MasterProfiling
 makeLenses ''MasterProfiling
 
 emptyMasterProfiling :: MasterProfiling
-emptyMasterProfiling = MasterProfiling
+emptyMasterProfiling = MasterProfiling 0 0 0 0 0
 
 masterProfilingToCsv :: MasterProfiling -> [(Text, Text)]
 masterProfilingToCsv mp =
-    [
+    [ ("mpTotalUpdate", tshow $ view mpTotalUpdate mp)
+    , ("mpUpdateSlaves", tshow $ view mpUpdateSlaves mp)
+    , ("mpUpdateSlavesStep", tshow $ view mpUpdateSlavesStep mp)
+    , ("mpSendLoop", tshow $ view mpSendLoop mp)
+    , ("mpSlaveLoop", tshow $ view mpSlaveLoop mp)
     ]
 
 withProfiling :: forall a b m. MonadIO m
