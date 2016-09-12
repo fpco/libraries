@@ -234,13 +234,14 @@ makeLenses ''SlaveStatus
 {-# INLINE updateSlavesStep #-}
 updateSlavesStep :: forall m input output.
      (MonadThrow m, MonadLogger m, MonadIO m)
-  => Int -- ^ Max batch size
+  => Int -- ^ Number of slaves
+  -> Int -- ^ Min batch size
   -> HMS.HashMap StateId [(StateId, input)]  -- we need lookup here, so this should be a 'HashMap'
   -> SlaveId
   -> UpdateSlaveResp output
   -> SlavesStatus
   -> m (UpdateSlaveStep input output)
-updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
+updateSlavesStep nSlaves maxBatchSize inputs respSlaveId resp statuses0 = do
   let statuses1 = over (at respSlaveId . _Just . ssWaitingResps) (\c -> c - 1) statuses0
   (statuses2, requests, outputs) <- case resp of
     USRespInit -> do
@@ -294,13 +295,14 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
       -> ([(StateId, [(StateId, input)])], [StateId])
     takeEnoughStatesToUpdate remaining00 = go remaining00 0
       where
-        go remaining0 grabbed = if grabbed >= maxBatchSize
+        go remaining0 grabbed = if grabbed >= batchSize
           then ([], remaining0)
           else case remaining0 of
             [] -> ([], remaining0)
             stateId : remaining -> let
               inps = inputs HMS.! stateId
               in first ((stateId, inps) :) (go remaining (grabbed + length inps))
+        batchSize = max maxBatchSize (length remaining00 `div` (2*nSlaves))
 
     {-# INLINE stealSlavesFromSomebody #-}
     stealSlavesFromSomebody ::
@@ -327,7 +329,8 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
      (MonadConnect m, NFData input, NFData output)
-  => Int -- ^ Max batch size
+  => Int -- ^ Number of slaves
+  -> Int -- ^ Max batch size
   -> HMS.HashMap SlaveId (Slave m state context input output)
   -- ^ Slaves connections
   -> context
@@ -335,7 +338,7 @@ updateSlaves :: forall state context input output m.
   -> HMS.HashMap StateId [(StateId, input)]
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
-updateSlaves maxBatchSize slaves context inputMap = do
+updateSlaves nSlaves maxBatchSize slaves context inputMap = do
   outgoingChans :: HMS.HashMap SlaveId (SlaveConn m state context input output, TChan (Maybe (UpdateSlaveReq input))) <-
     forM slaves $ \slave -> do
       chan <- liftIO newTChanIO
@@ -382,7 +385,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
       where
         go !outputs0 resp = do
           (statuses, requests, outputs1) <- modifyMVar statusVar $ \status -> do
-            UpdateSlaveStep{..} <- updateSlavesStep maxBatchSize inputMap slaveId resp status
+            UpdateSlaveStep{..} <- updateSlavesStep nSlaves maxBatchSize inputMap slaveId resp status
             return (ussSlavesStatus, (ussSlavesStatus, ussReqs, ussOutputs))
           forM_ requests $ \(slaveId_, req0) ->
             atomically (writeTChan (outgoingChans HMS.! slaveId_) (Just req0))
@@ -459,7 +462,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
               liftM (slaveId,) $ readExpect "update (1)" (slaveConnection (slaves HMS.! slaveId)) $ \case
                 SRespUpdate outputs -> Just outputs
                 _ -> Nothing
-          Just maxBatchSize -> updateSlaves maxBatchSize slaves context inputMap
+          Just maxBatchSize -> updateSlaves (HMS.size slaves) maxBatchSize slaves context inputMap
       let mh' = mh
             { mhSlaves = Slaves $
                 integrateNewStates slaves (second (fmap (const ()) . HMS.fromList . mconcat . map snd) <$> outputs)
