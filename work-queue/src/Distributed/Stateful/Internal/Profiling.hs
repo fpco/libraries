@@ -101,12 +101,17 @@ data MasterProfiling = MasterProfiling
     , _mpUpdateSlavesStep :: !Double
     , _mpSendLoop :: !Double
     , _mpSlaveLoop :: !Double
+    , _mpSendLoopReadTChan :: !Double
+    , _mpSendLoopSend :: !Double
+    , _mpSlaveLoopUpdate :: !Double
+    , _mpSlaveLoopWriteTCHan :: !Double
+    , _mpSlaveLoopScRead :: !Double
     } deriving (Generic, Show)
 instance Store MasterProfiling
 makeLenses ''MasterProfiling
 
 emptyMasterProfiling :: MasterProfiling
-emptyMasterProfiling = MasterProfiling 0 0 0 0 0
+emptyMasterProfiling = MasterProfiling 0 0 0 0 0 0 0 0 0 0
 
 masterProfilingToCsv :: MasterProfiling -> [(Text, Text)]
 masterProfilingToCsv mp =
@@ -115,6 +120,11 @@ masterProfilingToCsv mp =
     , ("mpUpdateSlavesStep", tshow $ view mpUpdateSlavesStep mp)
     , ("mpSendLoop", tshow $ view mpSendLoop mp)
     , ("mpSlaveLoop", tshow $ view mpSlaveLoop mp)
+    , ("mpSendLoopReadTChan", tshow $ view mpSendLoopReadTChan mp)
+    , ("mpSendLoopSend", tshow $ view mpSendLoopSend mp)
+    , ("mpSlaveLoopUpdate", tshow $ view mpSlaveLoopUpdate mp)
+    , ("mpSlaveLoopWriteTCHan", tshow $ view mpSlaveLoopWriteTCHan mp)
+    , ("mpSlaveLoopScRead", tshow $ view mpSlaveLoopScRead mp)
     ]
 
 withProfiling :: forall a b m. MonadIO m
@@ -131,6 +141,7 @@ withProfiling ref l action = do
   where
       update :: Double -> b -> b
       update t sp = sp & l +~ t
+
 withProfilingMVar :: forall a b m. MonadIO m
     => MVar b
     -> Lens' b Double

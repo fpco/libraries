@@ -366,10 +366,10 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfilingMVar
          SlaveId
       -> (SlaveConn m state context input output, TChan (Maybe (UpdateSlaveReq input)))
       -> m ()
-    sendLoop slaveId (conn, chan) = withProfilingMVar mp mpSendLoop $ go
+    sendLoop slaveId (conn, chan) = withProfilingMVar mp mpSendLoop go
       where
         go = do
-          mbReq <- atomically (readTChan chan)
+          mbReq <- withProfilingMVar mp mpSendLoopReadTChan $ atomically (readTChan chan)
           case mbReq of
             Nothing -> return ()
             Just req0 -> do
@@ -378,7 +378,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfilingMVar
                       USReqRemoveStates x y -> SReqRemoveStates x y
                       USReqAddStates y -> SReqAddStates y
                 $logDebugJ ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req)
-                scWrite conn req
+                withProfilingMVar mp mpSendLoopSend $ scWrite conn req
                 go
 
     slaveLoop ::
@@ -391,10 +391,10 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfilingMVar
       return (slaveId, outs)
       where
         go !outputs0 resp = do
-          (statuses, requests, outputs1) <- modifyMVar statusVar $ \status -> do
+          (statuses, requests, outputs1) <- modifyMVar statusVar $ \status -> withProfilingMVar mp mpSlaveLoopUpdate $ do
             UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves maxBatchSize inputMap slaveId resp status
             return (ussSlavesStatus, (ussSlavesStatus, ussReqs, ussOutputs))
-          forM_ requests $ \(slaveId_, req0) ->
+          withProfilingMVar mp mpSlaveLoopWriteTCHan $ forM_ requests $ \(slaveId_, req0) ->
             atomically (writeTChan (outgoingChans HMS.! slaveId_) (Just req0))
           let outputs = outputs1 <> outputs0
           let status = statuses HMS.! slaveId
@@ -403,7 +403,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfilingMVar
               $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
               return outputs
             else do
-              resp0 <- scRead (slaveConnection slave)
+              resp0 <- withProfilingMVar mp mpSlaveLoopScRead $ scRead (slaveConnection slave)
               $logDebugJ ("Received slave response from slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayResp resp0)
               resp' <- case resp0 of
                 SRespResetState -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
