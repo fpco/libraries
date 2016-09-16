@@ -106,12 +106,13 @@ data MasterProfiling = MasterProfiling
     , _mpSlaveLoopUpdate :: !Double
     , _mpSlaveLoopWriteTCHan :: !Double
     , _mpSlaveLoopScRead :: !Double
+    , _mpNonUpdate :: !Double
     } deriving (Generic, Show)
 instance Store MasterProfiling
 makeLenses ''MasterProfiling
 
 emptyMasterProfiling :: MasterProfiling
-emptyMasterProfiling = MasterProfiling 0 0 0 0 0 0 0 0 0 0
+emptyMasterProfiling = MasterProfiling 0 0 0 0 0 0 0 0 0 0 0
 
 masterProfilingToCsv :: MasterProfiling -> [(Text, Text)]
 masterProfilingToCsv mp =
@@ -125,6 +126,7 @@ masterProfilingToCsv mp =
     , ("mpSlaveLoopUpdate", tshow $ view mpSlaveLoopUpdate mp)
     , ("mpSlaveLoopWriteTCHan", tshow $ view mpSlaveLoopWriteTCHan mp)
     , ("mpSlaveLoopScRead", tshow $ view mpSlaveLoopScRead mp)
+    , ("mpNonUpdate", tshow $ view mpNonUpdate mp)
     ]
 
 withProfiling :: forall a b m. MonadIO m

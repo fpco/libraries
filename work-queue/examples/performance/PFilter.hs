@@ -36,6 +36,7 @@ import           Data.Store.TypeHash (mkManyHasTypeHash)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as UV
 import           Distributed.JobQueue.Client
+import           Distributed.Stateful.Internal.Profiling
 import           Distributed.Stateful.Master
 import qualified Distributed.Stateful.Master as WQ
 import           FP.Redis (MonadConnect)
@@ -143,7 +144,7 @@ dpfMaster PFConfig{..} s PFRequest{..} mh = do
           Just (system', (minput, msummary)) -> do
               weights' <- fold <$> WQ.update mh (PFContext minput msummary) (const [PFInput] <$> weights)
               resample weights' system'
-      resample weights system = do
+      resample weights system = getMasterProfilingMVar mh >>= \mp -> withProfilingMVar mp mpNonUpdate $ do
           let nEffParticles = sum (pfoWeight <$> weights) / fromIntegral nParticles
           if nEffParticles > pfcEffectiveParticleThreshold
               then $logInfoS logSourceBench (unwords ["not resampling,", tshow nEffParticles, ">", tshow pfcEffectiveParticleThreshold])

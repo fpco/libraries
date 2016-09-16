@@ -34,6 +34,7 @@ module Distributed.Stateful.Master
     , getStates
     , getSlavesProfiling
     , getMasterProfiling
+    , getMasterProfilingMVar
     , addSlaveConnection
     , getNumSlaves
       -- * Types
@@ -588,13 +589,17 @@ getSlavesProfiling (MasterHandle mhv) = withMVar mhv $ \mh ->
 
 getMasterProfiling ::
        MonadConnect m
-    => MasterHandle m state contect input output
+    => MasterHandle m state context input output
     -> m MasterProfiling
 getMasterProfiling (MasterHandle mhv) =
     readMVar mhv >>= \mh ->
     readMVar (mhProfiling mh)
 
-
+getMasterProfilingMVar ::
+    MonadConnect m
+    => MasterHandle m state context input output
+    -> m (MVar MasterProfiling)
+getMasterProfilingMVar (MasterHandle mhv) = readMVar mhv >>= return . mhProfiling
 
 -- | Get the number of slaves connected to a master.
 getNumSlaves ::
