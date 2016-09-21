@@ -48,7 +48,7 @@ module Distributed.Stateful.Master
     , MasterProfiling(..)
     ) where
 
-import           ClassyPrelude
+import           ClassyPrelude hiding (Chan, readChan, writeChan)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Control.DeepSeq (NFData)
 import           Control.Lens (makeLenses, set, at, _Just, over)
@@ -62,6 +62,7 @@ import           Data.SimpleSupply
 import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
 import           Text.Printf (printf)
+import qualified Control.Concurrent.Chan.Unagi as Unagi
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -333,6 +334,14 @@ updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId resp statuses0 = wit
             set (at requestingSlaveId . _Just . ssWaitingForStates) True uss
       return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
 
+type Chan a = (Unagi.InChan a, Unagi.OutChan a)
+
+writeChan :: MonadIO m => Chan a -> a -> m ()
+writeChan (ch, _) x = liftIO (Unagi.writeChan ch x)
+
+readChan :: MonadIO m => Chan a -> m a
+readChan (_, ch) = liftIO (Unagi.readChan ch)
+
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
      (MonadConnect m, NFData input, NFData output)
@@ -347,9 +356,9 @@ updateSlaves :: forall state context input output m.
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
 updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfilingMVar mp mpUpdateSlaves $ do
-  outgoingChans :: HMS.HashMap SlaveId (SlaveConn m state context input output, TChan (Maybe (UpdateSlaveReq input))) <-
+  outgoingChans :: HMS.HashMap SlaveId (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input))) <-
     forM slaves $ \slave -> do
-      chan <- liftIO newTChanIO
+      chan <- liftIO Unagi.newChan
       return (slaveConnection slave, chan)
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
@@ -361,16 +370,16 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfilingMVar
     (Async.mapConcurrently (uncurry sendLoop) (HMS.toList outgoingChans))
     (finally
       (Async.mapConcurrently (slaveLoop (snd <$> outgoingChans) statusVar) (HMS.toList slaves))
-      (forM_ (snd <$> outgoingChans) (\chan -> atomically (writeTChan chan Nothing))))
+      (forM_ (snd <$> outgoingChans) (\chan -> writeChan chan Nothing)))
   where
     sendLoop ::
          SlaveId
-      -> (SlaveConn m state context input output, TChan (Maybe (UpdateSlaveReq input)))
+      -> (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input)))
       -> m ()
     sendLoop slaveId (conn, chan) = withProfilingMVar mp mpSendLoop go
       where
         go = do
-          mbReq <- withProfilingMVar mp mpSendLoopReadTChan $ atomically (readTChan chan)
+          mbReq <- withProfilingMVar mp mpSendLoopReadTChan (readChan chan)
           case mbReq of
             Nothing -> return ()
             Just req0 -> do
@@ -383,7 +392,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfilingMVar
                 go
 
     slaveLoop ::
-         HMS.HashMap SlaveId (TChan (Maybe (UpdateSlaveReq input)))
+         HMS.HashMap SlaveId (Chan (Maybe (UpdateSlaveReq input)))
       -> MVar SlavesStatus
       -> (SlaveId, Slave m state context input output)
       -> m (SlaveId, [(StateId, [(StateId, output)])])
@@ -396,7 +405,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfilingMVar
             UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves maxBatchSize inputMap slaveId resp status
             return (ussSlavesStatus, (ussSlavesStatus, ussReqs, ussOutputs))
           withProfilingMVar mp mpSlaveLoopWriteTCHan $ forM_ requests $ \(slaveId_, req0) ->
-            atomically (writeTChan (outgoingChans HMS.! slaveId_) (Just req0))
+            writeChan (outgoingChans HMS.! slaveId_) (Just req0)
           let outputs = outputs1 <> outputs0
           let status = statuses HMS.! slaveId
           if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
