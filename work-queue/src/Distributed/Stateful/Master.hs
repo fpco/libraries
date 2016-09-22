@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoImplicitPrelude #-}
@@ -61,7 +60,6 @@ import qualified Data.HashSet as HS
 import qualified Data.HashTable.IO as HT
 import           Data.List.Split (chunksOf)
 import           Data.SimpleSupply
-import qualified Data.Vector as V
 import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
 import qualified System.Random as R
@@ -83,7 +81,7 @@ newtype MasterHandle m state context input output =
 
 data Slaves m state context input output
   = NoSlavesYet ![(StateId, state)]
-  | Slaves !(SlaveMap (Slave m state context input output)) !SlaveMapReverseIdx
+  | Slaves !(HMS.HashMap SlaveId (Slave m state context input output))
 
 data MasterHandle_ m state context input output = MasterHandle_
   { mhSlaves :: !(Slaves m state context input output)
@@ -114,38 +112,6 @@ data MasterException
   deriving (Eq, Show, Typeable)
 
 instance Exception MasterException
-
-data SlaveIdWithIndex = SlaveIdWithIndex
-    { siwiSlaveId :: !SlaveId
-    , siwiIndex :: !Int
-    } deriving (Eq, Show, Generic, NFData)
-
-data SlaveMap a = SlaveMap
-    { smVals :: !(V.Vector a)
-    , smIds :: !(V.Vector SlaveId)
-    }
-instance Functor SlaveMap where
-    fmap f sm = sm { smVals = f <$> smVals sm }
-
-slaveMapToTuple :: SlaveMap a -> V.Vector (SlaveIdWithIndex, a)
-slaveMapToTuple SlaveMap{..} = V.zipWith (\(i, sid) x -> (SlaveIdWithIndex sid i, x)) (V.indexed smIds) smVals
-
-type SlaveMapReverseIdx = HMS.HashMap SlaveId Int
-
-slaveMapGet :: SlaveMap a -> SlaveIdWithIndex -> a
-slaveMapGet SlaveMap{..} SlaveIdWithIndex{..} = smVals `V.unsafeIndex` siwiIndex
-
-slaveMapModifyAt :: SlaveMap a -> SlaveIdWithIndex -> (a -> a) -> SlaveMap a
-slaveMapModifyAt SlaveMap{..} SlaveIdWithIndex{..} f =
-    let smVals' = V.unsafeUpd smVals [(siwiIndex, f (smVals `V.unsafeIndex` siwiIndex))]
-    in SlaveMap { smVals = smVals'
-                , smIds = smIds
-                }
-
-slaveIdAddIndex :: SlaveMapReverseIdx -> SlaveId -> SlaveIdWithIndex
-slaveIdAddIndex smReverseIdx sid =
-    let idx = HMS.lookup sid smReverseIdx
-    in SlaveIdWithIndex sid (fromMaybe (error "Could not find index for SlaveId") idx)
 
 -- | Create a new 'MasterHandle'.
 initMaster ::
@@ -179,9 +145,9 @@ closeMaster (MasterHandle mhv) =
   withMVar mhv $ \MasterHandle_{..} -> do
     case mhSlaves of
       NoSlavesYet _ -> return ()
-      Slaves slaves slaveReverseIds ->
+      Slaves slaves ->
         -- Ignore all exceptions we might have when quitting the slaves
-        forM_ (V.zip (smIds slaves) (smVals slaves)) $ \(slaveId, slave) -> do
+        forM_ (HMS.toList slaves) $ \(slaveId, slave) -> do
           mbErr <- tryAny $ do
             scWrite (slaveConnection slave) SReqQuit
             readExpect "closeMaster" (slaveConnection slave) $ \case
@@ -210,24 +176,24 @@ readExpect loc slave f = do
 
 {-# INLINE integrateNewStates #-}
 integrateNewStates ::
-     SlaveMap (Slave m state context input output)
-  -> [(SlaveIdWithIndex, HMS.HashMap StateId ())]
-  -> SlaveMap (Slave m state context input output)
+     HMS.HashMap SlaveId (Slave m state context input output)
+  -> [(SlaveId, HMS.HashMap StateId ())]
+  -> HMS.HashMap SlaveId (Slave m state context input output)
 integrateNewStates oldSlaves =
-  go  ((\sl -> sl{slaveStates = mempty}) <$> oldSlaves)
+  go ((\sl -> sl{slaveStates = mempty}) <$> oldSlaves)
   where
     go slaves = \case
       [] -> slaves
       (slaveId, states) : newStates -> let
-        sl = oldSlaves `slaveMapGet` slaveId
-        in go (slaveMapModifyAt slaves slaveId $ \ss -> ss { slaveStates = states}) newStates
+        sl = oldSlaves HMS.! slaveId
+        in go (HMS.insert slaveId sl{slaveStates = states} slaves) newStates
 
 {-# INLINE assignInputsToSlaves #-}
 assignInputsToSlaves ::
      (MonadThrow m)
-  => SlaveMap (HMS.HashMap StateId ())
+  => HMS.HashMap SlaveId (HMS.HashMap StateId ())
   -> HMS.HashMap StateId [(StateId, input)]
-  -> m [(SlaveIdWithIndex, [(StateId, [(StateId, input)])])]
+  -> m [(SlaveId, [(StateId, [(StateId, input)])])]
 assignInputsToSlaves slaveStates inputMap = do
   let go (rs, inputs) (slaveId, states) = do
         -- TODO: Other Map + Set datatypes have functions for doing this
@@ -238,7 +204,7 @@ assignInputsToSlaves slaveStates inputMap = do
             Just input -> return (k, input)
         let inputs' = inputs `HMS.difference` states
         return ((slaveId, r) : rs, inputs')
-  (slavesIdsAndInputs, unusedInputs) <- foldM go ([], inputMap) (V.zip (uncurry (flip SlaveIdWithIndex) <$> V.indexed (smIds slaveStates)) (smVals slaveStates))
+  (slavesIdsAndInputs, unusedInputs) <- foldM go ([], inputMap) (HMS.toList slaveStates)
   when (not (HMS.null unusedInputs)) $
     throwM (UnusedInputsException (HMS.keys unusedInputs))
   return slavesIdsAndInputs
@@ -259,20 +225,17 @@ data UpdateSlaveReq input
 instance (NFData input) => NFData (UpdateSlaveReq input)
 
 data UpdateSlaveStep input output = UpdateSlaveStep
-  { ussReqs :: ![(SlaveIdWithIndex, UpdateSlaveReq input)]
-  , ussSlavesStatus :: !(SlaveMap SlaveStatus)
-  -- , ussSlavesStatus :: !(HMS.HashMap SlaveIdWithIndex SlaveStatus)
+  { ussReqs :: ![(SlaveId, UpdateSlaveReq input)]
+  , ussSlavesStatus :: !(HMS.HashMap SlaveId SlaveStatus)
   , ussOutputs :: ![(StateId, [(StateId, output)])]
   }
 
-type SlavesStatus = SlaveMap SlaveStatus
--- type SlavesStatus = HMS.HashMap SlaveIdWithIndex SlaveStatus
+type SlavesStatus = HMS.HashMap SlaveId SlaveStatus
 
 data SlaveStatus = SlaveStatus
   { _ssWaitingResps :: !Int
   , _ssRemainingStates :: ![StateId]
   , _ssWaitingForStates :: !Bool
-  -- , _ssSlaveId :: !SlaveId
   }
 makeLenses ''SlaveStatus
 
@@ -283,13 +246,12 @@ updateSlavesStep :: forall m input output.
   -> Int -- ^ Number of slaves
   -> Int -- ^ Min batch size
   -> HMS.HashMap StateId [(StateId, input)]  -- we need lookup here, so this should be a 'HashMap'
-  -> SlaveIdWithIndex
-  -> SlaveMapReverseIdx
+  -> SlaveId
   -> UpdateSlaveResp output
   -> SlavesStatus
   -> m (UpdateSlaveStep input output)
-updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId smReverseIdx resp statuses0 = withProfilingMVar mp mpUpdateSlavesStep $ do
-  let statuses1 = slaveMapModifyAt statuses0 respSlaveId (\ss -> ss {_ssWaitingResps = _ssWaitingResps ss - 1})
+updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId resp statuses0 = withProfilingMVar mp mpUpdateSlavesStep $ do
+  let statuses1 = over (at respSlaveId . _Just . ssWaitingResps) (\c -> c - 1) statuses0
   (statuses2, requests, outputs) <- case resp of
     USRespInit -> do
       addOutputs_ <$> findSomethingToUpdate respSlaveId statuses1
@@ -297,14 +259,12 @@ updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId smReverseIdx resp st
       addOutputs outputs <$> findSomethingToUpdate respSlaveId statuses1
     USRespAddStates statesIds -> do
       let statuses' =
-              slaveMapModifyAt statuses1 respSlaveId $ \ss ->
-                  ss { _ssWaitingForStates = False
-                     , _ssRemainingStates = _ssRemainingStates ss ++ statesIds
-                     }
+            over (at respSlaveId . _Just) (over ssRemainingStates (++ statesIds) . set ssWaitingForStates False) $
+            statuses1
       addOutputs_ <$> findSomethingToUpdate respSlaveId statuses'
     USRespRemoveStates requestingSlaveId states -> do
-      return (addOutputs_ (statuses1, [(slaveIdAddIndex smReverseIdx requestingSlaveId, USReqAddStates states)]))
-  let statuses3 = foldl' (\statuses (slaveId, _) -> slaveMapModifyAt statuses slaveId (\ss -> ss { _ssWaitingResps = _ssWaitingResps ss + 1 })) statuses2 requests
+      return (addOutputs_ (statuses1, [(requestingSlaveId, USReqAddStates states)]))
+  let statuses3 = foldl' (\statuses (slaveId, _) -> over (at slaveId . _Just . ssWaitingResps) (+ 1) statuses) statuses2 requests
   return UpdateSlaveStep
     { ussReqs = requests
     , ussSlavesStatus = statuses3
@@ -316,26 +276,26 @@ updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId smReverseIdx resp st
 
     {-# INLINE findSomethingToUpdate #-}
     findSomethingToUpdate ::
-         SlaveIdWithIndex
+         SlaveId
       -> SlavesStatus
-      -> m (SlavesStatus, [(SlaveIdWithIndex, UpdateSlaveReq input)])
+      -> m (SlavesStatus, [(SlaveId, UpdateSlaveReq input)])
     findSomethingToUpdate slaveId uss = do
       -- If we have some states in ssRemaining, just update those. Otherwise,
       -- try to steal from another slave.
-      let ss = uss `slaveMapGet` slaveId
+      let ss = uss HMS.! slaveId
       (toUpdateInputs, remaining) <- takeEnoughStatesToUpdate (_ssRemainingStates ss)
       if null toUpdateInputs
         then do -- Steal slaves
           mbStolen <- stealSlavesFromSomebody slaveId uss
           case mbStolen of
             Nothing -> do -- We're done for this slave.
-              $logInfoJ ("Tried to get something to do for slave " ++ tshow (unSlaveId $ siwiSlaveId slaveId) ++ ", but couldn't find anything")
+              $logInfoJ ("Tried to get something to do for slave " ++ tshow (unSlaveId slaveId) ++ ", but couldn't find anything")
               return (uss, [])
             Just (uss', stolenFrom, stolenStates) -> do -- Request stolen slaves
-              $logInfoJ ("Stealing " ++ tshow (HS.size stolenStates) ++ " states from slave " ++ tshow (unSlaveId $ siwiSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId $ siwiSlaveId slaveId))
-              return (uss', [(stolenFrom, USReqRemoveStates (siwiSlaveId slaveId) stolenStates)])
+              $logInfoJ ("Stealing " ++ tshow (HS.size stolenStates) ++ " states from slave " ++ tshow (unSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId slaveId))
+              return (uss', [(stolenFrom, USReqRemoveStates slaveId stolenStates)])
         else do -- Send update command
-          let uss' = slaveMapModifyAt uss slaveId $ \ss -> ss { _ssRemainingStates = remaining }
+          let uss' = set (at slaveId . _Just . ssRemainingStates) remaining uss
           return (uss', [(slaveId, USReqUpdate toUpdateInputs)])
 
     {-# INLINE takeEnoughStatesToUpdate #-}
@@ -362,9 +322,9 @@ updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId smReverseIdx resp st
 
     {-# INLINE stealSlavesFromSomebody #-}
     stealSlavesFromSomebody ::
-         SlaveIdWithIndex -- Requesting the slaves
+         SlaveId -- Requesting the slaves
       -> SlavesStatus
-      -> m (Maybe (SlavesStatus, SlaveIdWithIndex, HS.HashSet StateId))
+      -> m (Maybe (SlavesStatus, SlaveId, HS.HashSet StateId))
     stealSlavesFromSomebody requestingSlaveId uss = do
       let goodCandidate (slaveId, ss) =
             if (slaveId /= requestingSlaveId) && not (null (_ssRemainingStates ss))
@@ -372,17 +332,16 @@ updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId smReverseIdx resp st
                 (toTransfer, remaining) <- takeEnoughStatesToUpdate (_ssRemainingStates ss)
                 return $ Just (slaveId, map fst toTransfer, sum (map (length . snd) toTransfer), remaining)
             else return Nothing
-      candidates <- catMaybes <$> mapM goodCandidate (V.toList $ slaveMapToTuple uss) :: m [(SlaveIdWithIndex, [StateId], Int, [StateId])]
+      candidates <- catMaybes <$> mapM goodCandidate (HMS.toList uss) :: m [(SlaveId, [StateId], Int, [StateId])]
       if null candidates
           then return Nothing
           else do
       -- Pick candidate with highest number of states to steal states from
             let (candidateSlaveId, statesToBeTransferred, _, remainingStates) =
                     maximumByEx (comparing (\(_, _, x, _) -> x)) candidates
-            let uss' = slaveMapModifyAt
-                    (slaveMapModifyAt uss requestingSlaveId $ \ss -> ss {_ssWaitingForStates = True})
-                    candidateSlaveId
-                    (\ss -> ss {_ssRemainingStates = remainingStates})
+            let uss' =
+                 set (at candidateSlaveId . _Just . ssRemainingStates) remainingStates $
+                 set (at requestingSlaveId . _Just . ssWaitingForStates) True uss
             return $ return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
 
 type Chan a = (Unagi.InChan a, Unagi.OutChan a)
@@ -399,20 +358,18 @@ updateSlaves :: forall state context input output m.
   => MVar MasterProfiling
   -> Int -- ^ Number of slaves
   -> Int -- ^ Max batch size
-  -> SlaveMap (Slave m state context input output)
-  -> SlaveMapReverseIdx
+  -> HMS.HashMap SlaveId (Slave m state context input output)
   -- ^ Slaves connections
   -> context
   -- ^ Context to the computation
   -> HMS.HashMap StateId [(StateId, input)]
   -- ^ Inputs to the computation
-  -> m [(SlaveIdWithIndex, [(StateId, [(StateId, output)])])]
-updateSlaves mp nSlaves maxBatchSize slaves smReverseIdx context inputMap = withProfilingMVar mp mpUpdateSlaves $ do
-  outgoingChans :: SlaveMap (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input))) <- do
-    vals' <- forM (smVals slaves) $ \slave -> do
+  -> m [(SlaveId, [(StateId, [(StateId, output)])])]
+updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfilingMVar mp mpUpdateSlaves $ do
+  outgoingChans :: HMS.HashMap SlaveId (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input))) <-
+    forM slaves $ \slave -> do
       chan <- liftIO Unagi.newChan
       return (slaveConnection slave, chan)
-    return $ SlaveMap vals' (smIds slaves)
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
         , _ssRemainingStates = HMS.keys (slaveStates slave)
@@ -420,13 +377,13 @@ updateSlaves mp nSlaves maxBatchSize slaves smReverseIdx context inputMap = with
         }
   statusVar <- newMVar (slaveStatus0 <$> slaves)
   snd <$> Async.concurrently
-    (Async.mapConcurrently (uncurry sendLoop) (V.toList $ slaveMapToTuple outgoingChans))
+    (Async.mapConcurrently (uncurry sendLoop) (HMS.toList outgoingChans))
     (finally
-      (Async.mapConcurrently (slaveLoop (snd <$> outgoingChans) statusVar) (V.toList $ slaveMapToTuple slaves))
-      (forM_ (snd <$> (smVals outgoingChans)) (\chan -> writeChan chan Nothing)))
+      (Async.mapConcurrently (slaveLoop (snd <$> outgoingChans) statusVar) (HMS.toList slaves))
+      (forM_ (snd <$> outgoingChans) (\chan -> writeChan chan Nothing)))
   where
     sendLoop ::
-         SlaveIdWithIndex
+         SlaveId
       -> (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input)))
       -> m ()
     sendLoop slaveId (conn, chan) = withProfilingMVar mp mpSendLoop go
@@ -440,34 +397,34 @@ updateSlaves mp nSlaves maxBatchSize slaves smReverseIdx context inputMap = with
                       USReqUpdate inputs -> SReqUpdate context inputs
                       USReqRemoveStates x y -> SReqRemoveStates x y
                       USReqAddStates y -> SReqAddStates y
-                $logDebugJ ("Sending request to slave " ++ tshow (unSlaveId $ siwiSlaveId slaveId) ++ ": " ++ displayReq req)
+                $logDebugJ ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req)
                 withProfilingMVar mp mpSendLoopSend $ scWrite conn req
                 go
 
     slaveLoop ::
-         SlaveMap (Chan (Maybe (UpdateSlaveReq input)))
+         HMS.HashMap SlaveId (Chan (Maybe (UpdateSlaveReq input)))
       -> MVar SlavesStatus
-      -> (SlaveIdWithIndex, Slave m state context input output)
-      -> m (SlaveIdWithIndex, [(StateId, [(StateId, output)])])
+      -> (SlaveId, Slave m state context input output)
+      -> m (SlaveId, [(StateId, [(StateId, output)])])
     slaveLoop outgoingChans statusVar (slaveId, slave) = withProfilingMVar mp mpSlaveLoop $ do
       outs <- go mempty USRespInit
       return (slaveId, outs)
       where
         go !outputs0 resp = do
           (statuses, requests, outputs1) <- modifyMVar statusVar $ \status -> withProfilingMVar mp mpSlaveLoopUpdate $ do
-            UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves maxBatchSize inputMap slaveId smReverseIdx resp status
+            UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves maxBatchSize inputMap slaveId resp status
             return (ussSlavesStatus, (ussSlavesStatus, ussReqs, ussOutputs))
           withProfilingMVar mp mpSlaveLoopWriteTCHan $ forM_ requests $ \(slaveId_, req0) ->
-            writeChan (outgoingChans `slaveMapGet` slaveId_) (Just req0)
+            writeChan (outgoingChans HMS.! slaveId_) (Just req0)
           let outputs = outputs1 <> outputs0
-          let status = statuses `slaveMapGet` slaveId
+          let status = statuses HMS.! slaveId
           if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
             then do
-              $logInfoJ ("Slave " ++ tshow (unSlaveId $ siwiSlaveId slaveId) ++ " is done")
+              $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
               return outputs
             else do
               resp0 <- withProfilingMVar mp mpSlaveLoopScRead $ scRead (slaveConnection slave)
-              $logDebugJ ("Received slave response from slave " ++ tshow (unSlaveId $ siwiSlaveId slaveId) ++ ": " ++ displayResp resp0)
+              $logDebugJ ("Received slave response from slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayResp resp0)
               resp' <- case resp0 of
                 SRespResetState -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
                 SRespGetStates _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
@@ -515,28 +472,27 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> withProfilingM
       statesList' <- liftIO $ HT.toList stateMap
       let mh' = mh{ mhSlaves = NoSlavesYet statesList' }
       return (mh', fmap HMS.fromList . HMS.fromList $ outputs)
-    Slaves slaves smRidx -> do
-      $logInfoJ ("Executing update with " ++ tshow (V.length $ smVals slaves) ++ " slaves")
+    Slaves slaves -> do
+      $logInfoJ ("Executing update with " ++ tshow (HMS.size slaves) ++ " slaves")
       let inputMap = HMS.fromList inputList
       -- Update the slave states.
-      outputs :: [(SlaveIdWithIndex, [(StateId, [(StateId, output)])])] <-
+      outputs :: [(SlaveId, [(StateId, [(StateId, output)])])] <-
         case maMaxBatchSize (mhArgs mh) of
-          Just maxBatchSize -> updateSlaves (mhProfiling mh) (V.length $ smVals slaves) maxBatchSize slaves smRidx context inputMap
           Nothing -> do
             slaveIdsAndInputs <- either throwAndLog return $
               assignInputsToSlaves (slaveStates <$> slaves) inputMap
             forM_ slaveIdsAndInputs $ \(slaveId, inps) -> do
               scWrite
-                (slaveConnection (slaves `slaveMapGet` slaveId))
+                (slaveConnection (slaves HMS.! slaveId))
                 (SReqUpdate context inps)
             forM slaveIdsAndInputs $ \(slaveId, _) ->
-              liftM (slaveId,) $ readExpect "update (1)" (slaveConnection (slaves `slaveMapGet` slaveId)) $ \case
+              liftM (slaveId,) $ readExpect "update (1)" (slaveConnection (slaves HMS.! slaveId)) $ \case
                 SRespUpdate outputs -> Just outputs
                 _ -> Nothing
+          Just maxBatchSize -> updateSlaves (mhProfiling mh) (HMS.size slaves) maxBatchSize slaves context inputMap
       let mh' = mh
-            { mhSlaves = Slaves
-                (integrateNewStates slaves (second (fmap (const ()) . HMS.fromList . mconcat . map snd) <$> outputs))
-                smRidx
+            { mhSlaves = Slaves $
+                integrateNewStates slaves (second (fmap (const ()) . HMS.fromList . mconcat . map snd) <$> outputs)
             }
       return (mh', fmap HMS.fromList . HMS.fromList $ foldMap snd outputs)
 
@@ -550,11 +506,11 @@ addSlaveConnection (MasterHandle mhv) conn = modifyMVar_ mhv $ \mh -> do
   slaveId <- askSupply (mhSlaveIdSupply mh)
   case mhSlaves mh of
     NoSlavesYet states -> do
-      let slaves = SlaveMap (V.singleton (Slave conn (const () <$> HMS.fromList states))) (V.singleton slaveId)
+      let slaves = HMS.fromList [(slaveId, Slave conn (const () <$> HMS.fromList states))]
       sendStates [(conn, states)]
-      return mh{mhSlaves = Slaves slaves (HMS.fromList [(slaveId, 0)])}
-    Slaves SlaveMap{..} smRidx -> do
-      return mh{mhSlaves = Slaves (SlaveMap (V.snoc smVals (Slave conn mempty)) (V.snoc smIds slaveId)) (HMS.insert slaveId (V.length smVals) smRidx)}
+      return mh{mhSlaves = Slaves slaves}
+    Slaves slaves -> do
+      return mh{mhSlaves = Slaves (HMS.insert slaveId (Slave conn mempty) slaves)}
 
 sendStates ::
      (Monad m, MonadBaseControl IO m, MonadIO m)
@@ -586,23 +542,25 @@ resetStates (MasterHandle mhv) states0 = modifyMVar mhv $ \mh -> do
   case mhSlaves mh of
     NoSlavesYet _oldStates -> do
       return (mh{mhSlaves = NoSlavesYet allStates}, HMS.fromList allStates)
-    Slaves slaves smRidx -> do
+    Slaves slaves -> do
       -- Divide up the states among the slaves
-      when (V.null $ smVals slaves) $
+      when (HMS.null slaves) $
         throwAndLog NoSlavesConnectedException
       let numStatesPerSlave =
-            let (chunkSize, leftover) = length states0 `quotRem` (length $ smVals slaves)
+            let (chunkSize, leftover) = length states0 `quotRem` length slaves
             in if leftover == 0 then chunkSize else chunkSize + 1
-      let slavesStates :: [[(StateId, state)]]
-          slavesStates = -- HMS.fromList $ zip (HMS.keys slaves) $
+      let slavesStates :: HMS.HashMap SlaveId [(StateId, state)]
+          slavesStates = HMS.fromList $ zip (HMS.keys slaves) $
             -- Note that some slaves might be initially empty. That's fine and inevitable.
-            take (V.length $ smIds slaves) $ chunksOf numStatesPerSlave allStates ++ repeat []
-      let slaveStatesId :: [(SlaveIdWithIndex, HMS.HashMap StateId ())]
-          slaveStatesId = zipWith (\slaveId states -> (slaveIdAddIndex smRidx slaveId, HMS.fromList $ map (second (const ())) states)) (V.toList $ smIds slaves) slavesStates
-          -- map (second (HMS.fromList . map (second (const ())))) (HMS.toList slavesStates)
+            chunksOf numStatesPerSlave allStates ++ repeat []
+      let slaveStatesId :: [(SlaveId, HMS.HashMap StateId ())]
+          slaveStatesId = map (second (HMS.fromList . map (second (const ())))) (HMS.toList slavesStates)
       let slaves' = integrateNewStates slaves slaveStatesId
-      sendStates $ zip (map slaveConnection $ V.toList $ smVals slaves) slavesStates
-      return (mh{mhSlaves = Slaves slaves' smRidx}, HMS.fromList allStates)
+      sendStates
+        [ (slaveConnection slave, slavesStates HMS.! slaveId)
+        | (slaveId, slave) <- HMS.toList slaves
+        ]
+      return (mh{mhSlaves = Slaves slaves'}, HMS.fromList allStates)
 
 -- | Get all the 'StateId's of states of the computation handled by a
 -- master.
@@ -614,7 +572,7 @@ getStateIds (MasterHandle mhv) = do
   mh <- readMVar mhv
   return $ case mhSlaves mh of
     NoSlavesYet states -> HS.fromList (fst <$> states)
-    Slaves slaves _ -> HS.fromList (HMS.keys (fold (fmap slaveStates $ smVals slaves)))
+    Slaves slaves -> HS.fromList (HMS.keys (fold (fmap slaveStates slaves)))
 
 -- | Fetches current states stored in the slaves.
 {-# INLINE getStates #-}
@@ -626,29 +584,27 @@ getStates (MasterHandle mhv) = withMVar mhv $ \mh -> do
   -- Send states
   case mhSlaves mh of
     NoSlavesYet states -> return $ HMS.fromList states
-    Slaves SlaveMap{..} _ -> do
-      forM_ smVals (\slave_ -> scWrite (slaveConnection slave_) SReqGetStates)
-      responses <- forM smVals $ \slave_ -> do
+    Slaves slaves -> do
+      forM_ slaves (\slave_ -> scWrite (slaveConnection slave_) SReqGetStates)
+      responses <- forM (HMS.elems slaves) $ \slave_ -> do
         readExpect "getStates" (slaveConnection slave_) $ \case
           SRespGetStates states -> Just states
           _ -> Nothing
-      return (HMS.fromList $ mconcat $ V.toList responses)
+      return (HMS.fromList $ mconcat responses)
 
 getSlavesProfiling ::
        MonadConnect m
     => MasterHandle m state context input output
     -> m (HMS.HashMap SlaveId SlaveProfiling)  -- [(SlaveId, SlaveProfiling)]
-getSlavesProfiling (MasterHandle mhv) = do
-    v <- withMVar mhv $ \mh ->
-      case mhSlaves mh of
-        NoSlavesYet _states -> return V.empty
-        Slaves SlaveMap{..} _ -> do
-            forM_ smVals $ \slave -> scWrite (slaveConnection slave) SReqGetProfile
-            forM (V.zip smIds smVals) $ \(sid, slave) ->
+getSlavesProfiling (MasterHandle mhv) = withMVar mhv $ \mh ->
+    case mhSlaves mh of
+        NoSlavesYet _states -> return HMS.empty
+        Slaves slaves -> do
+            forM_ slaves $ \slave -> scWrite (slaveConnection slave) SReqGetProfile
+            forM slaves $ \slave ->
                 readExpect "getSlavesProfiling" (slaveConnection slave) $ \case
-                    SRespGetProfile sp -> return (sid, sp)
+                    SRespGetProfile sp -> return sp
                     _ -> Nothing
-    return . HMS.fromList . V.toList $ v
 
 getMasterProfiling ::
        MonadConnect m
@@ -673,4 +629,4 @@ getNumSlaves (MasterHandle mhv) = do
   mh <- readMVar mhv
   return $ case mhSlaves mh of
     NoSlavesYet _ -> 0
-    Slaves slaves _ -> V.length $ smVals slaves
+    Slaves slaves -> HMS.size slaves
