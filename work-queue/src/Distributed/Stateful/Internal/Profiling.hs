@@ -144,20 +144,22 @@ withProfiling ref l action = do
       update :: Double -> b -> b
       update t sp = sp & l +~ t
 
-withProfilingMVar :: forall a b m. MonadIO m
-    => MVar b
+withAtomicProfiling :: forall a b m. MonadIO m
+    => IORef b
     -> Lens' b Double
     -> m a
     -> m a
-withProfilingMVar ref l action = do
+withAtomicProfiling ref l action = do
     t0 <- liftIO getTime
     res <- action
     t1 <- liftIO getTime
-    liftIO . modifyMVar_ ref $ update (t1 - t0)
+    liftIO . atomicModifyIORef' ref $ update (t1 - t0)
     return res
   where
-      update :: Double -> b -> IO b
-      update t sp = return $ sp & l +~ t
+      update :: Double -> b -> (b, ())
+      update t sp =
+          let t' = sp & l +~ t
+          in t' `seq` (t', ())
 
 withSlaveProfileCounter :: MonadIO m
     => IORef SlaveProfiling

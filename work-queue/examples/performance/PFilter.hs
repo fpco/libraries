@@ -144,7 +144,7 @@ dpfMaster PFConfig{..} s PFRequest{..} mh = do
           Just (system', (minput, msummary)) -> do
               weights' <- fold <$> WQ.update mh (PFContext minput msummary) (const [PFInput] <$> weights)
               resample weights' system'
-      resample weights system = getMasterProfilingMVar mh >>= \mp -> withProfilingMVar mp mpNonUpdate $ do
+      resample weights system = getMasterProfilingIORef mh >>= \mp -> withAtomicProfiling mp mpNonUpdate $ do
           let nEffParticles = sum (pfoWeight <$> weights) / fromIntegral nParticles
           if nEffParticles > pfcEffectiveParticleThreshold
               then $logInfoS logSourceBench (unwords ["not resampling,", tshow nEffParticles, ">", tshow pfcEffectiveParticleThreshold])
