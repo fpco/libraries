@@ -50,6 +50,7 @@ module Distributed.Stateful.Master
     ) where
 
 import           ClassyPrelude hiding (Chan, readChan, writeChan)
+import qualified Control.Concurrent.Chan.Unagi as Unagi
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Control.DeepSeq (NFData)
 import           Control.Lens (makeLenses, set, at, _Just, over)
@@ -63,8 +64,8 @@ import           Data.SimpleSupply
 import qualified Data.Vector as V
 import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
+import qualified System.Random as R
 import           Text.Printf (printf)
-import qualified Control.Concurrent.Chan.Unagi as Unagi
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -322,10 +323,10 @@ updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId smReverseIdx resp st
       -- If we have some states in ssRemaining, just update those. Otherwise,
       -- try to steal from another slave.
       let ss = uss `slaveMapGet` slaveId
-      let (toUpdateInputs, remaining) = takeEnoughStatesToUpdate (_ssRemainingStates ss)
+      (toUpdateInputs, remaining) <- takeEnoughStatesToUpdate (_ssRemainingStates ss)
       if null toUpdateInputs
         then do -- Steal slaves
-          let mbStolen = stealSlavesFromSomebody slaveId uss
+          mbStolen <- stealSlavesFromSomebody slaveId uss
           case mbStolen of
             Nothing -> do -- We're done for this slave.
               $logInfoJ ("Tried to get something to do for slave " ++ tshow (unSlaveId $ siwiSlaveId slaveId) ++ ", but couldn't find anything")
@@ -340,40 +341,48 @@ updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId smReverseIdx resp st
     {-# INLINE takeEnoughStatesToUpdate #-}
     takeEnoughStatesToUpdate ::
          [StateId]
-      -> ([(StateId, [(StateId, input)])], [StateId])
-    takeEnoughStatesToUpdate remaining00 = go remaining00 0
+      -> m ([(StateId, [(StateId, input)])], [StateId])
+    takeEnoughStatesToUpdate remaining00 = do
+        -- We randomise the batchsize, in order to vary the load
+        -- between the slaves.  If the slaves all have the same load,
+        -- they are likely to finish their batches and request new
+        -- jobs at the same time, which would lead to contention in
+        -- the master.
+        batchSize <- liftIO $ R.randomRIO (maxBatchSize, max maxBatchSize (length remaining00 `div` nSlaves))
+        return $ go batchSize remaining00 0
       where
-        go remaining0 grabbed = if grabbed >= batchSize
+        go batchSize remaining0 grabbed = if grabbed >= batchSize
           then ([], remaining0)
           else case remaining0 of
             [] -> ([], remaining0)
             stateId : remaining -> let
               inps = inputs HMS.! stateId
-              in first ((stateId, inps) :) (go remaining (grabbed + length inps))
-        batchSize = max maxBatchSize (length remaining00 `div` (2*nSlaves))
+              in first ((stateId, inps) :) (go batchSize remaining (grabbed + length inps))
 
     {-# INLINE stealSlavesFromSomebody #-}
     stealSlavesFromSomebody ::
          SlaveIdWithIndex -- Requesting the slaves
       -> SlavesStatus
-      -> Maybe (SlavesStatus, SlaveIdWithIndex, HS.HashSet StateId)
+      -> m (Maybe (SlavesStatus, SlaveIdWithIndex, HS.HashSet StateId))
     stealSlavesFromSomebody requestingSlaveId uss = do
-      let goodCandidate (slaveId, ss) = do
-            guard (slaveId /= requestingSlaveId)
-            guard (not (null (_ssRemainingStates ss)))
-            let (toTransfer, remaining) = takeEnoughStatesToUpdate (_ssRemainingStates ss)
-            return (slaveId, map fst toTransfer, sum (map (length . snd) toTransfer), remaining)
-      let candidates :: [(SlaveIdWithIndex, [StateId], Int, [StateId])]
-          candidates = mapMaybe goodCandidate (V.toList $ slaveMapToTuple uss)
-      guard (not (null candidates))
+      let goodCandidate (slaveId, ss) =
+            if (slaveId /= requestingSlaveId) && not (null (_ssRemainingStates ss))
+            then do
+                (toTransfer, remaining) <- takeEnoughStatesToUpdate (_ssRemainingStates ss)
+                return $ Just (slaveId, map fst toTransfer, sum (map (length . snd) toTransfer), remaining)
+            else return Nothing
+      candidates <- catMaybes <$> mapM goodCandidate (V.toList $ slaveMapToTuple uss) :: m [(SlaveIdWithIndex, [StateId], Int, [StateId])]
+      if null candidates
+          then return Nothing
+          else do
       -- Pick candidate with highest number of states to steal states from
-      let (candidateSlaveId, statesToBeTransferred, _, remainingStates) =
-            maximumByEx (comparing (\(_, _, x, _) -> x)) candidates
-      let uss' = slaveMapModifyAt
-              (slaveMapModifyAt uss requestingSlaveId $ \ss -> ss {_ssWaitingForStates = True})
-              candidateSlaveId
-              (\ss -> ss {_ssRemainingStates = remainingStates})
-      return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
+            let (candidateSlaveId, statesToBeTransferred, _, remainingStates) =
+                    maximumByEx (comparing (\(_, _, x, _) -> x)) candidates
+            let uss' = slaveMapModifyAt
+                    (slaveMapModifyAt uss requestingSlaveId $ \ss -> ss {_ssWaitingForStates = True})
+                    candidateSlaveId
+                    (\ss -> ss {_ssRemainingStates = remainingStates})
+            return $ return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
 
 type Chan a = (Unagi.InChan a, Unagi.OutChan a)
 
