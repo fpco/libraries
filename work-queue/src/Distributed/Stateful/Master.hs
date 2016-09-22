@@ -348,7 +348,8 @@ updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId smReverseIdx resp st
         -- they are likely to finish their batches and request new
         -- jobs at the same time, which would lead to contention in
         -- the master.
-        batchSize <- liftIO $ R.randomRIO (maxBatchSize, max maxBatchSize (length remaining00 `div` nSlaves))
+        let maxLength = (length remaining00 `div` nSlaves)
+        batchSize <- liftM (max maxBatchSize) <$> liftIO $ R.randomRIO (maxLength `div` 2, maxLength)
         return $ go batchSize remaining00 0
       where
         go batchSize remaining0 grabbed = if grabbed >= batchSize
