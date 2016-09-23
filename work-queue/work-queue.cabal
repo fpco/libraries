@@ -43,6 +43,7 @@ library
                      , bytestring
                      , classy-prelude
                      , conduit-extra
+                     , containers
                      , criterion
                      , cryptohash
                      , deepseq
