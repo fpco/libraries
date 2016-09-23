@@ -63,7 +63,6 @@ import qualified Data.IntMap.Strict as IntMap
 import           Data.List.Split (chunksOf)
 import           Data.SimpleSupply
 import qualified Data.Vector as V
-import qualified Data.Vector.Mutable as MV
 import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
 import qualified System.Random as R
@@ -382,14 +381,11 @@ updateSlaves :: forall state context input output m.
   -> m [(SlaveIdWithIndex, [(StateId, [(StateId, output)])])]
 updateSlaves mp nSlaves maxBatchSize slaves smReverseIdx context inputMap = withAtomicProfiling mp mpUpdateSlaves $ do
   let slaveIdsWithIndices = V.fromList . map (uncurry SlaveIdWithIndex) . IntMap.toList . IntMap.fromList . map swap . HMS.toList $ smReverseIdx :: SlaveMap SlaveIdWithIndex
-  chans <- liftIO $ V.replicateM nSlaves Unagi.newChan
-  let (outgoingChans :: SlaveMap (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input)))) =
-       V.create $ do
-          v <- MV.new (V.length slaveIdsWithIndices)
-          forM_ (HMS.toList slaves) (\(SlaveIdWithIndex{..}, slave) ->
-                                            MV.write v siwiIndex (slaveConnection slave, chans `V.unsafeIndex` siwiIndex)
-                                    )
-          return v
+  outgoingChans :: SlaveMap (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input))) <-
+      V.forM slaveIdsWithIndices $ \ slaveId -> do
+        chan <- liftIO Unagi.newChan
+        let slave = slaves HMS.! slaveId
+        return (slaveConnection slave, chan)
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
         , _ssRemainingStates = HMS.keys (slaveStates slave)
