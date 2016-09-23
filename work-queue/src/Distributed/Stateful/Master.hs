@@ -60,7 +60,6 @@ import qualified Data.HashSet as HS
 import qualified Data.HashTable.IO as HT
 import           Data.List.Split (chunksOf)
 import           Data.SimpleSupply
-import qualified Data.Vector as V
 import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
 import qualified System.Random as R
@@ -353,17 +352,6 @@ writeChan (ch, _) x = liftIO (Unagi.writeChan ch x)
 readChan :: MonadIO m => Chan a -> m a
 readChan (_, ch) = liftIO (Unagi.readChan ch)
 
-data SlaveIdWithIndex = SlaveIdWithIndex
-    { siwiIndex :: !Int
-    , siwiSlaveId :: !Int
-    }
-type SlaveMapReverseIdx = HMS.HashMap SlaveId Int
-type SlaveMap a = V.Vector a
-slaveMapGet :: SlaveMap a -> SlaveIdWithIndex -> a
-slaveMapGet v SlaveIdWithIndex{..} = v `V.unsafeIndex` siwiIndex
-slaveMapGet_ :: SlaveMapReverseIdx -> SlaveMap a -> SlaveId -> a
-slaveMapGet_ smReverseIdx v sid = v `V.unsafeIndex` (smReverseIdx HMS.! sid)
-
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
      (MonadConnect m, NFData input, NFData output)
@@ -378,25 +366,21 @@ updateSlaves :: forall state context input output m.
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
 updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfiling mp mpUpdateSlaves $ do
-  (smReverseIdx :: SlaveMapReverseIdx
-      , outgoingChans :: SlaveMap (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input)))
-      , slaveIds :: SlaveMap SlaveId) <- do
-    l <- forM (zip [0..] (HMS.toList slaves)) $ \(i, (sid, slave)) -> do
+  outgoingChans :: HMS.HashMap SlaveId (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input))) <-
+    forM slaves $ \slave -> do
       chan <- liftIO Unagi.newChan
-      return ((sid, i), (slaveConnection slave, chan))
-    return (HMS.fromList (map fst l), V.fromList (map snd l), V.fromList (map (fst . fst) l))
+      return (slaveConnection slave, chan)
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
         , _ssRemainingStates = HMS.keys (slaveStates slave)
         , _ssWaitingForStates = False
         }
   statusVar <- newMVar (slaveStatus0 <$> slaves)
-  let chanMap = (V.map snd outgoingChans) :: SlaveMap (Chan (Maybe (UpdateSlaveReq input)))
   snd <$> Async.concurrently
-    (Async.mapConcurrently (uncurry sendLoop) (V.toList $ V.zip slaveIds outgoingChans))
+    (Async.mapConcurrently (uncurry sendLoop) (HMS.toList outgoingChans))
     (finally
-      (Async.mapConcurrently (slaveLoop smReverseIdx chanMap statusVar) (HMS.toList slaves))
-      (forM_ chanMap (\chan -> writeChan chan Nothing)))
+      (Async.mapConcurrently (slaveLoop (snd <$> outgoingChans) statusVar) (HMS.toList slaves))
+      (forM_ (snd <$> outgoingChans) (\chan -> writeChan chan Nothing)))
   where
     sendLoop ::
          SlaveId
@@ -418,12 +402,11 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
                 go
 
     slaveLoop ::
-         SlaveMapReverseIdx
-      -> SlaveMap (Chan (Maybe (UpdateSlaveReq input)))
+         HMS.HashMap SlaveId (Chan (Maybe (UpdateSlaveReq input)))
       -> MVar SlavesStatus
       -> (SlaveId, Slave m state context input output)
       -> m (SlaveId, [(StateId, [(StateId, output)])])
-    slaveLoop smReverseIdx outgoingChans statusVar (slaveId, slave) = withAtomicProfiling mp mpSlaveLoop $ do
+    slaveLoop outgoingChans statusVar (slaveId, slave) = withAtomicProfiling mp mpSlaveLoop $ do
       outs <- go mempty USRespInit
       return (slaveId, outs)
       where
@@ -432,7 +415,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
             UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves maxBatchSize inputMap slaveId resp status
             return (ussSlavesStatus, (ussSlavesStatus, ussReqs, ussOutputs))
           withAtomicProfiling mp mpSlaveLoopWriteTCHan $ forM_ requests $ \(slaveId_, req0) ->
-            writeChan (slaveMapGet_ smReverseIdx outgoingChans slaveId_) (Just req0)
+            writeChan (outgoingChans HMS.! slaveId_) (Just req0)
           let outputs = outputs1 <> outputs0
           let status = statuses HMS.! slaveId
           if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
