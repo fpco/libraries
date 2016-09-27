@@ -379,26 +379,20 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
         -- -> HMS.HashMap SlaveId (IO ())
         -> m [(SlaveId, [(StateId, [(StateId, output)])])]
     masterLoop statuses0 -- waitForAnySlave unregister
-        =
+        = do
           let activeSlaves = HS.fromList . HMS.keys $ slaves
               outputs = HMS.empty
-          in go outputs activeSlaves statuses0
+          waits <- forM slaves $ \slave -> do
+              wait <- scWaitReadSTM (slaveConnection slave)
+              return (slave, wait)
+          go outputs activeSlaves statuses0 waits
       where
-        go outputs activeSlaves statuses
-            | HS.null activeSlaves = return . HMS.toList $ outputs
-            | otherwise = do
-                  waits <- forM slaves $ \slave -> do
-                      wait <- scWaitReadSTM (slaveConnection slave)
-                      return (slave, wait)
-                  let waitForAnySlave = foldr
-                          (orElse . \(slaveId, (slave, (wait, _release))) -> wait >> return (slaveId, slave))
-                          retry
-                          (HMS.toList waits)
-                      releaseSlaves = forM_ waits $ \(_slave, (_wait, release)) -> release
-                  liftIO (atomically waitForAnySlave) >>= readSlaveResponse outputs activeSlaves statuses releaseSlaves
-        readSlaveResponse outputs activeSlaves statuses releaseSlaves (slaveId, slave) = do
-            liftIO releaseSlaves
-            let conn = slaveConnection slave
+        go outputs activeSlaves statuses waits
+            | HS.null activeSlaves = do
+                  stopWaiting waits
+                  return $ HMS.toList outputs
+            | otherwise = liftIO (atomically (waitForAny waits)) >>= \(slaveId, slave) -> do
+                  let conn = slaveConnection slave
             -- preliminary testing shows that using the non-blocking
             -- read is not efficient -- we're basically spawning a new
             -- thread and allocating a new STMvar for each chunk.
@@ -408,7 +402,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
             -- scTryRead conn >>= \case
             --     Nothing -> go outputs activeSlaves statuses
             --     Just resp -> do
-            scRead conn >>= \resp -> do
+                  scRead conn >>= \resp -> do
                     (statuses', requests, newOutputs) <- handleResponse slaveId resp statuses
                     -- immediately send new requests
                     forM_ requests sendRequest
@@ -418,8 +412,21 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
                         then do
                             $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
                             let activeSlaves' = HS.delete slaveId activeSlaves
-                            go outputs' activeSlaves' statuses'
-                        else go outputs' activeSlaves statuses'
+                                waits' = HMS.delete slaveId waits
+                            go outputs' activeSlaves' statuses' waits'
+                        else do wait <- scWaitReadSTM conn
+                                let waits' = HMS.insert slaveId (slave, wait) waits
+                                go outputs' activeSlaves statuses' waits'
+
+    waitForAny :: HMS.HashMap SlaveId (Slave m state context input output, (STM (), a))
+               -> STM (SlaveId, Slave m state context input output)
+    waitForAny = foldr
+          (orElse . \(slaveId, (slave, (wait, _release))) -> wait >> return (slaveId, slave))
+          retry
+          . HMS.toList
+
+    stopWaiting :: HMS.HashMap SlaveId (a, (b, IO ())) -> m ()
+    stopWaiting = mapM_ (\(_slaveId, (_slave, (_wait, release))) -> liftIO release) . HMS.toList
 
     handleResponse slaveId resp statuses = do
         resp' <- case resp of
