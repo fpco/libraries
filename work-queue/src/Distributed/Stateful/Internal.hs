@@ -38,6 +38,8 @@ data StatefulConn m req resp = StatefulConn
     -- ^ Write a request to the connection.
   , scRead :: !(m resp)
     -- ^ Read a response from the connection.
+  , scWaitReadSTM :: m (STM (), IO ())
+  , scTryRead :: m (Maybe resp)
   }
 
 -- | Identifier for a slave.

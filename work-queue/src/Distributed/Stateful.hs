@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -130,6 +131,12 @@ runPureStatefulSlave update_ cont = do
             case mbX of
                 Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
                 Just x -> return x
+        , scWaitReadSTM = return (void $ peekTMChan respChan, return ())
+        , scTryRead =
+                atomically $ tryReadTMChan respChan >>= \case
+                Just Nothing -> return Nothing
+                Nothing -> return Nothing
+                Just (Just x) -> return (Just x)
         }
 
 -- | Run a computation, where the slaves run as separate threads
@@ -157,6 +164,8 @@ nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> Statefu
 nmStatefulConn ad = StatefulConn
     { scWrite = nmWrite ad
     , scRead = nmRead ad
+    , scWaitReadSTM = nmWaitReadSTM ad
+    , scTryRead = nmTryRead ad
     }
 
 -- | Run a slave that uses "Data.Streaming.NetworkMessage" for sending

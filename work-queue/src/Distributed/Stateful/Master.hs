@@ -49,11 +49,10 @@ module Distributed.Stateful.Master
     ) where
 
 import           ClassyPrelude hiding (Chan, readChan, writeChan)
-import qualified Control.Concurrent.Chan.Unagi as Unagi
-import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Control.DeepSeq (NFData)
 import           Control.Lens (makeLenses, set, at, _Just, over)
 import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
+import           Control.Monad.STM (orElse, retry)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -344,14 +343,6 @@ updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId resp statuses0 = wit
                  set (at requestingSlaveId . _Just . ssWaitingForStates) True uss
             return $ return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
 
-type Chan a = (Unagi.InChan a, Unagi.OutChan a)
-
-writeChan :: MonadIO m => Chan a -> a -> m ()
-writeChan (ch, _) x = liftIO (Unagi.writeChan ch x)
-
-readChan :: MonadIO m => Chan a -> m a
-readChan (_, ch) = liftIO (Unagi.readChan ch)
-
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
      (MonadConnect m, NFData input, NFData output)
@@ -366,76 +357,92 @@ updateSlaves :: forall state context input output m.
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
 updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfiling mp mpUpdateSlaves $ do
-  outgoingChans :: HMS.HashMap SlaveId (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input))) <-
-    forM slaves $ \slave -> do
-      chan <- liftIO Unagi.newChan
-      return (slaveConnection slave, chan)
+  -- initialise slaves
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
         , _ssRemainingStates = HMS.keys (slaveStates slave)
         , _ssWaitingForStates = False
         }
-  statusVar <- newMVar (slaveStatus0 <$> slaves)
-  snd <$> Async.concurrently
-    (Async.mapConcurrently (uncurry sendLoop) (HMS.toList outgoingChans))
-    (finally
-      (Async.mapConcurrently (slaveLoop (snd <$> outgoingChans) statusVar) (HMS.toList slaves))
-      (forM_ (snd <$> outgoingChans) (\chan -> writeChan chan Nothing)))
+      statuses0 = slaveStatus0 <$> slaves
+  statuses1 <- foldM initSlave statuses0 (HMS.keys slaves)
+  masterLoop statuses1
   where
-    sendLoop ::
-         SlaveId
-      -> (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input)))
-      -> m ()
-    sendLoop slaveId (conn, chan) = withAtomicProfiling mp mpSendLoop go
-      where
-        go = do
-          mbReq <- withAtomicProfiling mp mpSendLoopReadTChan (readChan chan)
-          case mbReq of
-            Nothing -> return ()
-            Just req0 -> do
-                let req = case req0 of
-                      USReqUpdate inputs -> SReqUpdate context inputs
-                      USReqRemoveStates x y -> SReqRemoveStates x y
-                      USReqAddStates y -> SReqAddStates y
-                $logDebugJ ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req)
-                withAtomicProfiling mp mpSendLoopSend $ scWrite conn req
-                go
 
-    slaveLoop ::
-         HMS.HashMap SlaveId (Chan (Maybe (UpdateSlaveReq input)))
-      -> MVar SlavesStatus
-      -> (SlaveId, Slave m state context input output)
-      -> m (SlaveId, [(StateId, [(StateId, output)])])
-    slaveLoop outgoingChans statusVar (slaveId, slave) = withAtomicProfiling mp mpSlaveLoop $ do
-      outs <- go mempty USRespInit
-      return (slaveId, outs)
+    initSlave statuses slaveId = do
+        UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves maxBatchSize inputMap slaveId USRespInit statuses
+        forM_ ussReqs sendRequest
+        return ussSlavesStatus
+
+    masterLoop ::
+           SlavesStatus
+        -- -> STM (SlaveId, Slave m state context input output)
+        -- -> HMS.HashMap SlaveId (IO ())
+        -> m [(SlaveId, [(StateId, [(StateId, output)])])]
+    masterLoop statuses0 -- waitForAnySlave unregister
+        =
+          let activeSlaves = HS.fromList . HMS.keys $ slaves
+              outputs = HMS.empty
+          in go outputs activeSlaves statuses0
       where
-        go !outputs0 resp = do
-          (statuses, requests, outputs1) <- modifyMVar statusVar $ \status -> withAtomicProfiling mp mpSlaveLoopUpdate $ do
-            UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves maxBatchSize inputMap slaveId resp status
-            return (ussSlavesStatus, (ussSlavesStatus, ussReqs, ussOutputs))
-          withAtomicProfiling mp mpSlaveLoopWriteTCHan $ forM_ requests $ \(slaveId_, req0) ->
-            writeChan (outgoingChans HMS.! slaveId_) (Just req0)
-          let outputs = outputs1 <> outputs0
-          let status = statuses HMS.! slaveId
-          if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
-            then do
-              $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
-              return outputs
-            else do
-              resp0 <- withAtomicProfiling mp mpSlaveLoopScRead $ scRead (slaveConnection slave)
-              $logDebugJ ("Received slave response from slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayResp resp0)
-              resp' <- case resp0 of
-                SRespResetState -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
-                SRespGetStates _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
-                SRespQuit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
+        go outputs activeSlaves statuses
+            | HS.null activeSlaves = return . HMS.toList $ outputs
+            | otherwise = do
+                  waits <- forM slaves $ \slave -> do
+                      wait <- scWaitReadSTM (slaveConnection slave)
+                      return (slave, wait)
+                  let waitForAnySlave = foldr
+                          (orElse . \(slaveId, (slave, (wait, _release))) -> wait >> return (slaveId, slave))
+                          retry
+                          (HMS.toList waits)
+                      releaseSlaves = forM_ waits $ \(_slave, (_wait, release)) -> release
+                  liftIO (atomically waitForAnySlave) >>= readSlaveResponse outputs activeSlaves statuses releaseSlaves
+        readSlaveResponse outputs activeSlaves statuses releaseSlaves (slaveId, slave) = do
+            liftIO releaseSlaves
+            let conn = slaveConnection slave
+            -- preliminary testing shows that using the non-blocking
+            -- read is not efficient -- we're basically spawning a new
+            -- thread and allocating a new STMvar for each chunk.
+            -- I've switched to block and wait for a whole message
+            -- once we receive data from a slave instead.
+
+            -- scTryRead conn >>= \case
+            --     Nothing -> go outputs activeSlaves statuses
+            --     Just resp -> do
+            scRead conn >>= \resp -> do
+                    (statuses', requests, newOutputs) <- handleResponse slaveId resp statuses
+                    -- immediately send new requests
+                    forM_ requests sendRequest
+                    let status = statuses' HMS.! slaveId
+                    let outputs' = HMS.insertWith (<>) slaveId newOutputs outputs
+                    if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
+                        then do
+                            $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
+                            let activeSlaves' = HS.delete slaveId activeSlaves
+                            go outputs' activeSlaves' statuses'
+                        else go outputs' activeSlaves statuses'
+
+    handleResponse slaveId resp statuses = do
+        resp' <- case resp of
+                SRespResetState -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
+                SRespGetStates _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
+                SRespQuit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
                 SRespError err -> throwIO (ExceptionFromSlave err)
                 SRespAddStates addedStates -> return (USRespAddStates addedStates)
                 SRespRemoveStates requestingSlaveId removedStates ->
                   return (USRespRemoveStates requestingSlaveId removedStates)
                 SRespUpdate outputs_ -> return (USRespUpdate outputs_)
-                SRespGetProfile _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
-              go outputs resp'
+                SRespGetProfile _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
+        UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves maxBatchSize inputMap slaveId resp' statuses
+        return (ussSlavesStatus, ussReqs, ussOutputs)
+
+    sendRequest (slaveId, req) = do
+        let req' = case req of
+                      USReqUpdate inputs -> SReqUpdate context inputs
+                      USReqRemoveStates x y -> SReqRemoveStates x y
+                      USReqAddStates y -> SReqAddStates y
+            conn = slaveConnection (slaves HMS.! slaveId)
+        $logDebugJ ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req')
+        withAtomicProfiling mp mpSendLoopSend $ scWrite conn req'
 
 -- | Send an update request to all the slaves. This will cause each of
 -- the slaves to apply 'Distributed.Stateful.Slave.saUpdate' to each of its states. The outputs of

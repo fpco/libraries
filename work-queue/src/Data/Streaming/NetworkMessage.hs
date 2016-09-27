@@ -43,6 +43,8 @@ module Data.Streaming.NetworkMessage
       -- * Functions for communication
     , nmWrite
     , nmRead
+    , nmWaitReadSTM
+    , nmTryRead
       -- * Settings
     , NMSettings
     , defaultNMSettings
@@ -51,18 +53,21 @@ module Data.Streaming.NetworkMessage
     ) where
 
 import           ClassyPrelude
+import qualified Control.Concurrent.STM as STM
 import           Data.Store (Store, PeekException (..))
 import qualified Data.Store.Streaming as S
 import           Control.Exception (BlockedIndefinitelyOnMVar(..))
 import           System.IO.ByteBuffer (ByteBuffer)
 import qualified System.IO.ByteBuffer as BB
 import           Data.Streaming.Network (AppData, appRead, appWrite)
-import           Data.Streaming.Network (ServerSettings, setAfterBind)
+import           Data.Streaming.Network (ServerSettings, setAfterBind, appRawSocket)
 import           Data.Store.TypeHash
 import           Data.Typeable (Proxy(..))
-import           Network.Socket (socketPort)
+import           Network.Socket (socketPort, fdSocket)
 import           System.Executable.Hash (executableHash)
+import           System.Posix.Types (Fd (..))
 import           FP.Redis (MonadConnect)
+import           GHC.Conc (threadWaitReadSTM)
 
 -- | Exceptions specific to "Data.Streaming.NetworkMessage".
 data NetworkMessageException
@@ -125,6 +130,44 @@ nmWrite nm iSend = liftIO (appWrite (nmAppData nm) (encode iSend))
 nmRead  :: (MonadConnect m, Store youSend) => NMAppData iSend youSend -> m youSend
 nmRead NMAppData{..} = liftIO (appGet "nmRead" nmByteBuffer nmAppData)
 
+-- | Wait for incoming data from the other side.
+--
+-- See 'threadWaitReadSTM'.
+nmWaitReadSTM :: MonadIO m => NMAppData iSend youSend -> m (STM (), IO ())
+nmWaitReadSTM appData =
+    let socket = case appRawSocket (nmAppData appData) of
+            Just socket -> fdSocket socket
+            Nothing -> error "No socket in NetworkMessage."
+    in liftIO $ threadWaitReadSTM (Fd socket)
+
+-- | Non-blocking version of 'nmRead'.
+--
+-- Returns 'Nothing' if there is no complete message available.
+--
+-- Note: this seems to be quite inefficient.
+nmTryRead :: (MonadConnect m, Store youSend) => NMAppData iSend youSend -> m (Maybe youSend)
+nmTryRead nm = liftIO (tryAppGet "nmTryRead" (nmByteBuffer nm) nm)
+
+tryAppGet :: (Store a)
+          => String
+          -> ByteBuffer
+          -> NMAppData iSend youSend
+          -> IO (Maybe a)
+tryAppGet loc bb nm =
+    (S.peekMessage bb >>= loop)
+    `catch` (\ ex@(PeekException _ _) -> throwIO . NMDecodeFailure . ((loc ++ " ") ++) . show $ ex)
+  where
+      loop (S.NeedMoreInput cont) = do
+          wait <- fst <$> nmWaitReadSTM nm
+          let canRead = (wait >> return True) `STM.orElse` return False
+              mGetBS = STM.atomically canRead >>= \case
+                  True -> Just <$> appRead (nmAppData nm)
+                  False -> return Nothing
+          mGetBS >>= \case
+              Just bs -> cont bs >>= loop
+              Nothing -> return Nothing
+      loop (S.Done (S.Message x)) = return (Just x)
+
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and
 -- 'Nothing' is returned.
@@ -134,7 +177,7 @@ appGet :: (Store a)
        -> AppData
        -> IO a  -- ^ result
 appGet loc bb ad =
-    ((S.peekMessage bb) >>= loop)
+    (S.peekMessage bb >>= loop)
     `catch` (\ ex@(PeekException _ _) -> throwIO . NMDecodeFailure . ((loc ++ " ") ++) . show $ ex)
   where
     loop (S.NeedMoreInput cont) = do
