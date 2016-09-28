@@ -79,6 +79,7 @@ import           Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.STM as STM
 import qualified Data.Conduit.Network as CN
 import           Control.Monad.Trans.Control (control)
+import           Data.Maybe (fromJust)
 import           Data.Void (absurd)
 import           Data.Store.TypeHash (HasTypeHash)
 import           Distributed.Redis (Redis, withRedis)
@@ -131,12 +132,12 @@ runPureStatefulSlave update_ cont = do
             case mbX of
                 Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
                 Just x -> return x
-        , scWaitReadSTM = return (void $ peekTMChan respChan, return ())
-        , scTryRead =
-                atomically $ tryReadTMChan respChan >>= \case
-                Just Nothing -> return Nothing
-                Nothing -> return Nothing
-                Just (Just x) -> return (Just x)
+        , scWaitReadSTM =
+                let wait = do
+                        closed <- isClosedTMChan respChan
+                        when closed (fail "runPureStatefulSlave: trying to read on closed chan")
+                        fromJust <$> readTMChan respChan
+                in return (wait , return ())
         }
 
 -- | Run a computation, where the slaves run as separate threads
@@ -165,7 +166,6 @@ nmStatefulConn ad = StatefulConn
     { scWrite = nmWrite ad
     , scRead = nmRead ad
     , scWaitReadSTM = nmWaitReadSTM ad
-    , scTryRead = nmTryRead ad
     }
 
 -- | Run a slave that uses "Data.Streaming.NetworkMessage" for sending

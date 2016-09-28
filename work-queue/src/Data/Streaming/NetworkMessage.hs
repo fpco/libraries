@@ -44,7 +44,6 @@ module Data.Streaming.NetworkMessage
     , nmWrite
     , nmRead
     , nmWaitReadSTM
-    , nmTryRead
       -- * Settings
     , NMSettings
     , defaultNMSettings
@@ -68,6 +67,7 @@ import           System.Executable.Hash (executableHash)
 import           System.Posix.Types (Fd (..))
 import           FP.Redis (MonadConnect)
 import           GHC.Conc (threadWaitReadSTM)
+import           Control.Concurrent.Lifted (fork)
 
 -- | Exceptions specific to "Data.Streaming.NetworkMessage".
 data NetworkMessageException
@@ -132,41 +132,19 @@ nmRead NMAppData{..} = liftIO (appGet "nmRead" nmByteBuffer nmAppData)
 
 -- | Wait for incoming data from the other side.
 --
--- See 'threadWaitReadSTM'.
-nmWaitReadSTM :: MonadIO m => NMAppData iSend youSend -> m (STM (), IO ())
-nmWaitReadSTM appData =
-    let socket = case appRawSocket (nmAppData appData) of
-            Just socket -> fdSocket socket
-            Nothing -> error "No socket in NetworkMessage."
-    in liftIO $ threadWaitReadSTM (Fd socket)
-
--- | Non-blocking version of 'nmRead'.
---
--- Returns 'Nothing' if there is no complete message available.
---
--- Note: this seems to be quite inefficient.
-nmTryRead :: (MonadConnect m, Store youSend) => NMAppData iSend youSend -> m (Maybe youSend)
-nmTryRead nm = liftIO (tryAppGet "nmTryRead" (nmByteBuffer nm) nm)
-
-tryAppGet :: (Store a)
-          => String
-          -> ByteBuffer
-          -> NMAppData iSend youSend
-          -> IO (Maybe a)
-tryAppGet loc bb nm =
-    (S.peekMessage bb >>= loop)
-    `catch` (\ ex@(PeekException _ _) -> throwIO . NMDecodeFailure . ((loc ++ " ") ++) . show $ ex)
-  where
-      loop (S.NeedMoreInput cont) = do
-          wait <- fst <$> nmWaitReadSTM nm
-          let canRead = (wait >> return True) `STM.orElse` return False
-              mGetBS = STM.atomically canRead >>= \case
-                  True -> Just <$> appRead (nmAppData nm)
-                  False -> return Nothing
-          mGetBS >>= \case
-              Just bs -> cont bs >>= loop
-              Nothing -> return Nothing
-      loop (S.Done (S.Message x)) = return (Just x)
+-- The second return value can be used to cancel waiting for a
+-- response.
+nmWaitReadSTM :: (MonadConnect m, Store youSend) => NMAppData iSend youSend -> m (STM youSend, m ())
+nmWaitReadSTM appData = do
+    m <- liftIO $ newTVarIO Nothing
+    _ <- fork $ do
+        msg <- nmRead appData
+        atomically $ writeTVar m (Just msg)
+    let waitAction = readTVar m >>= \case
+            Just msg -> return msg
+            Nothing -> STM.retry
+        killAction = return ()
+    return (waitAction, killAction)
 
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and

@@ -375,58 +375,45 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
 
     masterLoop ::
            SlavesStatus
-        -- -> STM (SlaveId, Slave m state context input output)
-        -- -> HMS.HashMap SlaveId (IO ())
         -> m [(SlaveId, [(StateId, [(StateId, output)])])]
     masterLoop statuses0 -- waitForAnySlave unregister
         = do
-          let activeSlaves = HS.fromList . HMS.keys $ slaves
-              outputs = HMS.empty
+          let outputs = HMS.empty
           waits <- forM slaves $ \slave -> do
               wait <- scWaitReadSTM (slaveConnection slave)
               return (slave, wait)
-          go outputs activeSlaves statuses0 waits
+          go outputs statuses0 waits
       where
-        go outputs activeSlaves statuses waits
-            | HS.null activeSlaves = do
+        go outputs statuses waits
+            | HMS.null waits = do
                   stopWaiting waits
                   return $ HMS.toList outputs
-            | otherwise = liftIO (atomically (waitForAny waits)) >>= \(slaveId, slave) -> do
-                  let conn = slaveConnection slave
-            -- preliminary testing shows that using the non-blocking
-            -- read is not efficient -- we're basically spawning a new
-            -- thread and allocating a new STMvar for each chunk.
-            -- I've switched to block and wait for a whole message
-            -- once we receive data from a slave instead.
+            | otherwise = liftIO (atomically (waitForAny waits)) >>= \(slaveId, (resp, slave)) -> do
+                  (statuses', requests, newOutputs) <- handleResponse slaveId resp statuses
+                  -- immediately send new requests
+                  forM_ requests sendRequest
+                  let status = statuses' HMS.! slaveId
+                  let outputs' = HMS.insertWith (<>) slaveId newOutputs outputs
+                  if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
+                      then do
+                          $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
+                          let waits' = HMS.delete slaveId waits
+                          go outputs' statuses' waits'
+                      else do
+                          let conn = slaveConnection slave
+                          wait <- scWaitReadSTM conn
+                          let waits' = HMS.insert slaveId (slave, wait) waits
+                          go outputs' statuses' waits'
 
-            -- scTryRead conn >>= \case
-            --     Nothing -> go outputs activeSlaves statuses
-            --     Just resp -> do
-                  scRead conn >>= \resp -> do
-                    (statuses', requests, newOutputs) <- handleResponse slaveId resp statuses
-                    -- immediately send new requests
-                    forM_ requests sendRequest
-                    let status = statuses' HMS.! slaveId
-                    let outputs' = HMS.insertWith (<>) slaveId newOutputs outputs
-                    if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
-                        then do
-                            $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
-                            let activeSlaves' = HS.delete slaveId activeSlaves
-                                waits' = HMS.delete slaveId waits
-                            go outputs' activeSlaves' statuses' waits'
-                        else do wait <- scWaitReadSTM conn
-                                let waits' = HMS.insert slaveId (slave, wait) waits
-                                go outputs' activeSlaves statuses' waits'
-
-    waitForAny :: HMS.HashMap SlaveId (Slave m state context input output, (STM (), a))
-               -> STM (SlaveId, Slave m state context input output)
+    waitForAny :: HMS.HashMap SlaveId (Slave m state context input output, (STM (SlaveResp state output), a))
+               -> STM (SlaveId, (SlaveResp state output, Slave m state context input output))
     waitForAny = foldr
-          (orElse . \(slaveId, (slave, (wait, _release))) -> wait >> return (slaveId, slave))
+          (orElse . \(slaveId, (slave, (wait, _release))) -> wait >>= \resp -> return (slaveId, (resp, slave)))
           retry
           . HMS.toList
 
-    stopWaiting :: HMS.HashMap SlaveId (a, (b, IO ())) -> m ()
-    stopWaiting = mapM_ (\(_slaveId, (_slave, (_wait, release))) -> liftIO release) . HMS.toList
+    stopWaiting :: HMS.HashMap SlaveId (a, (b, m ())) -> m ()
+    stopWaiting = mapM_ (\(_slaveId, (_slave, (_wait, release))) -> release) . HMS.toList
 
     handleResponse slaveId resp statuses = do
         resp' <- case resp of
