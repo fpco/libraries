@@ -378,16 +378,16 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
         -> m [(SlaveId, [(StateId, [(StateId, output)])])]
     masterLoop statuses0 -- waitForAnySlave unregister
         = do
-            let outputs0 = HMS.empty
+            outputs <- liftIO $ HT.newSized nSlaves :: m (HT.BasicHashTable SlaveId [(StateId, [(StateId, output)])])
             waits <- do waitHS <- forM slaves $ \slave -> do
                          wait <- scWaitReadSTM (slaveConnection slave)
                          return (slave, wait)
                         liftIO $ HT.fromListWithSizeHint nSlaves (HMS.toList waitHS)
                           :: m (HT.BasicHashTable SlaveId (Slave m state context input output, (STM (SlaveResp state output), m ())))
-            let go outputs statuses nActiveSlaves
+            let go statuses nActiveSlaves
                  | nActiveSlaves == 0 = do
                      liftIO (HT.toList waits) >>= stopWaiting
-                     return $ HMS.toList outputs
+                     liftIO $ HT.toList outputs
                  | otherwise = do
                      waitList <- liftIO (HT.toList waits)
                      liftIO (atomically (waitForAny waitList)) >>= \(slaveId, (resp, slave)) -> do
@@ -395,18 +395,20 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
                   -- immediately send new requests
                          forM_ requests sendRequest
                          let status = statuses' HMS.! slaveId
-                             outputs' = HMS.insertWith (<>) slaveId newOutputs outputs
+                         liftIO $ do
+                             oldOutput <- outputs `HT.lookup` slaveId
+                             HT.insert outputs slaveId (newOutputs <> fromMaybe [] oldOutput)
                          if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
                              then do
                                  $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
                                  liftIO $ HT.delete waits slaveId
-                                 go outputs' statuses' (nActiveSlaves - 1)
+                                 go statuses' (nActiveSlaves - 1)
                              else do
                                  let conn = slaveConnection slave
                                  wait <- scWaitReadSTM conn
                                  liftIO $ HT.insert waits slaveId (slave, wait)
-                                 go outputs' statuses' nActiveSlaves
-            go outputs0 statuses0 nSlaves
+                                 go statuses' nActiveSlaves
+            go statuses0 nSlaves
 
     waitForAny :: [(SlaveId, (Slave m state context input output, (STM (SlaveResp state output), a)))]
                -> STM (SlaveId, (SlaveResp state output, Slave m state context input output))
