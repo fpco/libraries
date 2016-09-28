@@ -42,6 +42,7 @@ data StatefulConn m req resp = StatefulConn
     -- ^ Returns an `STM` action that will wait for a response and
     -- return it.  The second return value can be used to cancel
     -- waiting for a response.
+  , scWaitReadByteString :: m (STM ByteString, m ())
   }
 
 -- | Identifier for a slave.

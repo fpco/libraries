@@ -166,6 +166,7 @@ nmStatefulConn ad = StatefulConn
     { scWrite = nmWrite ad
     , scRead = nmRead ad
     , scWaitReadSTM = nmWaitReadSTM ad
+    , scWaitReadByteString = nmWaitReadByteString ad
     }
 
 -- | Run a slave that uses "Data.Streaming.NetworkMessage" for sending

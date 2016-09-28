@@ -44,6 +44,7 @@ module Data.Streaming.NetworkMessage
     , nmWrite
     , nmRead
     , nmWaitReadSTM
+    , nmWaitReadByteString
       -- * Settings
     , NMSettings
     , defaultNMSettings
@@ -145,6 +146,35 @@ nmWaitReadSTM appData = do
             Nothing -> STM.retry
         killAction = return ()
     return (waitAction, killAction)
+
+nmWaitReadByteString :: (MonadConnect m) => NMAppData iSend youSend -> m (STM ByteString, m ())
+nmWaitReadByteString NMAppData{..} = do
+    m <- liftIO $ newTVarIO Nothing
+    _ <- fork $ do
+        bs <- liftIO readByteString
+        atomically $ writeTVar m (Just bs)
+    let waitAction = readTVar m >>= \case
+            Just bs -> return bs
+            Nothing -> STM.retry
+        killAction = return ()
+    return (waitAction, killAction)
+  where
+      readByteString =
+          (S.peekMessageHeader nmByteBuffer >>= loop >>= getBS)
+          `catch` (\ ex@(PeekException _ _) -> throwIO . NMDecodeFailure . ("nmWaitReadByteString " ++) . show $ ex)
+      loop (S.NeedMoreInput cont) = do
+          bs <- appRead nmAppData
+          if null bs
+              then throwIO (NMDecodeFailure "nmWaitReadByteString Couldn't decode: no data")
+              else cont bs >>= loop
+      loop (S.Done (S.Message x)) = return x
+      getBS (n :: S.SizeTag) =
+          BB.consume nmByteBuffer n >>= \case
+              Right bs -> return bs
+              Left _ -> do
+                  chunk <- appRead nmAppData
+                  BB.copyByteString nmByteBuffer chunk
+                  getBS n
 
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and

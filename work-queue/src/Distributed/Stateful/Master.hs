@@ -59,6 +59,7 @@ import qualified Data.HashSet as HS
 import qualified Data.HashTable.IO as HT
 import           Data.List.Split (chunksOf)
 import           Data.SimpleSupply
+import qualified Data.Store as S
 import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
 import qualified System.Random as R
@@ -345,7 +346,7 @@ updateSlavesStep mp nSlaves maxBatchSize inputs respSlaveId resp statuses0 = wit
 
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
-     (MonadConnect m, NFData input, NFData output)
+     (MonadConnect m, NFData input, NFData output, S.Store output, S.Store state)
   => IORef MasterProfiling
   -> Int -- ^ Number of slaves
   -> Int -- ^ Max batch size
@@ -380,10 +381,10 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
         = do
             outputs <- liftIO $ HT.newSized nSlaves :: m (HT.BasicHashTable SlaveId [(StateId, [(StateId, output)])])
             waits <- do waitHS <- forM slaves $ \slave -> do
-                         wait <- scWaitReadSTM (slaveConnection slave)
+                         wait <- scWaitReadByteString (slaveConnection slave)
                          return (slave, wait)
                         liftIO $ HT.fromListWithSizeHint nSlaves (HMS.toList waitHS)
-                          :: m (HT.BasicHashTable SlaveId (Slave m state context input output, (STM (SlaveResp state output), m ())))
+                          :: m (HT.BasicHashTable SlaveId (Slave m state context input output, (STM ByteString, m ())))
             let go statuses nActiveSlaves
                  | nActiveSlaves == 0 = do
                      liftIO (HT.toList waits) >>= stopWaiting
@@ -405,15 +406,15 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
                                  go statuses' (nActiveSlaves - 1)
                              else do
                                  let conn = slaveConnection slave
-                                 wait <- scWaitReadSTM conn
+                                 wait <- scWaitReadByteString conn
                                  liftIO $ HT.insert waits slaveId (slave, wait)
                                  go statuses' nActiveSlaves
             go statuses0 nSlaves
 
-    waitForAny :: [(SlaveId, (Slave m state context input output, (STM (SlaveResp state output), a)))]
+    waitForAny :: [(SlaveId, (Slave m state context input output, (STM ByteString, a)))]
                -> STM (SlaveId, (SlaveResp state output, Slave m state context input output))
     waitForAny = foldr
-          (orElse . \(slaveId, (slave, (wait, _release))) -> wait >>= \resp -> return (slaveId, (resp, slave)))
+          (orElse . \(slaveId, (slave, (wait, _release))) -> wait >>= \resp -> return (slaveId, (S.decodeEx resp, slave)))
           retry
 
     stopWaiting :: [(SlaveId, (a, (b, m ())))] -> m ()
@@ -454,7 +455,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
 -- inconsistent state, and the whole computation should be aborted.
 {-# INLINE update #-}
 update :: forall state context input output m.
-     (MonadConnect m, NFData input, NFData output, NFData state, NFData context)
+     (MonadConnect m, NFData input, NFData output, NFData state, NFData context, S.Store state, S.Store output)
   => MasterHandle m state context input output
   -> context
   -> HMS.HashMap StateId [input]
