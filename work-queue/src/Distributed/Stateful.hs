@@ -71,7 +71,7 @@ import           Distributed.Stateful.Slave
 import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
-import           Data.Store (Store)
+import           Data.Store (Store, encode)
 import           Control.Concurrent.STM.TMChan
 import           Data.Streaming.NetworkMessage
 import           Control.Monad.Logger.JSON.Extra (logErrorJ, logWarnJ, logDebugJ)
@@ -95,7 +95,8 @@ import           FP.Redis (Milliseconds)
 
 -- | Run a slave that communicates with a master via 'TMChan's.
 runPureStatefulSlave :: forall m context input state output a.
-       (MonadConnect m, NFData state, NFData output, Store state, NFData input, NFData context)
+       (MonadConnect m, NFData state, NFData output, Store state, NFData input, NFData context
+       , Store context, Store input, Store output)
     => (context -> input -> state -> m (state, output))
     -> (SlaveConn m state context input output -> m a)
     -> m a
@@ -110,8 +111,8 @@ runPureStatefulSlave update_ cont = do
             closeTMChan reqChan
             closeTMChan respChan)
   where
-    chanStatefulConn :: forall req resp.
-        TMChan req -> TMChan resp -> StatefulConn m req resp
+    chanStatefulConn :: forall req resp. Store resp
+        => TMChan req -> TMChan resp -> StatefulConn m req resp
     chanStatefulConn reqChan respChan = StatefulConn
         { scWrite = \x -> do
             closed <- atomically $ do
@@ -132,6 +133,15 @@ runPureStatefulSlave update_ cont = do
             case mbX of
                 Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
                 Just x -> return x
+        , scReadByteString = do
+            mbX <- atomically $ do
+                closed <- isClosedTMChan respChan
+                if closed
+                    then return Nothing
+                    else readTMChan respChan
+            case mbX of
+                Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
+                Just x -> return (encode x)
         , scWaitReadSTM =
                 let wait = do
                         closed <- isClosedTMChan respChan
@@ -144,7 +154,8 @@ runPureStatefulSlave update_ cont = do
 -- within the same process, and communication is performed via
 -- 'TMChan's.
 runSimplePureStateful :: forall m context input state output a.
-       (MonadConnect m, NFData state, NFData output, Store state, NFData input, NFData context)
+       (MonadConnect m, NFData state, NFData output, Store state, NFData input, NFData context
+       , Store context, Store input, Store output)
     => MasterArgs m state context input output
     -> Int -- ^ Desired slaves. Must be >= 0
     -> (MasterHandle m state context input output -> m a)
@@ -165,6 +176,7 @@ nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> Statefu
 nmStatefulConn ad = StatefulConn
     { scWrite = nmWrite ad
     , scRead = nmRead ad
+    , scReadByteString = nmReadByteString ad
     , scWaitReadSTM = nmWaitReadSTM ad
     , scWaitReadByteString = nmWaitReadByteString ad
     }

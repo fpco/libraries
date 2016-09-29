@@ -38,6 +38,8 @@ data StatefulConn m req resp = StatefulConn
     -- ^ Write a request to the connection.
   , scRead :: !(m resp)
     -- ^ Read a response from the connection.
+  , scReadByteString :: !(m ByteString)
+    -- ^ Read a response from the connection, without decoding it.
   , scWaitReadSTM :: m (STM resp, m ())
     -- ^ Returns an `STM` action that will wait for a response and
     -- return it.  The second return value can be used to cancel

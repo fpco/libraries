@@ -49,10 +49,11 @@ module Distributed.Stateful.Master
     ) where
 
 import           ClassyPrelude hiding (Chan, readChan, writeChan)
+import qualified Control.Concurrent.Chan.Unagi as Unagi
+import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Control.DeepSeq (NFData)
 import           Control.Lens (makeLenses, set, at, _Just, over)
 import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
-import           Control.Monad.STM (orElse, retry)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -60,10 +61,20 @@ import qualified Data.HashTable.IO as HT
 import           Data.List.Split (chunksOf)
 import           Data.SimpleSupply
 import qualified Data.Store as S
+import           Data.Void (absurd)
 import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
 import qualified System.Random as R
 import           Text.Printf (printf)
+
+type Chan a = (Unagi.InChan a, Unagi.OutChan a)
+
+writeChan :: MonadIO m => Chan a -> a -> m ()
+writeChan (ch, _) x = liftIO (Unagi.writeChan ch x)
+
+readChan :: MonadIO m => Chan a -> m a
+readChan (_, ch) = liftIO (Unagi.readChan ch)
+
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -366,8 +377,22 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
         }
       statuses0 = slaveStatus0 <$> slaves
   statuses1 <- foldM initSlave statuses0 (HMS.keys slaves)
-  masterLoop statuses1
+  channel <- liftIO Unagi.newChan
+  either absurd id <$> Async.race
+      (unsafeHead <$> Async.mapConcurrently (uncurry (receiveLoop channel)) (HMS.toList (slaveConnection <$> slaves)))
+      (masterLoop statuses1 channel)
+  -- masterLoop statuses1 channel
   where
+
+    receiveLoop :: Chan (SlaveId, ByteString)
+                -> SlaveId
+                -> SlaveConn m state context input output
+                -> m void
+    receiveLoop channel slaveId conn = go
+      where go = do
+                resp <- withAtomicProfiling mp mpSlaveLoopScRead $ scReadByteString conn
+                writeChan channel (slaveId, resp)
+                go
 
     initSlave statuses slaveId = do
         UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves maxBatchSize inputMap slaveId USRespInit statuses
@@ -376,49 +401,30 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
 
     masterLoop ::
            SlavesStatus
+        -> Chan (SlaveId, ByteString)
         -> m [(SlaveId, [(StateId, [(StateId, output)])])]
-    masterLoop statuses0 -- waitForAnySlave unregister
+    masterLoop statuses0 channel -- waitForAnySlave unregister
         = do
             outputs <- liftIO $ HT.newSized nSlaves :: m (HT.BasicHashTable SlaveId [(StateId, [(StateId, output)])])
-            waits <- do waitHS <- forM slaves $ \slave -> do
-                         wait <- scWaitReadByteString (slaveConnection slave)
-                         return (slave, wait)
-                        liftIO $ HT.fromListWithSizeHint nSlaves (HMS.toList waitHS)
-                          :: m (HT.BasicHashTable SlaveId (Slave m state context input output, (STM ByteString, m ())))
             let go statuses nActiveSlaves
-                 | nActiveSlaves == 0 = do
-                     liftIO (HT.toList waits) >>= stopWaiting
-                     liftIO $ HT.toList outputs
+                 | nActiveSlaves == 0 = liftIO $ HT.toList outputs
                  | otherwise = do
-                     waitList <- liftIO (HT.toList waits)
-                     liftIO (atomically (waitForAny waitList)) >>= \(slaveId, (resp, slave)) -> do
-                         (statuses', requests, newOutputs) <- handleResponse slaveId resp statuses
-                  -- immediately send new requests
-                         forM_ requests sendRequest
-                         let status = statuses' HMS.! slaveId
-                         liftIO $ do
-                             oldOutput <- outputs `HT.lookup` slaveId
-                             HT.insert outputs slaveId (newOutputs <> fromMaybe [] oldOutput)
-                         if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
-                             then do
-                                 $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
-                                 liftIO $ HT.delete waits slaveId
-                                 go statuses' (nActiveSlaves - 1)
-                             else do
-                                 let conn = slaveConnection slave
-                                 wait <- scWaitReadByteString conn
-                                 liftIO $ HT.insert waits slaveId (slave, wait)
-                                 go statuses' nActiveSlaves
+                     (slaveId, bs) <- readChan channel
+                     let resp = S.decodeEx bs
+                     (statuses', requests, newOutputs) <- handleResponse slaveId (resp :: SlaveResp state output) statuses
+                     -- immediately send new requests
+                     forM_ requests sendRequest
+                     let status = statuses' HMS.! slaveId
+                     liftIO $ do
+                         oldOutput <- outputs `HT.lookup` slaveId
+                         HT.insert outputs slaveId (newOutputs <> fromMaybe [] oldOutput)
+                     if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
+                         then do
+                             $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
+                             go statuses' (nActiveSlaves - 1)
+                         else do
+                             go statuses' nActiveSlaves
             go statuses0 nSlaves
-
-    waitForAny :: [(SlaveId, (Slave m state context input output, (STM ByteString, a)))]
-               -> STM (SlaveId, (SlaveResp state output, Slave m state context input output))
-    waitForAny = foldr
-          (orElse . \(slaveId, (slave, (wait, _release))) -> wait >>= \resp -> return (slaveId, (S.decodeEx resp, slave)))
-          retry
-
-    stopWaiting :: [(SlaveId, (a, (b, m ())))] -> m ()
-    stopWaiting = mapM_ (\(_slaveId, (_slave, (_wait, release))) -> release)
 
     handleResponse slaveId resp statuses = do
         resp' <- case resp of

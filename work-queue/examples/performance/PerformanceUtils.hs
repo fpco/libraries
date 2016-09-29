@@ -202,7 +202,7 @@ runWithNM fp csvInfo jqc spawnWorker pinWorkers masterArgs nSlaves workerFunc ge
 runWithoutNM ::
     ( MonadConnect m
     , Show response, NFData state, NFData input, NFData context
-    , NFData output, Store state)
+    , NFData output, Store state, Store context, Store input, Store output)
     => FilePath
     -> CSVInfo
     -> MasterArgs m state context input output
