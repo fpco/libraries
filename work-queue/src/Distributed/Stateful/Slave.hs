@@ -49,13 +49,13 @@ instance Exception SlaveException
 -- | Runs a stateful slave. Returns when the master sends the "quit" command.
 {-# INLINE runSlave #-}
 runSlave :: forall state context input output m.
-     (MonadConnect m, NFData state, NFData output, S.Store state, NFData input, NFData context)
+     (MonadConnect m, NFData state, NFData output, S.Store state, S.Store context, S.Store output, S.Store input, NFData input, NFData context)
   => SlaveArgs m state context input output
   -> m ()
 runSlave SlaveArgs{..} = do
     states <- liftIO HT.new
-    let recv = scRead saConn
-    let send = scWrite saConn
+    let recv = scDecodeAndRead saConn
+    let send = scEncodeAndWrite saConn
         -- We're only catching 'SlaveException's here, since they
         -- indicate that something was wrong about the request, and
         -- should be sent back to the master.
