@@ -82,12 +82,12 @@ data MasterArgs m state context input output = MasterArgs
 newtype MasterHandle m state context input output =
   MasterHandle {_unMasterHandle :: MVar (MasterHandle_ m state context input output)}
 
-data Slaves state context input output
+data Slaves m state context input output
   = NoSlavesYet ![(StateId, state)]
-  | Slaves !(HMS.HashMap SlaveId (Slave state context input output))
+  | Slaves !(HMS.HashMap SlaveId (Slave m state context input output))
 
 data MasterHandle_ m state context input output = MasterHandle_
-  { mhSlaves :: !(Slaves state context input output)
+  { mhSlaves :: !(Slaves m state context input output)
   , mhSlaveIdSupply :: !(Supply SlaveId)
   , mhStateIdSupply :: !(Supply StateId)
   , mhArgs :: !(MasterArgs m state context input output)
@@ -96,8 +96,8 @@ data MasterHandle_ m state context input output = MasterHandle_
 
 -- | Connection to a slave.  Requests to the slave can be written, and
 -- responses read, with this.
-type SlaveConn state context input output =
-  StatefulConn (SlaveReq state context input) (SlaveResp state output)
+type SlaveConn m state context input output =
+  StatefulConn m (SlaveReq state context input) (SlaveResp state output)
 -- type SlaveConn (m :: * -> *) state context input output = StatefulConn
 
 -- slaveConnRead :: (MonadIO m, S.Store state, S.Store output) => SlaveConn m state context input output -> m (SlaveResp state output)
@@ -106,8 +106,8 @@ type SlaveConn state context input output =
 -- slaveConnWrite :: (MonadIO m, S.Store state, S.Store context, S.Store input) => SlaveConn m state context input output -> SlaveReq state context input -> m ()
 -- slaveConnWrite = scEncodeAndWrite
 
-data Slave state context input output = Slave
-  { slaveConnection :: !(SlaveConn state context input output)
+data Slave m state context input output = Slave
+  { slaveConnection :: !(SlaveConn m state context input output)
   , slaveStates :: !(HMS.HashMap StateId ())
   }
 
@@ -173,7 +173,7 @@ closeMaster (MasterHandle mhv) =
 readExpect :: forall m state context input output a.
      (MonadIO m, MonadBaseControl IO m, S.Store state, S.Store output)
   => Text
-  -> SlaveConn state context input output
+  -> SlaveConn m state context input output
   -> (SlaveResp state output -> Maybe a)
   -> m a
 readExpect loc slave f = do
@@ -186,9 +186,9 @@ readExpect loc slave f = do
 
 {-# INLINE integrateNewStates #-}
 integrateNewStates ::
-     HMS.HashMap SlaveId (Slave state context input output)
+     HMS.HashMap SlaveId (Slave m state context input output)
   -> [(SlaveId, HMS.HashMap StateId ())]
-  -> HMS.HashMap SlaveId (Slave state context input output)
+  -> HMS.HashMap SlaveId (Slave m state context input output)
 integrateNewStates oldSlaves =
   go ((\sl -> sl{slaveStates = mempty}) <$> oldSlaves)
   where
@@ -362,6 +362,13 @@ writeChan (ch, _) x = liftIO (Unagi.writeChan ch x)
 readChan :: MonadIO m => Chan a -> m a
 readChan (_, ch) = liftIO (Unagi.readChan ch)
 
+data SlaveWithConnection m state context input output =
+    SlaveWithConnection
+        { swcSlaveId :: !SlaveId
+        , swcConn :: !(SlaveConn m state context input output)
+        , swcCont :: !(IORef (Maybe (ByteString -> m (S.PeekMessage m (SlaveResp state output)))))
+        }
+
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
      (MonadConnect m, NFData input, NFData output
@@ -369,7 +376,7 @@ updateSlaves :: forall state context input output m.
   => IORef MasterProfiling
   -> Int -- ^ Number of slaves
   -> Int -- ^ Max batch size
-  -> HMS.HashMap SlaveId (Slave state context input output)
+  -> HMS.HashMap SlaveId (Slave m state context input output)
   -- ^ Slaves connections
   -> context
   -- ^ Context to the computation
@@ -377,9 +384,11 @@ updateSlaves :: forall state context input output m.
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
 updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfiling mp mpUpdateSlaves $ do
-  slaveCanRead :: MVar (SlaveId, SlaveConn state context input output) <- newEmptyMVar
-  liftIO $ forM_ (HMS.toList slaves) $ \(slaveId, slave) ->
-      scRegisterCanRead (slaveConnection slave) (putMVar slaveCanRead (slaveId, slaveConnection slave))
+  slaveCanRead :: MVar (SlaveWithConnection m state context input output) <- newEmptyMVar
+  let registerAll :: [SlaveWithConnection m state context input output] -> m a -> m a
+      registerAll [] cont = cont
+      registerAll (swc@(SlaveWithConnection{..}):xs) cont =
+          registerAll xs (scRegisterCanRead swcConn (putMVar slaveCanRead swc) cont)
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
         , _ssRemainingStates = HMS.keys (slaveStates slave)
@@ -387,29 +396,37 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
         }
       statuses0 = slaveStatus0 <$> slaves
   statuses1 <- foldM initSlave statuses0 (HMS.keys slaves)
-  masterLoop slaveCanRead statuses1 HMS.empty nSlaves
+  swcList <- forM (HMS.toList slaves) $ \(slaveId, slave) -> do
+      cont <- newIORef Nothing
+      return (SlaveWithConnection slaveId (slaveConnection slave) cont)
+  registerAll swcList (masterLoop slaveCanRead statuses1 HMS.empty nSlaves)
 
   where
-    masterLoop :: MVar (SlaveId, SlaveConn state context input output)
+    
+    masterLoop :: MVar (SlaveWithConnection m state context input output)
                  -> SlavesStatus
                  -> HMS.HashMap SlaveId [(StateId, [(StateId, output)])]
                  -> Int
                  -> m [(SlaveId, [(StateId, [(StateId, output)])])]
     masterLoop _slaveCanRead _statuses outputs 0 = return (HMS.toList outputs)
     masterLoop slaveCanRead statuses outputs nActiveSlaves = do
-        (slaveId, conn) <- takeMVar slaveCanRead
-        readIORef (scCont conn) >>= \case
-            S.Done (S.Message resp) -> handleResponse slaveCanRead statuses outputs nActiveSlaves slaveId conn resp
+        swc@(SlaveWithConnection{..}) <- takeMVar slaveCanRead
+        cont <- readIORef swcCont >>= \case
+            Nothing -> S.peekMessage (scByteBuffer swcConn)
+            Just cont0 -> return (S.NeedMoreInput cont0)
+        case cont of
+            S.Done (S.Message _resp) -> error "updateSlaves.masterLoop: unexpected Done continuation."
             S.NeedMoreInput cont -> do
-                mbs <- liftIO (scTryRead conn)
+                mbs <- scTryRead swcConn
                 case mbs of
                     Nothing -> masterLoop slaveCanRead statuses outputs nActiveSlaves
-                    Just bs -> liftIO (cont bs) >>= \case
-                        cont'@(S.NeedMoreInput _) -> do
-                            writeIORef (scCont conn) cont'
+                    Just bs -> cont bs >>= \case
+                        (S.NeedMoreInput cont') -> do
+                            writeIORef swcCont (Just cont')
                             masterLoop slaveCanRead statuses outputs nActiveSlaves
-                        S.Done (S.Message resp) ->  handleResponse slaveCanRead statuses outputs nActiveSlaves slaveId conn resp
-    handleResponse slaveCanRead statuses outputs nActiveSlaves slaveId conn resp = do
+                        S.Done (S.Message resp) -> handleResponse slaveCanRead statuses outputs nActiveSlaves swc resp
+
+    handleResponse slaveCanRead statuses outputs nActiveSlaves swc@SlaveWithConnection{..} resp = do
         resp' <- case resp of
             SRespResetState -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
             SRespGetStates _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
@@ -420,20 +437,20 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
               return (USRespRemoveStates requestingSlaveId removedStates)
             SRespUpdate outputs_ -> return (USRespUpdate outputs_)
             SRespGetProfile _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
-        UpdateSlaveStep requests statuses' newOutputs <- updateSlavesStep mp nSlaves maxBatchSize inputMap slaveId resp' statuses
+        UpdateSlaveStep requests statuses' newOutputs <- updateSlavesStep mp nSlaves maxBatchSize inputMap swcSlaveId resp' statuses
         forM_ requests sendRequest
-        let status = statuses' HMS.! slaveId
-            outputs' = HMS.insertWith (<>) slaveId newOutputs outputs
+        let status = statuses' HMS.! swcSlaveId
+            outputs' = HMS.insertWith (<>) swcSlaveId newOutputs outputs
         nActiveSlaves' <- if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
                             then do
-                                $logInfoJ ("Slave " ++ tshow (unSlaveId slaveId) ++ " is done")
+                                $logInfoJ ("Slave " ++ tshow (unSlaveId swcSlaveId) ++ " is done")
                                 return (nActiveSlaves - 1)
                          else return nActiveSlaves
         -- see if we can decode another message from the chunk we read
-        liftIO (S.peekMessage (scByteBuffer conn)) >>= \case
-            S.Done (S.Message newResp) -> handleResponse slaveCanRead statuses' outputs' nActiveSlaves' slaveId conn newResp
-            cont'@(S.NeedMoreInput _) -> do
-                writeIORef (scCont conn) cont'
+        S.peekMessage (scByteBuffer swcConn) >>= \case
+            S.Done (S.Message newResp) -> handleResponse slaveCanRead statuses' outputs' nActiveSlaves' swc newResp
+            S.NeedMoreInput cont' -> do
+                writeIORef swcCont (Just cont')
                 masterLoop slaveCanRead statuses' outputs' nActiveSlaves'
 
     initSlave statuses slaveId = do
@@ -514,7 +531,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> withAtomicProf
 addSlaveConnection ::
      (MonadConnect m, S.Store state, S.Store context, S.Store input, S.Store output)
   => MasterHandle m state context input output
-  -> SlaveConn state context input output
+  -> SlaveConn m state context input output
   -> m ()
 addSlaveConnection (MasterHandle mhv) conn = modifyMVar_ mhv $ \mh -> do
   slaveId <- askSupply (mhSlaveIdSupply mh)
@@ -528,7 +545,7 @@ addSlaveConnection (MasterHandle mhv) conn = modifyMVar_ mhv $ \mh -> do
 
 sendStates :: forall m state context input output.
         (Monad m, MonadBaseControl IO m, MonadIO m, S.Store state, S.Store context, S.Store input, S.Store output)
-        => [(SlaveConn state context input output, [(StateId, state)])]
+        => [(SlaveConn m state context input output, [(StateId, state)])]
         -> m ()
 sendStates slavesWithStates = do
   -- Send states

@@ -37,25 +37,24 @@ type HashTable k v = HT.CuckooHashTable k v
 --
 -- Values of type @req@ can be written to, and values of type @resp@
 -- can be read from the connection.
-data StatefulConn req resp = StatefulConn
-  { scWrite :: !(BS.ByteString -> IO ())
+data StatefulConn m req resp = StatefulConn
+  { scWrite :: !(BS.ByteString -> m ())
     -- ^ Write a request to the connection.
-  , scRegisterCanRead :: !(IO () -> IO ())
-  , scRead :: !(IO BS.ByteString)
-  , scTryRead :: !(IO (Maybe BS.ByteString))
+  , scRegisterCanRead :: !(forall a. m () -> m a -> m a)
+  , scRead :: !(m BS.ByteString)
+  , scTryRead :: !(m (Maybe BS.ByteString))
   , scByteBuffer :: !BB.ByteBuffer
-  , scCont :: !(IORef (S.PeekMessage IO resp))
   }
 
-scEncodeAndWrite :: (Store req, MonadIO m) => StatefulConn req resp -> req -> m ()
-scEncodeAndWrite conn x = liftIO (scWrite conn (S.encodeMessage (S.Message x)))
+scEncodeAndWrite :: (Store req, MonadIO m) => StatefulConn m req resp -> req -> m ()
+scEncodeAndWrite conn x = scWrite conn (S.encodeMessage (S.Message x))
 
 newtype StatefulConnDecodeFailure = StatefulConnDecodeFailure String
   deriving (Typeable, Show)
 instance Exception StatefulConnDecodeFailure
 
-scDecodeAndRead :: forall m req resp. (Store resp, MonadIO m) => StatefulConn req resp -> m resp
-scDecodeAndRead conn = liftIO $
+scDecodeAndRead :: forall m req resp. (Store resp, MonadIO m, MonadBaseControl IO m) => StatefulConn m req resp -> m resp
+scDecodeAndRead conn = 
     (S.peekMessage (scByteBuffer conn) >>= loop)
     `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("scDecodeAndRead: " ++) . show $ ex)
   where
