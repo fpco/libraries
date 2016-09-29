@@ -367,21 +367,21 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
         }
       statuses0 = slaveStatus0 <$> slaves
   statuses1 <- foldM initSlave statuses0 (HMS.keys slaves)
-  channel <- newChan
+  channel <- liftIO newTChanIO
   either absurd id <$> Async.race
       (unsafeHead <$> Async.mapConcurrently (uncurry (receiveLoop channel)) (HMS.toList (slaveConnection <$> slaves)))
       (masterLoop statuses1 channel)
   -- masterLoop statuses1 channel
   where
 
-    receiveLoop :: Chan (SlaveId, ByteString)
+    receiveLoop :: TChan (SlaveId, ByteString)
                 -> SlaveId
                 -> SlaveConn m state context input output
                 -> m void
     receiveLoop channel slaveId conn = go
       where go = do
                 resp <- withAtomicProfiling mp mpSlaveLoopScRead $ scReadByteString conn
-                withAtomicProfiling mp mpSlaveLoopWriteTCHan $ writeChan channel (slaveId, resp)
+                withAtomicProfiling mp mpSlaveLoopWriteTCHan $ atomically $ writeTChan channel (slaveId, resp)
                 go
 
     initSlave statuses slaveId = do
@@ -391,7 +391,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
 
     masterLoop ::
            SlavesStatus
-        -> Chan (SlaveId, ByteString)
+        -> TChan (SlaveId, ByteString)
         -> m [(SlaveId, [(StateId, [(StateId, output)])])]
     masterLoop statuses0 channel -- waitForAnySlave unregister
         = do
@@ -399,7 +399,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
             let go statuses nActiveSlaves
                  | nActiveSlaves == 0 = liftIO $ HT.toList outputs
                  | otherwise = do
-                     (slaveId, bs) <- readChan channel
+                     (slaveId, bs) <- withAtomicProfiling mp mpSendLoopReadTChan $ atomically (readTChan channel)
                      let resp = S.decodeEx bs
                      (statuses', requests, newOutputs) <- handleResponse slaveId (resp :: SlaveResp state output) statuses
                      -- immediately send new requests
