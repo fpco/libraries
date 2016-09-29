@@ -44,7 +44,8 @@ communication between the threads, is also provided.
 
 
 
-module Distributed.Stateful
+module Distributed.Stateful where
+    {-
     ( -- * Re-exported types
       Update
       -- * NetworkMessage backend
@@ -61,6 +62,7 @@ module Distributed.Stateful
     , runPureStatefulSlave
     , runSimplePureStateful
     ) where
+    -}
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
@@ -93,13 +95,13 @@ import           FP.Redis (Milliseconds)
 
 -- | Run a slave that communicates with a master via 'TMChan's.
 runPureStatefulSlave :: forall m context input state output a.
-       (MonadConnect m, NFData state, NFData output, Store state, NFData input, NFData context)
+       (MonadConnect m, NFData state, NFData output, Store state, Store context, Store output, Store input, NFData input, NFData context)
     => (context -> input -> state -> m (state, output))
     -> (SlaveConn m state context input output -> m a)
     -> m a
 runPureStatefulSlave update_ cont = do
-    reqChan :: TMChan (SlaveReq state context input) <- liftIO newTMChanIO
-    respChan :: TMChan (SlaveResp state output) <- liftIO newTMChanIO
+    reqChan :: TMChan ByteString <- liftIO newTMChanIO
+    respChan :: TMChan ByteString <- liftIO newTMChanIO
     let slaveConn = chanStatefulConn respChan reqChan
     let masterConn = chanStatefulConn reqChan respChan
     fmap snd $ Async.concurrently
@@ -109,7 +111,7 @@ runPureStatefulSlave update_ cont = do
             closeTMChan respChan)
   where
     chanStatefulConn :: forall req resp.
-        TMChan req -> TMChan resp -> StatefulConn m req resp
+        TMChan ByteString -> TMChan ByteString -> StatefulConn m req resp
     chanStatefulConn reqChan respChan = StatefulConn
         { scWrite = \x -> do
             closed <- atomically $ do
@@ -130,8 +132,29 @@ runPureStatefulSlave update_ cont = do
             case mbX of
                 Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
                 Just x -> return x
+        , scTryRead = do
+            mbX <- atomically $ do
+                closed <- isClosedTMChan respChan
+                if closed
+                    then return Nothing
+                    else (Just <$> readTMChan respChan) <|> return Nothing
+            case mbX of
+                Nothing -> fail "runPureStatefulSlave: trying to tryRead on closed chan"
+                Just x -> return x
+        , scRegisterCanRead = \callback cont -> Async.race cont $ do
+            let loop = do
+                    closed <- atomically $ do
+                        let waitUntilClosed = do
+                                closed <- isClosedTMChan respChan
+                                unless closed STM.retry
+                        (True <$ waitUntilClosed) <|> (False <$ void (peekTMChan respChan))
+                    unless closed $
+                        callback
+                        loop
+            loop
         }
 
+{-
 -- | Run a computation, where the slaves run as separate threads
 -- within the same process, and communication is performed via
 -- 'TMChan's.
@@ -395,3 +418,4 @@ runJobQueueStatefulWorker jqc ss host mbPort ma nmsma cont =
               case mbResp of
                 Nothing -> liftIO (fail "Timed out waiting for slaves to connect")
                 Just resp -> return resp)
+-}
