@@ -10,6 +10,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE KindSignatures #-}
 {-|
 Module: Distributed.Stateful.Master
 Description: Master nodes for a distributed stateful computation.
@@ -64,6 +65,7 @@ import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
 import qualified System.Random as R
 import           Text.Printf (printf)
+import qualified Data.Store as S
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -93,8 +95,13 @@ data MasterHandle_ m state context input output = MasterHandle_
 
 -- | Connection to a slave.  Requests to the slave can be written, and
 -- responses read, with this.
-type SlaveConn m state context input output =
-  StatefulConn m (SlaveReq state context input) (SlaveResp state output)
+type SlaveConn (m :: * -> *) state context input output = StatefulConn
+
+slaveConnRead :: (MonadIO m, S.Store state, S.Store output) => SlaveConn m state context input output -> m (SlaveResp state output)
+slaveConnRead = scDecodeAndRead
+
+slaveConnWrite :: (MonadIO m, S.Store state, S.Store context, S.Store input) => SlaveConn m state context input output -> SlaveReq state context input -> m ()
+slaveConnWrite = scEncodeAndWrite
 
 data Slave m state context input output = Slave
   { slaveConnection :: !(SlaveConn m state context input output)
@@ -138,7 +145,7 @@ initMaster ma@MasterArgs{..} = do
 
 -- | This will shut down all the slaves.
 closeMaster ::
-     (MonadConnect m)
+     (MonadConnect m, S.Store state, S.Store context, S.Store input, S.Store output)
   => MasterHandle m state context input output
   -> m ()
 closeMaster (MasterHandle mhv) =
@@ -149,7 +156,7 @@ closeMaster (MasterHandle mhv) =
         -- Ignore all exceptions we might have when quitting the slaves
         forM_ (HMS.toList slaves) $ \(slaveId, slave) -> do
           mbErr <- tryAny $ do
-            scWrite (slaveConnection slave) SReqQuit
+            slaveConnWrite (slaveConnection slave) SReqQuit
             readExpect "closeMaster" (slaveConnection slave) $ \case
               SRespQuit -> return ()
               _ -> Nothing
@@ -167,7 +174,7 @@ readExpect ::
   -> (SlaveResp state output -> Maybe a)
   -> m a
 readExpect loc slave f = do
-  resp <- scRead slave
+  resp <- slaveConnRead slave
   case resp of
     SRespError err -> throwIO (ExceptionFromSlave err)
     _ -> case f resp of
@@ -365,17 +372,16 @@ updateSlaves :: forall state context input output m.
   -> HMS.HashMap StateId [(StateId, input)]
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
+updateSlaves mp nSlaves maxBatchSize slaves context inputMap = error "TODO"
+{-
 updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfiling mp mpUpdateSlaves $ do
-  outgoingChans :: HMS.HashMap SlaveId (SlaveConn m state context input output, Chan (Maybe (UpdateSlaveReq input))) <-
-    forM slaves $ \slave -> do
-      chan <- liftIO Unagi.newChan
-      return (slaveConnection slave, chan)
+  slaveCanRead :: MVar (SlaveId, SlaveConn m) <- newEmptyMVar
+  outgoingReqs :: Chan (SlaveConn m, BS.ByteString) <- newChan
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
         , _ssRemainingStates = HMS.keys (slaveStates slave)
         , _ssWaitingForStates = False
         }
-  statusVar <- newMVar (slaveStatus0 <$> slaves)
   snd <$> Async.concurrently
     (Async.mapConcurrently (uncurry sendLoop) (HMS.toList outgoingChans))
     (finally
@@ -398,7 +404,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
                       USReqRemoveStates x y -> SReqRemoveStates x y
                       USReqAddStates y -> SReqAddStates y
                 $logDebugJ ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req)
-                withAtomicProfiling mp mpSendLoopSend $ scWrite conn req
+                withAtomicProfiling mp mpSendLoopSend $ slaveConnWrite conn req
                 go
 
     slaveLoop ::
@@ -436,6 +442,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
                 SRespUpdate outputs_ -> return (USRespUpdate outputs_)
                 SRespGetProfile _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
               go outputs resp'
+-}
 
 -- | Send an update request to all the slaves. This will cause each of
 -- the slaves to apply 'Distributed.Stateful.Slave.saUpdate' to each of its states. The outputs of
@@ -482,7 +489,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> withAtomicProf
             slaveIdsAndInputs <- either throwAndLog return $
               assignInputsToSlaves (slaveStates <$> slaves) inputMap
             forM_ slaveIdsAndInputs $ \(slaveId, inps) -> do
-              scWrite
+              slaveConnWrite
                 (slaveConnection (slaves HMS.! slaveId))
                 (SReqUpdate context inps)
             forM slaveIdsAndInputs $ \(slaveId, _) ->
@@ -519,7 +526,7 @@ sendStates ::
 sendStates slavesWithStates = do
   -- Send states
   forM_ slavesWithStates $ \(conn, states) -> do
-    scWrite conn (SReqResetState states)
+    slaveConnWrite conn (SReqResetState states)
   forM_ slavesWithStates $ \(conn, _) -> do
     readExpect "sendStates" conn $ \case
       SRespResetState -> Just ()
@@ -585,7 +592,7 @@ getStates (MasterHandle mhv) = withMVar mhv $ \mh -> do
   case mhSlaves mh of
     NoSlavesYet states -> return $ HMS.fromList states
     Slaves slaves -> do
-      forM_ slaves (\slave_ -> scWrite (slaveConnection slave_) SReqGetStates)
+      forM_ slaves (\slave_ -> slaveConnWrite (slaveConnection slave_) SReqGetStates)
       responses <- forM (HMS.elems slaves) $ \slave_ -> do
         readExpect "getStates" (slaveConnection slave_) $ \case
           SRespGetStates states -> Just states
@@ -600,7 +607,7 @@ getSlavesProfiling (MasterHandle mhv) = withMVar mhv $ \mh ->
     case mhSlaves mh of
         NoSlavesYet _states -> return HMS.empty
         Slaves slaves -> do
-            forM_ slaves $ \slave -> scWrite (slaveConnection slave) SReqGetProfile
+            forM_ slaves $ \slave -> slaveConnWrite (slaveConnection slave) SReqGetProfile
             forM slaves $ \slave ->
                 readExpect "getSlavesProfiling" (slaveConnection slave) $ \case
                     SRespGetProfile sp -> return sp

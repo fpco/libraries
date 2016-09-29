@@ -26,6 +26,10 @@ import           Data.Store.TypeHash
 import           Data.Store.TypeHash.Orphans ()
 import           Distributed.Stateful.Internal.Profiling
 import           Text.Printf (PrintfArg(..))
+import qualified Data.Store as S
+import qualified Data.Store.Streaming as S
+import qualified System.IO.ByteBuffer as BB
+import qualified Data.ByteString as BS
 
 type HashTable k v = HT.CuckooHashTable k v
 
@@ -33,12 +37,33 @@ type HashTable k v = HT.CuckooHashTable k v
 --
 -- Values of type @req@ can be written to, and values of type @resp@
 -- can be read from the connection.
-data StatefulConn m req resp = StatefulConn
-  { scWrite :: !(req -> m ())
+data StatefulConn = StatefulConn
+  { scWrite :: !(BS.ByteString -> IO ())
     -- ^ Write a request to the connection.
-  , scRead :: !(m resp)
-    -- ^ Read a response from the connection.
+  , scRegisterCanRead :: !(IO () -> IO ())
+  , scRead :: !(IO BS.ByteString)
+  , scTryRead :: !(IO (Maybe BS.ByteString))
+  , scByteBuffer :: !BB.ByteBuffer
   }
+
+scEncodeAndWrite :: (Store a, MonadIO m) => StatefulConn -> a -> m ()
+scEncodeAndWrite conn x = liftIO (scWrite conn (S.encodeMessage (S.Message x)))
+
+newtype StatefulConnDecodeFailure = StatefulConnDecodeFailure String
+  deriving (Typeable, Show)
+instance Exception StatefulConnDecodeFailure
+
+scDecodeAndRead :: forall a b m. (Store a, MonadIO m) => StatefulConn -> m a
+scDecodeAndRead conn = liftIO $
+    (S.peekMessage (scByteBuffer conn) >>= loop)
+    `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("scDecodeAndRead: " ++) . show $ ex)
+  where
+    loop (S.NeedMoreInput cont) = do
+        bs <- scRead conn
+        if null bs
+            then throwIO (StatefulConnDecodeFailure ("scDecodeAndRead: Couldn't decode: no data"))
+            else cont bs >>= loop
+    loop (S.Done (S.Message x)) = return x
 
 -- | Identifier for a slave.
 newtype SlaveId = SlaveId {unSlaveId :: Int}
