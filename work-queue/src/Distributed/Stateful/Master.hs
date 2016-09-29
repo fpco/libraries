@@ -48,8 +48,7 @@ module Distributed.Stateful.Master
     , MasterProfiling(..)
     ) where
 
-import           ClassyPrelude hiding (Chan, readChan, writeChan)
-import qualified Control.Concurrent.Chan.Unagi as Unagi
+import           ClassyPrelude
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
 import           Control.DeepSeq (NFData)
 import           Control.Lens (makeLenses, set, at, _Just, over)
@@ -66,15 +65,6 @@ import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
 import qualified System.Random as R
 import           Text.Printf (printf)
-
-type Chan a = (Unagi.InChan a, Unagi.OutChan a)
-
-writeChan :: MonadIO m => Chan a -> a -> m ()
-writeChan (ch, _) x = liftIO (Unagi.writeChan ch x)
-
-readChan :: MonadIO m => Chan a -> m a
-readChan (_, ch) = liftIO (Unagi.readChan ch)
-
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -377,7 +367,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
         }
       statuses0 = slaveStatus0 <$> slaves
   statuses1 <- foldM initSlave statuses0 (HMS.keys slaves)
-  channel <- liftIO Unagi.newChan
+  channel <- newChan
   either absurd id <$> Async.race
       (unsafeHead <$> Async.mapConcurrently (uncurry (receiveLoop channel)) (HMS.toList (slaveConnection <$> slaves)))
       (masterLoop statuses1 channel)
@@ -391,7 +381,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
     receiveLoop channel slaveId conn = go
       where go = do
                 resp <- withAtomicProfiling mp mpSlaveLoopScRead $ scReadByteString conn
-                writeChan channel (slaveId, resp)
+                withAtomicProfiling mp mpSlaveLoopWriteTCHan $ writeChan channel (slaveId, resp)
                 go
 
     initSlave statuses slaveId = do
