@@ -42,7 +42,6 @@ data StatefulConn m req resp = StatefulConn
     -- ^ Write a request to the connection.
   , scRegisterCanRead :: !(forall a. m () -> m a -> m a)
   , scRead :: !(m BS.ByteString)
-  , scTryRead :: !(m (Maybe BS.ByteString))
   , scByteBuffer :: !BB.ByteBuffer
   }
 

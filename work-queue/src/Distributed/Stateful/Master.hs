@@ -435,14 +435,12 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
         case cont of
             S.Done (S.Message _resp) -> error "updateSlaves.masterLoop: unexpected Done continuation."
             S.NeedMoreInput cont -> do
-                mbs <- scTryRead swcConn
-                case mbs of
-                    Nothing -> return (False, mls)
-                    Just bs -> cont bs >>= \case
-                        (S.NeedMoreInput cont') -> do
-                            writeIORef swcCont (Just cont')
-                            return (False, mls)
-                        S.Done (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
+                bs <- scRead swcConn
+                cont bs >>= \case
+                    (S.NeedMoreInput cont') -> do
+                        writeIORef swcCont (Just cont')
+                        return (False, mls)
+                    S.Done (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
 
     handleResponse statuses outputs nActiveSlaves swc@SlaveWithConnection{..} resp = do
         resp' <- case resp of
