@@ -30,6 +30,7 @@ a hash of the executable.  Thus,
 
 * It is guaranteed that there is no mismatch in the serialisation
   formats due to different library versions.
+
 -}
 module Data.Streaming.NetworkMessage
     ( -- * Types
@@ -48,6 +49,11 @@ module Data.Streaming.NetworkMessage
     , defaultNMSettings
       -- * Utils
     , getPortAfterBind
+      -- * Low-level interface without decoding.  Don't mix this with 'nmRead'/'nmWrite'.
+    , nmRawWrite
+    , nmRawRead
+    , nmByteBuffer
+    , nmFileDescriptor
     ) where
 
 import           ClassyPrelude
@@ -57,11 +63,12 @@ import           Control.Exception (BlockedIndefinitelyOnMVar(..))
 import           System.IO.ByteBuffer (ByteBuffer)
 import qualified System.IO.ByteBuffer as BB
 import           Data.Streaming.Network (AppData, appRead, appWrite)
-import           Data.Streaming.Network (ServerSettings, setAfterBind)
+import           Data.Streaming.Network (ServerSettings, setAfterBind, appRawSocket)
 import           Data.Store.TypeHash
 import           Data.Typeable (Proxy(..))
-import           Network.Socket (socketPort)
+import           Network.Socket (socketPort, fdSocket)
 import           System.Executable.Hash (executableHash)
+import           System.Posix.Types (Fd (..))
 import           FP.Redis (MonadConnect)
 
 -- | Exceptions specific to "Data.Streaming.NetworkMessage".
@@ -124,6 +131,12 @@ nmWrite nm iSend = liftIO (appWrite (nmAppData nm) (encode iSend))
 -- | Read a message from the other side of the connection.
 nmRead  :: (MonadConnect m, Store youSend) => NMAppData iSend youSend -> m youSend
 nmRead NMAppData{..} = liftIO (appGet "nmRead" nmByteBuffer nmAppData)
+
+nmRawWrite :: (MonadIO m) => NMAppData iSend youSend -> ByteString -> m ()
+nmRawWrite NMAppData{..} bs = liftIO $ appWrite nmAppData bs
+
+nmRawRead :: (MonadIO m) =>  NMAppData iSend youSend -> m ByteString
+nmRawRead NMAppData{..} = liftIO $ appRead nmAppData
 
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and
@@ -213,6 +226,12 @@ getPortAfterBind ss = do
         , readMVar boundPortVar `catch` \BlockedIndefinitelyOnMVar ->
             error "Port will never get bound, thread got blocked indefinitely."
         )
+
+nmFileDescriptor :: NMAppData iSend youSend -> Fd
+nmFileDescriptor NMAppData{..} = case appRawSocket nmAppData of
+    Just socket -> Fd (fdSocket socket)
+    Nothing -> error "No socket in NetworkMessage"
+
 
 -- | Utility for encoding a value after wrapping it in a 'S.Message'.
 encode :: Store a => a -> ByteString

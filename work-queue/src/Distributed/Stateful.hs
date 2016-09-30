@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -95,8 +96,9 @@ import           Data.Streaming.Network (AppData, appRead, appWrite)
 import           Data.Streaming.Network.Internal (AppData(appRawSocket'))
 import           Network.Socket (Socket(..))
 import           System.Posix.Types (Fd(..))
-import           GHC.Event (getSystemEventManager, registerFd, unregisterFd, evtRead, Lifetime(..))
+import           GHC.Event (getSystemEventManager, registerFd, unregisterFd, evtRead, Lifetime(..), IOCallback)
 import           Control.Monad.Trans.Unlift (askUnliftBase, unliftBase)
+import           GHC.Conc (threadWaitRead)
 
 -- * Pure version, useful for testing, debugging, etc.
 -----------------------------------------------------------------------
@@ -142,7 +144,8 @@ runPureStatefulSlave update_ cont = do
                     Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
                     Just x -> return x
             , scRegisterCanRead = \callback cont -> do
-                let loop = do
+                let loop :: m void
+                    loop = do
                         closed <- atomically $ do
                             let waitUntilClosed = do
                                     closed <- isClosedTMChan respChan
@@ -151,6 +154,8 @@ runPureStatefulSlave update_ cont = do
                         unless closed $ do
                             callback
                             loop
+                        fail "scRegisterCanRead read input from closed channel."
+                -- either absurd id <$> Async.race loop cont
                 Async.withAsync loop (\_ -> cont) -- TODO fix this, re-throw exceptions in the loop
             , scByteBuffer = bb
             }
@@ -176,11 +181,33 @@ runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
           addSlaveConnection mh conn
           go mh (slavesNum - 1)
 
-{-
 nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> StatefulConn m a b
 nmStatefulConn ad = StatefulConn
-    { scWrite = nmWrite ad
-    , scRead = nmRead ad
+    { scWrite = nmRawWrite ad
+    , scRegisterCanRead = \callback cont ->
+          let fd = nmFileDescriptor ad
+              loop = do
+                  liftIO $ threadWaitRead fd
+                  callback
+                  loop
+
+          in either id absurd <$> Async.race cont loop
+
+
+            -- evtManager <- liftIO getSystemEventManager >>= \case
+            --     Nothing -> fail ""
+            --     Just evtManager -> return evtManager
+            -- unlift <- askUnliftBase
+            -- let ioCallback = unliftBase unlift callback :: IO ()
+            -- -- let ioCallback = \_fdKey _evt -> (unliftBase unlift) callback :: IOCallback
+            -- liftIO . putStrLn $ "Registering on " ++ tshow (nmFileDescriptor ad)
+            -- fdKey <- liftIO $ registerFd evtManager (\_fdKey _evt -> ioCallback) (nmFileDescriptor ad) evtRead MultiShot
+            -- res <- cont
+            -- liftIO . putStrLn $ "Unregistering on " ++ tshow (nmFileDescriptor ad)
+            -- liftIO $ unregisterFd evtManager fdKey
+            -- return res
+    , scRead = nmRawRead ad
+    , scByteBuffer = nmByteBuffer ad
     }
 
 -- | Run a slave that uses "Data.Streaming.NetworkMessage" for sending
@@ -419,4 +446,3 @@ runJobQueueStatefulWorker jqc ss host mbPort ma nmsma cont =
               case mbResp of
                 Nothing -> liftIO (fail "Timed out waiting for slaves to connect")
                 Just resp -> return resp)
--}

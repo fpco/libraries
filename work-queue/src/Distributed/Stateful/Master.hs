@@ -98,13 +98,6 @@ data MasterHandle_ m state context input output = MasterHandle_
 -- responses read, with this.
 type SlaveConn m state context input output =
   StatefulConn m (SlaveReq state context input) (SlaveResp state output)
--- type SlaveConn (m :: * -> *) state context input output = StatefulConn
-
--- slaveConnRead :: (MonadIO m, S.Store state, S.Store output) => SlaveConn m state context input output -> m (SlaveResp state output)
--- slaveConnRead = scDecodeAndRead
-
--- slaveConnWrite :: (MonadIO m, S.Store state, S.Store context, S.Store input) => SlaveConn m state context input output -> SlaveReq state context input -> m ()
--- slaveConnWrite = scEncodeAndWrite
 
 data Slave m state context input output = Slave
   { slaveConnection :: !(SlaveConn m state context input output)
@@ -402,12 +395,13 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
       return (SlaveWithConnection slaveId (slaveConnection slave) cont)
   masterLoopStateRef :: IORef (MasterLoopState output) <- newIORef (MasterLoopState statuses1 HMS.empty nSlaves)
   masterLoopLock :: MVar () <- newMVar ()
-  masterLoopDone :: MVar [(SlaveId, [(StateId, [(StateId, output)])])] <- newEmptyMVar
+  masterLoopDone :: MVar [(SlaveId, [(StateId, [(StateId, output)])])] <- newEmptyMVar -- ^ once the masterLoop is finished, this MVar will contain the result.  Before that, it is empty.
   let registerAll :: [SlaveWithConnection m state context input output] -> m a -> m a
       registerAll [] cont = cont
       registerAll (swc@SlaveWithConnection{..} : xs) cont =
         registerAll xs $
           scRegisterCanRead swcConn (withMVar masterLoopLock (\() -> masterLoopEntry swc masterLoopStateRef masterLoopDone)) cont
+          -- scRegisterCanRead swcConn (masterLoopEntry swc masterLoopStateRef masterLoopDone) cont
   registerAll swcList (takeMVar masterLoopDone)
   where
     masterLoopEntry ::
@@ -419,7 +413,8 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
       mls <- readIORef masterLoopStateRef
       (done, mls') <- masterLoop swc mls
       writeIORef masterLoopStateRef mls'
-      unless done $
+      when (mlsNumActiveSlaves mls' == 0) $
+      -- unless done $
         putMVar masterLoopDone (HMS.toList (mlsOutputs mls'))
 
     masterLoop ::
@@ -429,10 +424,10 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withAtomicProfili
     masterLoop swc@SlaveWithConnection{..} mls@(MasterLoopState statuses outputs nActiveSlaves) = if nActiveSlaves == 0
       then return (True, mls)
       else do
-        cont <- readIORef swcCont >>= \case
+        cont0 <- readIORef swcCont >>= \case
             Nothing -> S.peekMessage (scByteBuffer swcConn)
             Just cont0 -> return (S.NeedMoreInput cont0)
-        case cont of
+        case cont0 of
             S.Done (S.Message _resp) -> error "updateSlaves.masterLoop: unexpected Done continuation."
             S.NeedMoreInput cont -> do
                 bs <- scRead swcConn
