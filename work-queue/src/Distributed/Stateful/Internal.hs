@@ -14,7 +14,7 @@ module Distributed.Stateful.Internal
        ) where
 
 import           ClassyPrelude
-import           Control.DeepSeq (NFData, deepseq, force)
+import           Control.DeepSeq (NFData, force)
 import           Control.Exception.Lifted (evaluate)
 import           Control.Monad.Logger.JSON.Extra
 import           Control.Monad.Trans.Control (MonadBaseControl)
@@ -173,19 +173,14 @@ statefulUpdate ::
   -> context
   -> [(StateId, [(StateId, input)])]
   -> m [(StateId, [(StateId, output)])]
-statefulUpdate sp update states context inputs = withProfiling sp spStatefulUpdate $ do
-  withProfiling sp spEvalInputs . liftIO $ evaluate $ force inputs
+statefulUpdate sp update states context inputs = withProfiling sp spStatefulUpdate $
   forM inputs $ \(!oldStateId, !innerInputs) -> do
     state <- (liftIO . withProfiling sp spHTLookups $ HT.lookup states oldStateId) >>= \case
       Nothing -> throwM (InputStateNotFound oldStateId)
       Just state0 -> (liftIO . withProfiling sp spHTDeletes $ states `HT.delete` oldStateId) >> return state0
-    updatedInnerStateAndOutput <- withProfiling sp spUpdateInner $ forM innerInputs $ \(!newStateId, !input) ->
-      withProfiling sp spUpdateInnerBody $ do
-        withProfiling sp spEvalContext . evaluate . force $ context
-        withProfiling sp spEvalInput . evaluate . force $ input
-        withProfiling sp spEvalState . evaluate . force $ state
+    updatedInnerStateAndOutput <- forM innerInputs $ \(!newStateId, !input) -> do
         (!newState, !output) <-
-            withSlaveProfileCounter sp spNUpdates . withProfiling sp spUpdate $
+            withProfiling sp spUpdate $
             evaluate . force =<< update context input state
         liftIO . withProfiling sp spHTInserts $ HT.insert states newStateId newState
         return (newStateId, output)

@@ -32,19 +32,12 @@ data SlaveProfiling = SlaveProfiling
     , _spHTFromList :: !Double
     , _spHTToList :: !Double
     , _spUpdate :: !Double
-    , _spNUpdates :: !Int
-    , _spUpdateInner :: !Double
-    , _spUpdateInnerBody :: !Double
-    , _spEvalInputs :: !Double
-    , _spEvalContext :: !Double
-    , _spEvalInput :: !Double
-    , _spEvalState :: !Double
     } deriving (Eq, Show, Generic, NFData)
 instance Store SlaveProfiling
 makeLenses ''SlaveProfiling
 
 emptySlaveProfiling :: SlaveProfiling
-emptySlaveProfiling = SlaveProfiling 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+emptySlaveProfiling = SlaveProfiling 0 0 0 0 0 0 0 0 0 0
 
 -- combine profiling data by summing
 instance Semigroup SlaveProfiling where
@@ -59,13 +52,6 @@ instance Semigroup SlaveProfiling where
         , _spHTFromList = view spHTFromList sp + view spHTFromList sp'
         , _spHTToList = view spHTToList sp + view spHTToList sp'
         , _spUpdate = view spUpdate sp + view spUpdate sp'
-        , _spNUpdates = view spNUpdates sp + view spNUpdates sp'
-        , _spUpdateInner = view spUpdateInner sp + view spUpdateInner sp'
-        , _spUpdateInnerBody = view spUpdateInnerBody sp + view spUpdateInnerBody sp'
-        , _spEvalInputs = view spEvalInputs sp + view spEvalInputs sp'
-        , _spEvalContext = view spEvalContext sp + view spEvalContext sp'
-        , _spEvalInput = view spEvalInput sp + view spEvalInput sp'
-        , _spEvalState = view spEvalState sp + view spEvalState sp'
         }
 
 slaveProfilingToCsv :: SlaveProfiling -> [(Text, Text)]
@@ -83,13 +69,6 @@ slaveProfilingToCsv sp =
     , ("HTFromLis", tshow $ view spHTFromList sp)
     , ("HTToList", tshow $ view spHTToList sp)
     , ("Update", tshow $ view spUpdate sp)
-    , ("NUpdates", tshow $ view spNUpdates sp)
-    , ("UpdateInner", tshow $ view spUpdateInner sp)
-    , ("UpdateInnerBody", tshow $ view spUpdateInnerBody sp)
-    , ("EvalInputs", tshow $ view spEvalInputs sp)
-    , ("EvalContext", tshow $ view spEvalContext sp)
-    , ("EvalInput", tshow $ view spEvalInput sp)
-    , ("EvalState", tshow $ view spEvalState sp)
     ]
   where
     total = sum [view l sp | l <- [spReceive, spWork, spSend]]
@@ -99,34 +78,28 @@ data MasterProfiling = MasterProfiling
     { _mpTotalUpdate :: !Double
     , _mpUpdateSlaves :: !Double
     , _mpUpdateSlavesStep :: !Double
-    , _mpSendLoop :: !Double
-    , _mpSlaveLoop :: !Double
-    , _mpSendLoopReadTChan :: !Double
-    , _mpSendLoopSend :: !Double
-    , _mpSlaveLoopUpdate :: !Double
-    , _mpSlaveLoopWriteTCHan :: !Double
-    , _mpSlaveLoopScRead :: !Double
-    , _mpNonUpdate :: !Double
+    , _mpSend :: !Double
+    , _mpMasterLoop :: !Double
+    , _mpHandleResponse :: !Double
+    , _mpDecode :: !Double
+    , _mpReceive :: !Double
     } deriving (Generic, Show)
 instance Store MasterProfiling
 makeLenses ''MasterProfiling
 
 emptyMasterProfiling :: MasterProfiling
-emptyMasterProfiling = MasterProfiling 0 0 0 0 0 0 0 0 0 0 0
+emptyMasterProfiling = MasterProfiling 0 0 0 0 0 0 0 0
 
 masterProfilingToCsv :: MasterProfiling -> [(Text, Text)]
 masterProfilingToCsv mp =
     [ ("mpTotalUpdate", tshow $ view mpTotalUpdate mp)
     , ("mpUpdateSlaves", tshow $ view mpUpdateSlaves mp)
     , ("mpUpdateSlavesStep", tshow $ view mpUpdateSlavesStep mp)
-    , ("mpSendLoop", tshow $ view mpSendLoop mp)
-    , ("mpSlaveLoop", tshow $ view mpSlaveLoop mp)
-    , ("mpSendLoopReadTChan", tshow $ view mpSendLoopReadTChan mp)
-    , ("mpSendLoopSend", tshow $ view mpSendLoopSend mp)
-    , ("mpSlaveLoopUpdate", tshow $ view mpSlaveLoopUpdate mp)
-    , ("mpSlaveLoopWriteTCHan", tshow $ view mpSlaveLoopWriteTCHan mp)
-    , ("mpSlaveLoopScRead", tshow $ view mpSlaveLoopScRead mp)
-    , ("mpNonUpdate", tshow $ view mpNonUpdate mp)
+    , ("mpSend", tshow $ view mpSend mp)
+    , ("mpMasterLoop", tshow $ view mpMasterLoop mp)
+    , ("mpHandleResponse", tshow $ view mpHandleResponse mp)
+    , ("mpDecode", tshow $ view mpDecode mp)
+    , ("mpReceive", tshow $ view mpReceive mp)
     ]
 
 withProfiling :: forall a b m. MonadIO m
@@ -143,23 +116,6 @@ withProfiling ref l action = do
   where
       update :: Double -> b -> b
       update t sp = sp & l +~ t
-
-withAtomicProfiling :: forall a b m. MonadIO m
-    => IORef b
-    -> Lens' b Double
-    -> m a
-    -> m a
-withAtomicProfiling ref l action = do
-    t0 <- liftIO getTime
-    res <- action
-    t1 <- liftIO getTime
-    liftIO . atomicModifyIORef' ref $ update (t1 - t0)
-    return res
-  where
-      update :: Double -> b -> (b, ())
-      update t sp =
-          let t' = sp & l +~ t
-          in t' `seq` (t', ())
 
 withSlaveProfileCounter :: MonadIO m
     => IORef SlaveProfiling

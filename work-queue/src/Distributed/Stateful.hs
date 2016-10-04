@@ -192,20 +192,6 @@ nmStatefulConn ad = StatefulConn
                   loop
 
           in either id absurd <$> Async.race cont loop
-
-
-            -- evtManager <- liftIO getSystemEventManager >>= \case
-            --     Nothing -> fail ""
-            --     Just evtManager -> return evtManager
-            -- unlift <- askUnliftBase
-            -- let ioCallback = unliftBase unlift callback :: IO ()
-            -- -- let ioCallback = \_fdKey _evt -> (unliftBase unlift) callback :: IOCallback
-            -- liftIO . putStrLn $ "Registering on " ++ tshow (nmFileDescriptor ad)
-            -- fdKey <- liftIO $ registerFd evtManager (\_fdKey _evt -> ioCallback) (nmFileDescriptor ad) evtRead MultiShot
-            -- res <- cont
-            -- liftIO . putStrLn $ "Unregistering on " ++ tshow (nmFileDescriptor ad)
-            -- liftIO $ unregisterFd evtManager fdKey
-            -- return res
     , scRead = nmRawRead ad
     , scByteBuffer = nmByteBuffer ad
     }
