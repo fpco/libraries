@@ -97,10 +97,10 @@ import           Data.Streaming.Network (AppData, appRead, appWrite)
 import           Data.Streaming.Network.Internal (AppData(appRawSocket'))
 import           Network.Socket (Socket(..))
 import           System.Posix.Types (Fd(..))
-import           GHC.Event (getSystemEventManager, registerFd, unregisterFd, evtRead, Lifetime(..), IOCallback)
+import           GHC.Event (getSystemEventManager, registerFd, unregisterFd_, evtRead, Lifetime(..), IOCallback)
 import           Control.Monad.Trans.Unlift (askUnliftBase, unliftBase)
 import           GHC.Conc (threadWaitRead)
-
+import qualified GHC.Event as Event
 -- * Pure version, useful for testing, debugging, etc.
 -----------------------------------------------------------------------
 
@@ -188,17 +188,24 @@ runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
           addSlaveConnection mh conn
           go mh (slavesNum - 1)
 
-nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> StatefulConn m a b
-nmStatefulConn ad = StatefulConn
-    { scWrite = nmRawWrite ad
-    , scRegisterCanRead = \callback cont ->
-          let fd = nmFileDescriptor ad
-              loop = do
-                  liftIO $ threadWaitRead fd
-                  callback
-                  loop
 
-          in either id absurd <$> Async.race cont loop
+nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> m (StatefulConn m a b)
+nmStatefulConn ad = do
+  evtManager <- liftIO getSystemEventManager >>= \case
+        Just e -> return e
+        Nothing -> error "No EventManager"
+  return StatefulConn
+    { scWrite = nmRawWrite ad
+    , scRegisterCanRead = \callback cont -> do
+            unlift <- askUnliftBase
+            let ioCallback = unliftBase unlift callback :: IO ()
+            liftIO . void $ registerFd
+                        evtManager
+                        (\_fdKey _evt -> ioCallback)
+                        (nmFileDescriptor ad)
+                        evtRead
+                        OneShot
+            cont
     , scRead = nmRawRead ad
     , scByteBuffer = nmByteBuffer ad
     , scPeek = nmPeek ad
@@ -211,10 +218,13 @@ runNMStatefulSlave ::
        (MonadConnect m, NFData state, Store state, NFData output, Store output, Store context, Store input, NFData input, NFData context)
     => Update m state context input output
     -> NMApp (SlaveResp state output) (SlaveReq state context input) m ()
-runNMStatefulSlave update_ ad = runSlave SlaveArgs
-    { saUpdate = update_
-    , saConn = nmStatefulConn ad
-    }
+runNMStatefulSlave update_ ad = do
+    conn <- nmStatefulConn ad
+    -- evtManager <- liftIO Event.new
+    runSlave SlaveArgs
+        { saUpdate = update_
+        , saConn = conn
+        }
 
 -- | Connection preferences for a master that communicates with slaves
 -- via "Data.Streaming.NetworkMessage".
@@ -261,6 +271,10 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
     slavesConnectedVar :: TVar Int <- liftIO (newTVarIO 0)
     slaveAddLock :: MVar () <- newMVar ()
     doneVar :: MVar () <- newEmptyMVar
+    evtManager <- liftIO getSystemEventManager >>= \case
+        Just e -> return e
+        Nothing -> error "No EventManager"
+    -- evtManager <- liftIO Event.new
     let onSlaveConnection :: NMApp (SlaveReq state context input) (SlaveResp state output) m ()
         onSlaveConnection ad = do
             added <- withMVar slaveAddLock $ \() -> do
@@ -269,7 +283,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
                         Nothing -> True
                         Just n -> slaves <= n
                 when shouldAdd $ do
-                    addSlaveConnection mh (nmStatefulConn ad)
+                    nmStatefulConn ad >>= addSlaveConnection mh
                     atomically (writeTVar slavesConnectedVar (slaves + 1))
                 return shouldAdd
             if added
