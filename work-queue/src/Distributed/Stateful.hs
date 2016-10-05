@@ -75,6 +75,7 @@ import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
 import           Data.Store (Store)
+import qualified Data.Store.Streaming as S
 import           Control.Concurrent.STM.TMChan
 import           Data.Streaming.NetworkMessage
 import           Control.Monad.Logger.JSON.Extra (logErrorJ, logWarnJ, logDebugJ)
@@ -120,10 +121,19 @@ runPureStatefulSlave update_ cont = do
                     closeTMChan reqChan
                     closeTMChan respChan)
   where
-    chanStatefulConn :: forall req resp.
+    chanStatefulConn :: forall req resp. Store resp =>
         TMChan ByteString -> TMChan ByteString -> (StatefulConn m req resp -> m a) -> m a
     chanStatefulConn reqChan respChan cont = BB.with Nothing $ \bb ->
-        cont StatefulConn
+        let bareRead = do
+                mbX <- atomically $ do
+                    closed <- isClosedTMChan respChan
+                    if closed
+                        then return Nothing
+                        else readTMChan respChan
+                case mbX of
+                    Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
+                    Just x -> return x
+        in cont StatefulConn
             { scWrite = \x -> do
                 closed <- atomically $ do
                     closed <- isClosedTMChan reqChan
@@ -134,15 +144,7 @@ runPureStatefulSlave update_ cont = do
                             return False
                 when closed $
                     fail "runPureStatefulSlave: trying to write to closed chan"
-            , scRead = do
-                mbX <- atomically $ do
-                    closed <- isClosedTMChan respChan
-                    if closed
-                        then return Nothing
-                        else readTMChan respChan
-                case mbX of
-                    Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
-                    Just x -> return x
+            , scRead = bareRead
             , scRegisterCanRead = \callback cont -> do
                 let loop :: m void
                     loop = do
@@ -158,6 +160,11 @@ runPureStatefulSlave update_ cont = do
                 -- either absurd id <$> Async.race loop cont
                 Async.withAsync loop (\_ -> cont) -- TODO fix this, re-throw exceptions in the loop
             , scByteBuffer = bb
+            , scPeek = S.peekMessage' bb
+            , scFillByteBuffer = do
+                    bs <- bareRead
+                    BB.copyByteString bb bs
+                    return True
             }
 
 -- | Run a computation, where the slaves run as separate threads
@@ -194,6 +201,8 @@ nmStatefulConn ad = StatefulConn
           in either id absurd <$> Async.race cont loop
     , scRead = nmRawRead ad
     , scByteBuffer = nmByteBuffer ad
+    , scPeek = nmPeek ad
+    , scFillByteBuffer = nmFillByteBuffer ad
     }
 
 -- | Run a slave that uses "Data.Streaming.NetworkMessage" for sending

@@ -43,6 +43,8 @@ data StatefulConn m req resp = StatefulConn
   , scRegisterCanRead :: !(forall a. m () -> m a -> m a)
   , scRead :: !(m BS.ByteString)
   , scByteBuffer :: !BB.ByteBuffer
+  , scPeek :: !(m (S.PeekMessage' m resp))
+  , scFillByteBuffer :: !(m Bool)
   }
 
 scEncodeAndWrite :: (Store req, MonadIO m) => StatefulConn m req resp -> req -> m ()

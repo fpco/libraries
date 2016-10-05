@@ -52,7 +52,8 @@ module Distributed.Stateful.Master
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Lens (makeLenses, set, at, _Just, over)
-import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
+import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ, logErrorJ)
+import           Control.Monad.Free
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -349,7 +350,7 @@ data SlaveWithConnection m state context input output =
     SlaveWithConnection
         { swcSlaveId :: !SlaveId
         , swcConn :: !(SlaveConn m state context input output)
-        , swcCont :: !(IORef (Maybe (ByteString -> m (S.PeekMessage m (SlaveResp state output)))))
+        , swcCont :: !(IORef (Maybe (S.PeekMessage' m (SlaveResp state output))))
         }
 
 data MasterLoopState output = MasterLoopState
@@ -414,19 +415,20 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
     masterLoop swc@SlaveWithConnection{..} mls@(MasterLoopState statuses outputs nActiveSlaves) = if nActiveSlaves == 0
       then return mls
       else do
+        couldFill <- withProfiling mp mpReceive $ scFillByteBuffer swcConn
+        unless couldFill ($logErrorJ ("Could not read in masterLoop." :: Text))
         cont0 <- readIORef swcCont >>= \case
-            Nothing -> withProfiling mp mpDecode $ S.peekMessage (scByteBuffer swcConn)
-            Just cont0 -> return (S.NeedMoreInput cont0)
+            Nothing -> withProfiling mp mpDecode $ scPeek swcConn
+            Just cont0 -> return cont0
         case cont0 of
-            S.Done (S.Message _resp) -> error "updateSlaves.masterLoop: unexpected Done continuation."
-            S.NeedMoreInput cont -> do
-                bs <- withProfiling mp mpReceive $ scRead swcConn
-                decoded <- withProfiling mp mpDecode $ cont bs
+            Pure (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
+            Free cont -> do
+                decoded <- withProfiling mp mpDecode cont
                 case decoded of
-                    (S.NeedMoreInput cont') -> do
-                        writeIORef swcCont (Just cont')
+                    Free cont' -> do
+                        writeIORef swcCont (Just (Free cont'))
                         return mls
-                    S.Done (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
+                    Pure (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
 
     handleResponse statuses outputs nActiveSlaves swc@SlaveWithConnection{..} resp = withProfiling mp mpHandleResponse $ do
         resp' <- case resp of
@@ -449,11 +451,11 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
                                 return (nActiveSlaves - 1)
                          else return nActiveSlaves
         -- see if we can decode another message from the chunk we read
-        nextMessage <- withProfiling mp mpDecode $ S.peekMessage (scByteBuffer swcConn)
+        nextMessage <- withProfiling mp mpDecode $ scPeek swcConn
         case nextMessage of
-            S.Done (S.Message newResp) -> handleResponse statuses' outputs' nActiveSlaves' swc newResp
-            S.NeedMoreInput cont' -> do
-                writeIORef swcCont (Just cont')
+            Pure (S.Message newResp) -> handleResponse statuses' outputs' nActiveSlaves' swc newResp
+            Free cont' -> do
+                writeIORef swcCont (Just (Free cont'))
                 let mls = MasterLoopState statuses' outputs' nActiveSlaves'
                 return mls
 

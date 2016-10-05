@@ -54,6 +54,8 @@ module Data.Streaming.NetworkMessage
     , nmRawRead
     , nmByteBuffer
     , nmFileDescriptor
+    , nmPeek
+    , nmFillByteBuffer
     ) where
 
 import           ClassyPrelude
@@ -137,6 +139,12 @@ nmRawWrite NMAppData{..} bs = liftIO $ appWrite nmAppData bs
 
 nmRawRead :: (MonadIO m) =>  NMAppData iSend youSend -> m ByteString
 nmRawRead NMAppData{..} = liftIO $ appRead nmAppData
+
+nmPeek :: (MonadIO m, Store youSend) => NMAppData iSend youSend -> m (S.PeekMessage' m youSend)
+nmPeek ad = S.peekMessage' (nmByteBuffer ad)
+
+nmFillByteBuffer :: MonadIO m => NMAppData iSend youSend -> m Bool
+nmFillByteBuffer ad = BB.fillFromFd (nmByteBuffer ad) (nmFileDescriptor ad)
 
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and
