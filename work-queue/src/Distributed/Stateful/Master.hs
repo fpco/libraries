@@ -449,7 +449,8 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
                                 return (nActiveSlaves - 1)
                          else return nActiveSlaves
         -- see if we can decode another message from the chunk we read
-        S.peekMessage (scByteBuffer swcConn) >>= \case
+        nextMessage <- withProfiling mp mpDecode $ S.peekMessage (scByteBuffer swcConn)
+        case nextMessage of
             S.Done (S.Message newResp) -> handleResponse statuses' outputs' nActiveSlaves' swc newResp
             S.NeedMoreInput cont' -> do
                 writeIORef swcCont (Just cont')
