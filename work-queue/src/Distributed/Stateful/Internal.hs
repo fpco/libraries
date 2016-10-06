@@ -42,7 +42,7 @@ type HashTable k v = HT.CuckooHashTable k v
 data StatefulConn m req resp = StatefulConn
   { scWrite :: !(BS.ByteString -> m ())
     -- ^ Write a request to the connection.
-  , scRegisterCanRead :: !(m () -> m ())
+  , scRegisterCanRead :: !(forall a. m () -> m a -> m a)
   , scRead :: !(m BS.ByteString)
   , scByteBuffer :: !BB.ByteBuffer
   , scPeek :: !(m (S.PeekMessage' m resp))

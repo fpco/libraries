@@ -350,7 +350,7 @@ data SlaveWithConnection m state context input output =
     SlaveWithConnection
         { swcSlaveId :: !SlaveId
         , swcConn :: !(SlaveConn m state context input output)
-        , swcCont :: !(IORef (S.PeekMessage' m (SlaveResp state output)))
+        , swcCont :: !(IORef (Maybe (S.PeekMessage' m (SlaveResp state output))))
         }
 
 data MasterLoopState output = MasterLoopState
@@ -382,15 +382,18 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
       statuses0 = slaveStatus0 <$> slaves
   statuses1 <- foldM initSlave statuses0 (HMS.keys slaves)
   swcList <- forM (HMS.toList slaves) $ \(slaveId, slave) -> do
-      cont <- newIORef (Free (scPeek (slaveConnection slave)))
+      cont <- newIORef Nothing
       return (SlaveWithConnection slaveId (slaveConnection slave) cont)
   masterLoopStateRef :: IORef (MasterLoopState output) <- newIORef (MasterLoopState statuses1 HMS.empty nSlaves)
   masterLoopLock :: MVar () <- newMVar ()
   masterLoopDone :: MVar [(SlaveId, [(StateId, [(StateId, output)])])] <- newEmptyMVar -- ^ once the masterLoop is finished, this MVar will contain the result.  Before that, it is empty.
-  let registerAll :: [SlaveWithConnection m state context input output] -> m ()
-      registerAll xs = forM_ xs $ \swc@SlaveWithConnection{..} -> scRegisterCanRead swcConn (masterLoopEntry swc masterLoopStateRef masterLoopDone masterLoopLock)
-  registerAll swcList
-  readMVar masterLoopDone
+  let registerAll :: [SlaveWithConnection m state context input output] -> m a -> m a
+      registerAll [] cont = cont
+      registerAll (swc@SlaveWithConnection{..} : xs) cont =
+        registerAll xs $
+          scRegisterCanRead swcConn (masterLoopEntry swc masterLoopStateRef masterLoopDone masterLoopLock) cont
+  registerAll swcList (return ())
+  (readMVar masterLoopDone)
   where
     masterLoopEntry ::
          SlaveWithConnection m state context input output
@@ -412,7 +415,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
               writeIORef masterLoopStateRef mls'
               if mlsNumActiveSlaves mls' == 0
                   then putMVar masterLoopDone (HMS.toList (mlsOutputs mls'))
-                  else scRegisterCanRead (swcConn swc) (masterLoopEntry swc masterLoopStateRef masterLoopDone masterLoopLock)
+                  else void $ scRegisterCanRead (swcConn swc) (masterLoopEntry swc masterLoopStateRef masterLoopDone masterLoopLock) (return ())
           Just _ -> return ()
 
     masterLoop ::
@@ -424,13 +427,16 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
       else do
         couldFill <- withProfiling mp mpReceive $ scFillByteBuffer swcConn
         unless couldFill ($logErrorJ ("Could not read in masterLoop." :: Text))
-        readIORef swcCont >>= \case
+        cont0 <- readIORef swcCont >>= \case
+            Nothing -> withProfiling mp mpDecode $ scPeek swcConn
+            Just cont0 -> return cont0
+        case cont0 of
             Pure (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
             Free cont -> do
                 decoded <- withProfiling mp mpDecode cont
                 case decoded of
                     Free cont' -> do
-                        writeIORef swcCont (Free cont')
+                        writeIORef swcCont (Just (Free cont'))
                         return mls
                     Pure (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
 
@@ -459,7 +465,7 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
         case nextMessage of
             Pure (S.Message newResp) -> handleResponse statuses' outputs' nActiveSlaves' swc newResp
             Free cont' -> do
-                writeIORef swcCont (Free cont')
+                writeIORef swcCont (Just (Free cont'))
                 let mls = MasterLoopState statuses' outputs' nActiveSlaves'
                 return mls
 

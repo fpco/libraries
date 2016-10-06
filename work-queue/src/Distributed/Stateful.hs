@@ -145,13 +145,20 @@ runPureStatefulSlave update_ cont = do
                 when closed $
                     fail "runPureStatefulSlave: trying to write to closed chan"
             , scRead = bareRead
-            , scRegisterCanRead = \callback -> void . Async.async $ do
-                    closed <- atomically $ do
-                        let waitUntilClosed = do
-                                closed <- isClosedTMChan respChan
-                                unless closed STM.retry
-                        (True <$ waitUntilClosed) <|> (False <$ void (peekTMChan respChan))
-                    unless closed callback
+            , scRegisterCanRead = \callback cont -> do
+                let loop :: m void
+                    loop = do
+                        closed <- atomically $ do
+                            let waitUntilClosed = do
+                                    closed <- isClosedTMChan respChan
+                                    unless closed STM.retry
+                            (True <$ waitUntilClosed) <|> (False <$ void (peekTMChan respChan))
+                        unless closed $ do
+                            callback
+                            loop
+                        fail "scRegisterCanRead read input from closed channel."
+                -- either absurd id <$> Async.race loop cont
+                Async.withAsync loop (\_ -> cont) -- TODO fix this, re-throw exceptions in the loop
             , scByteBuffer = bb
             , scPeek = S.peekMessage' bb
             , scFillByteBuffer = do
@@ -190,7 +197,7 @@ nmStatefulConn ad = do
         Nothing -> error "No EventManager"
   return StatefulConn
     { scWrite = nmRawWrite ad
-    , scRegisterCanRead = \callback -> do
+    , scRegisterCanRead = \callback cont -> do
             unlift <- askUnliftBase
             let ioCallback = unliftBase unlift callback :: IO ()
             liftIO . void $ registerFd
@@ -199,6 +206,7 @@ nmStatefulConn ad = do
                         (nmFileDescriptor ad)
                         evtRead
                         OneShot
+            cont
     , scRead = nmRawRead ad
     , scByteBuffer = nmByteBuffer ad
     , scPeek = nmPeek ad
