@@ -399,7 +399,13 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
       -> MVar ()
       -> m ()
     masterLoopEntry swc masterLoopStateRef masterLoopDone masterLoopLock =
-      withMVar masterLoopLock  $ \() -> tryReadMVar masterLoopDone >>= \case
+      withMVar masterLoopLock
+      -- As soon as we get a response from one slave, we want to
+      -- process it as fast as possible, so we don't want to have
+      -- multiple masterLoops running concurrently
+      $ \() -> tryReadMVar masterLoopDone >>= \case
+        -- We have to check if the loop is already finished --
+        -- otherwise, we might process a response from the next round.
           Nothing -> do
               mls <- readIORef masterLoopStateRef
               mls' <- withProfiling mp mpMasterLoop $ masterLoop swc mls

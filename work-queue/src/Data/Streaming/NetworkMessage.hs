@@ -56,12 +56,15 @@ module Data.Streaming.NetworkMessage
     , nmFileDescriptor
     , nmPeek
     , nmFillByteBuffer
+    , nmWaitRead
     ) where
 
 import           ClassyPrelude
 import           Data.Store (Store, PeekException (..))
 import qualified Data.Store.Streaming as S
+import           Control.Concurrent.Lifted (threadWaitRead)
 import           Control.Exception (BlockedIndefinitelyOnMVar(..))
+import           Control.Monad.Base (MonadBase)
 import           System.IO.ByteBuffer (ByteBuffer)
 import qualified System.IO.ByteBuffer as BB
 import           Data.Streaming.Network (AppData, appRead, appWrite)
@@ -145,6 +148,9 @@ nmPeek ad = S.peekMessage' (nmByteBuffer ad)
 
 nmFillByteBuffer :: MonadIO m => NMAppData iSend youSend -> m Bool
 nmFillByteBuffer ad = BB.fillFromFd (nmByteBuffer ad) (nmFileDescriptor ad)
+
+nmWaitRead :: MonadBase IO m => NMAppData iSend youSend -> m ()
+nmWaitRead ad = threadWaitRead (nmFileDescriptor ad)
 
 -- | Streaming decode function.  If the function to get more bytes
 -- yields "", then it's assumed to be the end of the input, and

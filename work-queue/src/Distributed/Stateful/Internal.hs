@@ -1,3 +1,4 @@
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -16,6 +17,7 @@ module Distributed.Stateful.Internal
 import           ClassyPrelude
 import           Control.DeepSeq (NFData, force)
 import           Control.Exception.Lifted (evaluate)
+import           Control.Monad.Free
 import           Control.Monad.Logger.JSON.Extra
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashSet as HS
@@ -40,11 +42,12 @@ type HashTable k v = HT.CuckooHashTable k v
 data StatefulConn m req resp = StatefulConn
   { scWrite :: !(BS.ByteString -> m ())
     -- ^ Write a request to the connection.
-  , scRegisterCanRead :: !(forall a. m () -> m ())
+  , scRegisterCanRead :: !(m () -> m ())
   , scRead :: !(m BS.ByteString)
   , scByteBuffer :: !BB.ByteBuffer
   , scPeek :: !(m (S.PeekMessage' m resp))
   , scFillByteBuffer :: !(m Bool)
+  , scWaitRead :: !(m ())
   }
 
 scEncodeAndWrite :: (Store req, MonadIO m) => StatefulConn m req resp -> req -> m ()
@@ -55,16 +58,17 @@ newtype StatefulConnDecodeFailure = StatefulConnDecodeFailure String
 instance Exception StatefulConnDecodeFailure
 
 scDecodeAndRead :: forall m req resp. (Store resp, MonadIO m, MonadBaseControl IO m) => StatefulConn m req resp -> m resp
-scDecodeAndRead conn = 
-    (S.peekMessage (scByteBuffer conn) >>= loop)
+scDecodeAndRead StatefulConn{..} =
+    (scPeek >>= loop)
     `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("scDecodeAndRead: " ++) . show $ ex)
   where
-    loop (S.NeedMoreInput cont) = do
-        bs <- scRead conn
-        if null bs
-            then throwIO (StatefulConnDecodeFailure ("scDecodeAndRead: Couldn't decode: no data"))
-            else cont bs >>= loop
-    loop (S.Done (S.Message x)) = return x
+    loop (Free cont) = do
+        scWaitRead
+        couldFill <- scFillByteBuffer
+        if couldFill
+            then cont >>= loop
+            else throwIO (StatefulConnDecodeFailure "scDecodeAndRead: Couldn't decode: no data")
+    loop (Pure (S.Message x)) = return x
 
 -- | Identifier for a slave.
 newtype SlaveId = SlaveId {unSlaveId :: Int}

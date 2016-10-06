@@ -158,6 +158,7 @@ runPureStatefulSlave update_ cont = do
                     bs <- bareRead
                     BB.copyByteString bb bs
                     return True
+            , scWaitRead = void . atomically $ peekTMChan respChan
             }
 
 -- | Run a computation, where the slaves run as separate threads
@@ -202,6 +203,7 @@ nmStatefulConn ad = do
     , scByteBuffer = nmByteBuffer ad
     , scPeek = nmPeek ad
     , scFillByteBuffer = nmFillByteBuffer ad
+    , scWaitRead = nmWaitRead ad
     }
 
 -- | Run a slave that uses "Data.Streaming.NetworkMessage" for sending
