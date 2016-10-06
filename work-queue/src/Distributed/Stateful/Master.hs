@@ -391,32 +391,21 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
       registerAll [] cont = cont
       registerAll (swc@SlaveWithConnection{..} : xs) cont =
         registerAll xs $
-          scRegisterCanRead swcConn (masterLoopEntry swc masterLoopStateRef masterLoopDone masterLoopLock) cont
-  registerAll swcList (return ())
-  (readMVar masterLoopDone)
+          scRegisterCanRead swcConn (withMVar masterLoopLock (\() -> masterLoopEntry swc masterLoopStateRef masterLoopDone)) cont
+          -- scRegisterCanRead swcConn (masterLoopEntry swc masterLoopStateRef masterLoopDone) cont
+  registerAll swcList (takeMVar masterLoopDone)
   where
     masterLoopEntry ::
          SlaveWithConnection m state context input output
       -> IORef (MasterLoopState output)
       -> MVar [(SlaveId, [(StateId, [(StateId, output)])])]
-      -> MVar ()
       -> m ()
-    masterLoopEntry swc masterLoopStateRef masterLoopDone masterLoopLock =
-      withMVar masterLoopLock
-      -- As soon as we get a response from one slave, we want to
-      -- process it as fast as possible, so we don't want to have
-      -- multiple masterLoops running concurrently
-      $ \() -> tryReadMVar masterLoopDone >>= \case
-        -- We have to check if the loop is already finished --
-        -- otherwise, we might process a response from the next round.
-          Nothing -> do
-              mls <- readIORef masterLoopStateRef
-              mls' <- withProfiling mp mpMasterLoop $ masterLoop swc mls
-              writeIORef masterLoopStateRef mls'
-              if mlsNumActiveSlaves mls' == 0
-                  then putMVar masterLoopDone (HMS.toList (mlsOutputs mls'))
-                  else void $ scRegisterCanRead (swcConn swc) (masterLoopEntry swc masterLoopStateRef masterLoopDone masterLoopLock) (return ())
-          Just _ -> return ()
+    masterLoopEntry swc masterLoopStateRef masterLoopDone = do
+      mls <- readIORef masterLoopStateRef
+      mls' <- withProfiling mp mpMasterLoop $ masterLoop swc mls
+      writeIORef masterLoopStateRef mls'
+      when (mlsNumActiveSlaves mls' == 0) $
+        putMVar masterLoopDone (HMS.toList (mlsOutputs mls'))
 
     masterLoop ::
          SlaveWithConnection m state context input output
