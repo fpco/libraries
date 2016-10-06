@@ -66,6 +66,9 @@ import qualified System.Random as R
 import           Text.Printf (printf)
 import qualified Data.Store as S
 import qualified Data.Store.Streaming as S
+import qualified Data.HashTable.IO as HT
+
+type BasicHashTable k v = HT.BasicHashTable k v
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -355,7 +358,7 @@ data SlaveWithConnection m state context input output =
 
 data MasterLoopState output = MasterLoopState
   { mlsSlavesStatus :: !SlavesStatus
-  , mlsOutputs :: !(HMS.HashMap SlaveId [(StateId, [(StateId, output)])])
+  , mlsOutputs :: !(BasicHashTable SlaveId [(StateId, [(StateId, output)])])
   , mlsNumActiveSlaves :: !Int
   }
 
@@ -380,11 +383,12 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
         , _ssWaitingForStates = False
         }
       statuses0 = slaveStatus0 <$> slaves
+  outputs <- liftIO HT.new :: m (BasicHashTable SlaveId [(StateId, [(StateId, output)])])
   statuses1 <- foldM initSlave statuses0 (HMS.keys slaves)
   swcList <- forM (HMS.toList slaves) $ \(slaveId, slave) -> do
       cont <- newIORef Nothing
       return (SlaveWithConnection slaveId (slaveConnection slave) cont)
-  masterLoopStateRef :: IORef (MasterLoopState output) <- newIORef (MasterLoopState statuses1 HMS.empty nSlaves)
+  masterLoopStateRef :: IORef (MasterLoopState output) <- newIORef (MasterLoopState statuses1 outputs nSlaves)
   masterLoopLock :: MVar () <- newMVar ()
   masterLoopDone :: MVar [(SlaveId, [(StateId, [(StateId, output)])])] <- newEmptyMVar -- ^ once the masterLoop is finished, this MVar will contain the result.  Before that, it is empty.
   let registerAll :: [SlaveWithConnection m state context input output] -> m a -> m a
@@ -404,8 +408,9 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
       mls <- readIORef masterLoopStateRef
       mls' <- withProfiling mp mpMasterLoop $ masterLoop swc mls
       writeIORef masterLoopStateRef mls'
-      when (mlsNumActiveSlaves mls' == 0) $
-        putMVar masterLoopDone (HMS.toList (mlsOutputs mls'))
+      when (mlsNumActiveSlaves mls' == 0) $ do
+          finalOutputs <- liftIO . HT.toList . mlsOutputs $ mls'
+          putMVar masterLoopDone finalOutputs
 
     masterLoop ::
          SlaveWithConnection m state context input output
@@ -443,7 +448,11 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
         UpdateSlaveStep requests statuses' newOutputs <- updateSlavesStep mp nSlaves maxBatchSize inputMap swcSlaveId resp' statuses
         forM_ requests sendRequest
         let status = statuses' HMS.! swcSlaveId
-            outputs' = HMS.insertWith (<>) swcSlaveId newOutputs outputs
+        liftIO $ do
+            moutputs <- outputs `HT.lookup` swcSlaveId
+            HT.insert outputs swcSlaveId $ case moutputs of
+                Nothing -> newOutputs
+                Just oldOutputs -> newOutputs <> oldOutputs
         nActiveSlaves' <- if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
                             then do
                                 $logInfoJ ("Slave " ++ tshow (unSlaveId swcSlaveId) ++ " is done")
@@ -452,10 +461,10 @@ updateSlaves mp nSlaves maxBatchSize slaves context inputMap = withProfiling mp 
         -- see if we can decode another message from the chunk we read
         nextMessage <- withProfiling mp mpDecode $ scPeek swcConn
         case nextMessage of
-            Pure (S.Message newResp) -> handleResponse statuses' outputs' nActiveSlaves' swc newResp
+            Pure (S.Message newResp) -> handleResponse statuses' outputs nActiveSlaves' swc newResp
             Free cont' -> do
                 writeIORef swcCont (Just (Free cont'))
-                let mls = MasterLoopState statuses' outputs' nActiveSlaves'
+                let mls = MasterLoopState statuses' outputs nActiveSlaves'
                 return mls
 
     initSlave statuses slaveId = do
