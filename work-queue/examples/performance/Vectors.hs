@@ -105,7 +105,7 @@ data Options = Options
                , optOutput :: FilePath
                }
 
-csvInfo :: Options -> CSVInfo
-csvInfo opts = CSVInfo
+csvInfo :: Options -> ProfilingOutput
+csvInfo opts =
     [ ("l", pack . show . optVLength $ opts)
     , ("N", pack . show . optNStates $ opts)]

@@ -236,8 +236,8 @@ generateRequest Options{..} = do
 jqc :: JobQueueConfig
 jqc = defaultJobQueueConfig "perf:kmeans:"
 
-csvInfo :: Options -> CSVInfo
-csvInfo opts = CSVInfo
+csvInfo :: Options -> ProfilingOutput
+csvInfo opts =
     [ ("clusters", pack . show . optNClusters $ opts)
     , ("points", pack . show . optNPoints $ opts)
     , ("granularity", pack . show . optGranularity $ opts)

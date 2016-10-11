@@ -74,16 +74,16 @@ runSlave SlaveArgs{..} = do
       -> IORef SlaveProfiling
       -> m ()
     go recv send states sp = do
-      req <- withSlaveProfiling sp spReceive recv
+      req <- withProfiling sp spReceive recv
       debug (displayReq req)
       -- WARNING: All exceptions thrown here should be of type
       -- 'SlaveException', as only those will be catched.
-      (output, mbStates) <- withSlaveProfiling sp spWork $ case req of
+      (output, mbStates) <- withProfiling sp spWork $ case req of
           SReqResetState states' -> do
-              statesMap' <- liftIO . withSlaveProfiling sp spHTFromList $ HT.fromList states'
+              statesMap' <- liftIO . withProfiling sp spHTFromList $ HT.fromList states'
               return (SRespResetState, Just statesMap')
           SReqGetStates -> do
-              statesList <- liftIO . withSlaveProfiling sp spHTToList $ HT.toList states
+              statesList <- liftIO . withProfiling sp spHTToList $ HT.toList states
               return (SRespGetStates statesList, (Just states))
           SReqAddStates newStates0 -> do
             let decodeOrThrow bs = case S.decode bs of
@@ -94,18 +94,18 @@ runSlave SlaveArgs{..} = do
                 return (sid,bs')
             aliased <- filter snd <$> forM newStates
                 (\(sid,_) -> do
-                        mVal <- liftIO . withSlaveProfiling sp spHTLookups $ states `HT.lookup` sid
+                        mVal <- liftIO . withProfiling sp spHTLookups $ states `HT.lookup` sid
                         return (sid, isJust mVal))
             unless (null aliased) $ throw (AddingExistingStates $ map fst aliased)
-            forM_ newStates $ \(sid, state) -> liftIO . withSlaveProfiling sp spHTInserts $ HT.insert states sid state
+            forM_ newStates $ \(sid, state) -> liftIO . withProfiling sp spHTInserts $ HT.insert states sid state
             return (SRespAddStates (fst <$> newStates), Just states)
           SReqRemoveStates requesting stateIdsToDelete -> do
-            let eitherLookup sid = (liftIO . withSlaveProfiling sp spHTLookups $ HT.lookup states sid) >>= \case
+            let eitherLookup sid = (liftIO . withProfiling sp spHTLookups $ HT.lookup states sid) >>= \case
                     Nothing -> return $ Left sid
                     Just x -> return $ Right (sid, x)
             (missing, toSend) <- partitionEithers <$> mapM eitherLookup (HS.toList stateIdsToDelete)
             unless (null missing) $ throw (MissingStatesToRemove missing)
-            withSlaveProfiling sp spHTDeletes $ forM_ stateIdsToDelete (liftIO . HT.delete states)
+            withProfiling sp spHTDeletes $ forM_ stateIdsToDelete (liftIO . HT.delete states)
             return (SRespRemoveStates requesting (second S.encode <$> toSend), Just states)
           SReqUpdate context inputs -> do
             outputs <- statefulUpdate sp saUpdate states context inputs
@@ -115,7 +115,7 @@ runSlave SlaveArgs{..} = do
             return (SRespGetProfile slaveProfile, Just states)
           SReqQuit -> do
             return (SRespQuit, Nothing)
-      withSlaveProfiling sp spSend $ send output
+      withProfiling sp spSend $ send output
       debug (displayResp output)
       case mbStates of
             Nothing -> return ()
