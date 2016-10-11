@@ -308,8 +308,8 @@ $(mkManyHasTypeHash [ [t| PFResponse MyParameter |]
                     , [t| PFState MyParameter MyState MySummary |]
                     ])
 
-csvInfo ::  Options -> CSVInfo
-csvInfo opts = CSVInfo
+csvInfo ::  Options -> ProfilingOutput
+csvInfo opts =
     [ ("stepsize", pack . show . optStepsize $ opts)
     , ("deltat", pack . show . optDeltaT $ opts)
     , ("steps", pack . show . optSteps $ opts)

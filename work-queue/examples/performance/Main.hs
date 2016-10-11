@@ -145,7 +145,7 @@ options = Options
          <> command "kmeans"  (BenchKMeans <$> benchKMeans `info` progDesc "Benchmark with a parallel KMeans algorithm.")
         )
 
-runBench :: Int -> CSVInfo -> Options -> IO (Int, Double)
+runBench :: Int -> ProfilingOutput -> Options -> IO (Int, Double)
 runBench nSlaves commonCsvInfo Options{..} =
     case optBench of
         BenchPFilter pfOpts -> do
@@ -159,7 +159,7 @@ runBench nSlaves commonCsvInfo Options{..} =
             let master = PFilter.dpfMaster cfg randomsrc
                 request = PFilter.generateRequest pfOpts randomsrc
                 fp = PFilter.optOutput pfOpts
-                csvInfo = commonCsvInfo <> CSVInfo [("slaves", T.pack $ show nSlaves)] <> PFilter.csvInfo pfOpts
+                csvInfo = commonCsvInfo <> [("slaves", T.pack $ show nSlaves)] <> PFilter.csvInfo pfOpts
             logErrorsOrBench $
                 if optNoNetworkMessage
                 then runWithoutNM fp csvInfo masterArgs nSlaves master request
@@ -169,7 +169,7 @@ runBench nSlaves commonCsvInfo Options{..} =
                 master = Vectors.myAction
                 request = return $ Vectors.myStates vOpts
                 fp = Vectors.optOutput vOpts
-                csvInfo = commonCsvInfo <> CSVInfo [("slaves", T.pack $ show nSlaves)] <> Vectors.csvInfo vOpts
+                csvInfo = commonCsvInfo <> [("slaves", T.pack $ show nSlaves)] <> Vectors.csvInfo vOpts
             in logErrorsOrBench $
                 if optNoNetworkMessage
                 then runWithoutNM fp csvInfo masterArgs nSlaves master request
@@ -179,7 +179,7 @@ runBench nSlaves commonCsvInfo Options{..} =
                 master = KMeans.distributeKMeans
                 request = KMeans.generateRequest kOpts
                 fp = KMeans.optOutput kOpts
-                csvInfo = commonCsvInfo <> CSVInfo [("slaves", T.pack $ show nSlaves)] <> KMeans.csvInfo kOpts
+                csvInfo = commonCsvInfo <> [("slaves", T.pack $ show nSlaves)] <> KMeans.csvInfo kOpts
             in logErrorsOrBench $
                    if optNoNetworkMessage
                    then runWithoutNM fp csvInfo masterArgs nSlaves master request
@@ -225,7 +225,7 @@ main = do
           (unlines [])))
     gitHash <- readCreateProcess (shell "git rev-parse HEAD") ""
     nodename <- readCreateProcess (shell "uname -n") ""
-    let commonCsvInfo = CSVInfo
+    let commonOutput =
             [ ("commit", T.pack $ take 8 gitHash)
             , ("node", T.pack $ init nodename)
             , ("NetworkMessage", T.pack . show . not . optNoNetworkMessage $ opts)
@@ -233,12 +233,12 @@ main = do
     when (optPurgeCSV opts) (purgeResults opts)
     case optSpawnWorker opts of
         Just nSlaves -> -- spawn a worker that accepts nSlaves Slaves
-            void $ runBench nSlaves commonCsvInfo opts
+            void $ runBench nSlaves commonOutput opts
         Nothing -> do -- run the benchmark for every nSlaves in [optMinSlaves .. optMaxSlaves]
             timings <- forM [optMinSlaves opts .. optMaxSlaves opts] $
                 \nSlaves ->
                     cleanRedis (optBench opts)
-                    >> runBench nSlaves commonCsvInfo opts
+                    >> runBench nSlaves commonOutput opts
             case optPngFile opts of
                 Nothing -> return ()
                 Just fp -> plotResult opts (unwords [ "commit:", gitHash

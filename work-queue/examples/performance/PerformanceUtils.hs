@@ -11,7 +11,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-module PerformanceUtils ( CSVInfo (..)
+module PerformanceUtils ( ProfilingOutput
                         , runWithNM
                         , runWithoutNM
                         , logSourceBench
@@ -36,7 +36,7 @@ import           Distributed.JobQueue.Status
 import           Distributed.JobQueue.Worker
 import           Distributed.Redis (Redis)
 import           Distributed.Stateful
-import           Distributed.Stateful.Internal (slaveProfilingToCsv)
+import           Distributed.Stateful.Internal (slaveProfilingOutput, ProfilingOutput)
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
 import           GHC.Environment (getFullArgs)
@@ -47,13 +47,6 @@ import           System.IO (withFile, IOMode (..))
 import           System.Process
 import           TypeHash.Orphans ()
 
-
--- | Key value pairs to be written to a csv file.
-data CSVInfo = CSVInfo [(Text, Text)]
-instance Monoid CSVInfo where
-    mempty = CSVInfo []
-    CSVInfo xs `mappend` CSVInfo xs' = CSVInfo $ xs `mappend` xs'
-instance Semigroup CSVInfo
 
 withWorker :: MonadConnect m
     => Int -- ^ number of slaves the worker should accept
@@ -140,7 +133,7 @@ runWithNM :: forall m a context input output state request response.
     , HasTypeHash state, HasTypeHash context, HasTypeHash input, HasTypeHash output, HasTypeHash request, HasTypeHash response
     , Show response)
     => FilePath
-    -> CSVInfo
+    -> ProfilingOutput
     -> JobQueueConfig
     -> Maybe a
     -- ^ If @Nothing@, perform the request.
@@ -173,7 +166,7 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
                (withJobClient jqc $ \(jc :: JobClient (response, SlaveProfiling)) -> do
                        waitForNWorkers (jcRedis jc) (nSlaves + 1) -- +1 for the worker
                        measureRequestTime generateRequest jc)
-           liftIO $ writeToCsv fp (CSVInfo [("time", pack $ show time)] <> csvInfo <> slaveProfilingCsv sp)
+           liftIO $ writeToCsv fp ([("time", pack $ show time)] <> csvInfo <> slaveProfilingOutput sp)
            return (nSlaves, time)
 
 runWithoutNM ::
@@ -181,7 +174,7 @@ runWithoutNM ::
     , Show response, NFData state, NFData input, NFData context
     , NFData output, Store state)
     => FilePath
-    -> CSVInfo
+    -> ProfilingOutput
     -> MasterArgs m state context input output
     -> Int
     -> (request
@@ -197,19 +190,16 @@ runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
     $logInfoS logSourceBench $ unwords [ "result:", tshow res]
     t1 <- liftIO getTime
     $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
-    liftIO . writeToCsv fp $ CSVInfo [("time", pack $ show (t1 - t0))] <> csvInfo <> slaveProfilingCsv sp
+    liftIO . writeToCsv fp $ [("time", pack $ show (t1 - t0))] <> csvInfo <> slaveProfilingOutput sp
     return (nSlaves, (t1 - t0))
-
-slaveProfilingCsv :: SlaveProfiling -> CSVInfo
-slaveProfilingCsv = CSVInfo . slaveProfilingToCsv
 
 -- | Write key value pairs to a csv file.
 --
 -- If the file exists, it is assumed that the header also exists, and
 -- the values are appended.  If the file does not exist yet, it is
 -- created, and the header and data is written.
-writeToCsv :: FilePath -> CSVInfo -> IO ()
-writeToCsv fp (CSVInfo vals) = do
+writeToCsv :: FilePath -> ProfilingOutput -> IO ()
+writeToCsv fp vals = do
     exists <- doesFileExist fp
     withFile fp (if exists then AppendMode else WriteMode) $ \h -> do
         unless exists (hPutStrLn h $ intercalate "," $ map fst vals)
