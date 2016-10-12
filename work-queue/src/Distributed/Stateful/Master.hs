@@ -23,9 +23,11 @@ order to do so.  'MasterHandle's are created via 'initMaster'.
 module Distributed.Stateful.Master
     ( -- * Configuration and creation of master nodes
       MasterArgs(..)
+    , defaultMasterArgs
     , Update
     , MasterHandle
     , initMaster
+    , DoProfiling (..)
       -- * Operations on master nodes
     , closeMaster
     , update
@@ -68,6 +70,15 @@ data MasterArgs m state context input output = MasterArgs
   , maUpdate :: !(Update m state context input output)
     -- ^ This argument will be used if 'update' is invoked when no slaves have
     -- been added yet.
+  , maDoProfiling :: !DoProfiling
+    -- ^ Specifies whether to perform profiling or not.
+  }
+
+defaultMasterArgs :: Update m state context input output -> MasterArgs m state context input output
+defaultMasterArgs upd = MasterArgs
+  { maMaxBatchSize = Just 5
+  , maUpdate = upd
+  , maDoProfiling = NoProfiling
   }
 
 -- | Handle to a master.  Can be created using 'initMaster'.
@@ -396,6 +407,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
               resp0 <- scRead (slaveConnection slave)
               $logDebugJ ("Received slave response from slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayResp resp0)
               resp' <- case resp0 of
+                SRespInit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
                 SRespResetState -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
                 SRespGetStates _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
                 SRespQuit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp0))
@@ -435,10 +447,9 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
       (stateId,) <$> mapM (\input -> (, input) <$> askSupplyM) inps
   case mhSlaves mh of
     NoSlavesYet states -> do
-      _sp <- newIORef emptySlaveProfiling -- we'll not read this, but we need it to pass to 'statefulUpdate'.
       $logWarnJ ("Executing update without any slaves" :: Text)
       stateMap <- liftIO $ HT.fromList states
-      outputs <- statefulUpdate _sp (maUpdate (mhArgs mh)) stateMap context inputList
+      outputs <- statefulUpdate Nothing (maUpdate (mhArgs mh)) stateMap context inputList
       statesList' <- liftIO $ HT.toList stateMap
       let mh' = mh{ mhSlaves = NoSlavesYet statesList' }
       return (mh', fmap HMS.fromList . HMS.fromList $ outputs)
@@ -474,6 +485,7 @@ addSlaveConnection ::
   -> m ()
 addSlaveConnection (MasterHandle mhv) conn = modifyMVar_ mhv $ \mh -> do
   slaveId <- askSupply (mhSlaveIdSupply mh)
+  initSlave (maDoProfiling . mhArgs $ mh) conn
   case mhSlaves mh of
     NoSlavesYet states -> do
       let slaves = HMS.fromList [(slaveId, Slave conn (const () <$> HMS.fromList states))]
@@ -481,6 +493,17 @@ addSlaveConnection (MasterHandle mhv) conn = modifyMVar_ mhv $ \mh -> do
       return mh{mhSlaves = Slaves slaves}
     Slaves slaves -> do
       return mh{mhSlaves = Slaves (HMS.insert slaveId (Slave conn mempty) slaves)}
+
+initSlave ::
+       (MonadConnect m)
+    => DoProfiling
+    -> SlaveConn m state context input output
+    -> m ()
+initSlave doProfiling conn = do
+    scWrite conn (SReqInit doProfiling)
+    readExpect "initSlave" conn $ \case
+        SRespInit -> Just ()
+        _ -> Nothing
 
 sendStates ::
      (Monad m, MonadBaseControl IO m, MonadIO m)
@@ -565,7 +588,7 @@ getStates (MasterHandle mhv) = withMVar mhv $ \mh -> do
 getSlavesProfiling ::
        MonadConnect m
     => MasterHandle m state context input output
-    -> m (HMS.HashMap SlaveId SlaveProfiling)  -- [(SlaveId, SlaveProfiling)]
+    -> m (HMS.HashMap SlaveId (Maybe SlaveProfiling))
 getSlavesProfiling (MasterHandle mhv) = withMVar mhv $ \mh ->
     case mhSlaves mh of
         NoSlavesYet _states -> return HMS.empty

@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -20,11 +22,17 @@ cpu-time, and number of times an action is invoked.
 -}
 module Distributed.Stateful.Internal.Profiling where
 
-import           Data.Store (Store)
-import           Control.DeepSeq
-import           ClassyPrelude
-import           Control.Lens
-import           Criterion.Measurement
+import ClassyPrelude
+import Control.DeepSeq
+import Control.Lens
+import Criterion.Measurement
+import Data.Store (Store)
+import Data.Store.TypeHash (mkHasTypeHash)
+
+-- | Indicate whether to perform profiling or not.
+data DoProfiling = DoProfiling
+                 | NoProfiling
+                 deriving (Generic, Eq, Show, NFData, Store)
 
 -- | Data type to store profiling information for a section of code.
 data ProfilingCounter = ProfilingCounter
@@ -74,6 +82,7 @@ data SlaveProfiling = SlaveProfiling
     } deriving (Eq, Show, Generic, NFData)
 instance Store SlaveProfiling
 makeLenses ''SlaveProfiling
+$(mkHasTypeHash =<< [t|Maybe SlaveProfiling|])
 
 emptySlaveProfiling :: SlaveProfiling
 emptySlaveProfiling = SlaveProfiling mempty mempty mempty mempty mempty mempty mempty mempty mempty mempty
@@ -109,11 +118,12 @@ slaveProfilingOutput SlaveProfiling{..} = concat
 
 -- | Collect timing data for some action
 withProfiling :: forall a b m. MonadIO m
-    => IORef b
+    => Maybe (IORef b)
     -> Lens' b ProfilingCounter
     -> m a
     -> m a
-withProfiling ref l action = do
+withProfiling Nothing _ action = action
+withProfiling (Just ref) l action = do
     tw0 <- liftIO getTime
     tcpu0 <- liftIO getCPUTime
     res <- action
@@ -126,3 +136,4 @@ withProfiling ref l action = do
       update tw tcpu sp = sp & l . pcWallTime +~ tw
                              & l . pcCPUTime +~ tcpu
                              & l . pcCount +~ 1
+{-# INLINE withProfiling #-}

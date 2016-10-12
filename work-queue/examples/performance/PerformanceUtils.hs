@@ -22,7 +22,6 @@ import           ClassyPrelude
 import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.Mesosync.Lifted.Safe
 import           Control.DeepSeq
-import           Control.Lens
 import           Control.Monad.Logger
 import qualified Control.Retry as R
 import           Criterion.Measurement
@@ -110,14 +109,14 @@ measureRequestTime :: forall m response request.
     , HasTypeHash request, HasTypeHash response
     , Show response)
     => m request
-    -> JobClient (response, SlaveProfiling)
-    -> m (Double, SlaveProfiling) -- ^ Wall time between submitting the request and
-               -- receiving the response.
+    -> JobClient (response, Maybe SlaveProfiling)
+    -> m (Double, Maybe SlaveProfiling)
+    -- ^ (Wall time between submitting the request and receiving the response, Profiling data)
 measureRequestTime generateRequest jc = do
     rid <- uniqueRequestId
     req <- generateRequest
     t0 <- liftIO getTime
-    submitRequest (jc :: JobClient (response, SlaveProfiling)) rid req
+    submitRequest (jc :: JobClient (response, Maybe SlaveProfiling)) rid req
     waitForResponse_ jc rid >>= \case
         Just (resp :: response, sp) -> do
             $logInfoS logSourceBench $ unwords [ "result:", tshow resp]
@@ -143,7 +142,7 @@ runWithNM :: forall m a context input output state request response.
     -- ^ @nSlaves@
     -> (request
       -> MasterHandle m state context input output
-      -> m (response, SlaveProfiling))
+      -> m response)
     -> m request
     -> m (Int, Double)
     -- ^ (@nSlaves@, walltime needed to perform the request)
@@ -161,12 +160,12 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
                (NMStatefulMasterArgs (Just nSlaves) (Just nSlaves) (1000 * 1000))
                (\mh _rid req -> DontReenqueue <$> workerFunc req mh)
        else do
-           (time, sp) <- withNSlaves
+           (time, msp) <- withNSlaves
                nSlaves
-               (withJobClient jqc $ \(jc :: JobClient (response, SlaveProfiling)) -> do
+               (withJobClient jqc $ \(jc :: JobClient (response, Maybe SlaveProfiling)) -> do
                        waitForNWorkers (jcRedis jc) (nSlaves + 1) -- +1 for the worker
                        measureRequestTime generateRequest jc)
-           liftIO $ writeToCsv fp ([("time", pack $ show time)] <> csvInfo <> slaveProfilingOutput sp)
+           liftIO $ writeToCsv fp ([("time", pack $ show time)] <> csvInfo <> mSlaveProfilingOutput msp)
            return (nSlaves, time)
 
 runWithoutNM ::
@@ -179,18 +178,18 @@ runWithoutNM ::
     -> Int
     -> (request
        -> MasterHandle m state context input output
-       -> m (response, SlaveProfiling))
+       -> m response)
     -> m request
     -> m (Int, Double)
 runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do
     req <- generateRequest
     liftIO initializeTime
     t0 <- liftIO getTime
-    (res, sp) <- runSimplePureStateful masterArgs nSlaves (masterFunc req)
+    (res, msp) <- runSimplePureStateful masterArgs nSlaves (masterFunc req)
     $logInfoS logSourceBench $ unwords [ "result:", tshow res]
     t1 <- liftIO getTime
     $logInfoS logSourceBench $ "The request took " ++ pack (show (t1 - t0)) ++ " seconds."
-    liftIO . writeToCsv fp $ [("time", pack $ show (t1 - t0))] <> csvInfo <> slaveProfilingOutput sp
+    liftIO . writeToCsv fp $ [("time", pack $ show (t1 - t0))] <> csvInfo <> mSlaveProfilingOutput msp
     return (nSlaves, (t1 - t0))
 
 -- | Write key value pairs to a csv file.
@@ -204,3 +203,7 @@ writeToCsv fp vals = do
     withFile fp (if exists then AppendMode else WriteMode) $ \h -> do
         unless exists (hPutStrLn h $ intercalate "," $ map fst vals)
         hPutStrLn h $ intercalate "," $ map snd vals
+
+mSlaveProfilingOutput :: Maybe SlaveProfiling -> ProfilingOutput
+mSlaveProfilingOutput Nothing = map (second (const "NA")) $ slaveProfilingOutput emptySlaveProfiling
+mSlaveProfilingOutput (Just sp) = slaveProfilingOutput sp

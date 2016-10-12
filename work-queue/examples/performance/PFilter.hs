@@ -132,7 +132,7 @@ dpfMaster :: forall m s parameter state summary input .
                                   (PFContext parameter state summary input)
                                   PFInput
                                   PFOutput
-             -> m (PFResponse parameter, SlaveProfiling)
+             -> m (PFResponse parameter)
 dpfMaster PFConfig{..} s PFRequest{..} mh = do
     sids <- WQ.resetStates mh $ PFState <$> V.toList rparticles
     let initialWeights = (const (PFOutput $ 1/fromIntegral nParticles) <$> sids :: HMS.HashMap WQ.StateId PFOutput)
@@ -172,10 +172,7 @@ dpfMaster PFConfig{..} s PFRequest{..} mh = do
       sendResponse = do
           states <- WQ.getStates mh
           let parameterEstimate = pfcSampleParameter $ (\(PFState p) -> (pweight p, pparameter p)) <$> states
-          sp <- HMS.elems <$> getSlavesProfiling mh >>= \case
-              [] -> $logErrorS logSourceBench "No slave profiling data!" >> return emptySlaveProfiling
-              sp:sps -> return $ foldl' (<>) sp sps
-          return (PFResponse parameterEstimate, sp)
+          return (PFResponse parameterEstimate)
       nParticles = V.length rparticles
 
 weightedVectorRVar :: Show a => V.Vector (Double, a) -> RVar a

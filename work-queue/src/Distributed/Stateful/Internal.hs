@@ -67,8 +67,10 @@ type Update m state context input output =
 
 -- | A request to the slaves
 data SlaveReq state context input
-  = -- | Get all the states.
-    SReqResetState
+  = -- | Initialise a slave, specify whether it should perform profiling.
+    SReqInit DoProfiling
+    -- | Get all the states.
+  | SReqResetState
       ![(StateId, state)] -- New states
     -- | Add additional states.  The states should be serialized, in
     -- the form of a 'ByteString'.
@@ -94,7 +96,8 @@ instance (HasTypeHash state, HasTypeHash context, HasTypeHash input) => HasTypeH
     typeHash _ = typeHash (Proxy :: Proxy (state, context, input))
 
 data SlaveResp state output
-  = SRespResetState
+  = SRespInit
+  | SRespResetState
   | SRespAddStates
       ![StateId]
   | SRespRemoveStates
@@ -104,7 +107,7 @@ data SlaveResp state output
       -- forwarded by master.
   | SRespUpdate ![(StateId, [(StateId, output)])]
   | SRespGetStates ![(StateId, state)]
-  | SRespGetProfile SlaveProfiling
+  | SRespGetProfile !(Maybe SlaveProfiling)
   | SRespError Text
   | SRespQuit
   deriving (Generic, Eq, Show, NFData, Store)
@@ -113,6 +116,7 @@ instance (HasTypeHash state, HasTypeHash output) => HasTypeHash (SlaveResp state
     typeHash _ = typeHash (Proxy :: Proxy (state, output))
 
 displayReq :: SlaveReq state context input -> Text
+displayReq (SReqInit doProfiling) = "SReqInit (" <> tshow doProfiling <> ")"
 displayReq (SReqResetState mp) = "SReqResetState (" <> tshow (map fst mp) <> ")"
 displayReq (SReqAddStates mp) = "SReqAddStates (" <> tshow (map fst mp) <> ")"
 displayReq (SReqRemoveStates k mp) = "SReqRemoveStates (" <> tshow k <> ") (" <> tshow mp <> ")"
@@ -122,6 +126,7 @@ displayReq SReqGetProfile = "SReqGetProfile"
 displayReq SReqQuit = "SReqQuit"
 
 displayResp :: SlaveResp state output -> Text
+displayResp SRespInit = "SRespInit"
 displayResp SRespResetState = "SRespResetState"
 displayResp (SRespAddStates states) = "SRespAddStates (" <> tshow states <> ")"
 displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> tshow k <> ") (" <> tshow (map fst mp) <> ")"
@@ -143,7 +148,7 @@ instance Exception StatefulUpdateException
 
 statefulUpdate ::
      (MonadThrow m, MonadIO m, MonadBaseControl IO m, NFData state, NFData output, NFData input, NFData context)
-  => IORef SlaveProfiling
+  => Maybe (IORef SlaveProfiling)
   -> (context -> input -> state -> m (state, output))
   -> HashTable StateId state
   -> context
