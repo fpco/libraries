@@ -76,7 +76,7 @@ runSlave SlaveArgs{..} = do
           SReqInit DoProfiling -> Just <$> newIORef emptySlaveProfiling
           _ -> throwIO (UnexpectedRequest (displayReq req))
       let output = SRespInit
-      withProfiling sp spSend $ send output
+      void . withProfiling sp spSend $ send output
       debug (displayResp output)
       return sp
     go ::
@@ -91,7 +91,7 @@ runSlave SlaveArgs{..} = do
       -- WARNING: All exceptions thrown here should be of type
       -- 'SlaveException', as only those will be catched.
       (output, mbStates) <- withProfiling sp spWork $ case req of
-          SReqInit doProfiling -> throwIO (UnexpectedRequest (displayReq req))
+          SReqInit _ -> throwIO (UnexpectedRequest (displayReq req))
           SReqResetState states' -> do
               statesMap' <- liftIO . withProfiling sp spHTFromList $ HT.fromList states'
               return (SRespResetState, Just statesMap')
