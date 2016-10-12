@@ -86,7 +86,7 @@ performSimpleTest initialStates mh = do
     testUpdate mh inputs
 
 testMasterArgs :: forall m. (MonadConnect m) => Maybe (Int, Int) -> Int -> MasterArgs m State () Input Output
-testMasterArgs mbDelay n = MasterArgs{maMaxBatchSize = Just n, maUpdate = f}
+testMasterArgs mbDelay n = (defaultMasterArgs f) { maMaxBatchSize = Just n }
   where
     f :: () -> Input -> State -> m (State, Output)
     f _ input (State inputs) = do
@@ -106,10 +106,12 @@ genericSpec runner = do
   stressfulTest $ loggingIt "Passes simple comparison with pure implementation (50 slaves)" $
     runner (testMasterArgs (Just (10, 500)) 5) 50 (performSimpleTest 1000)
 
+dropProflingFromRunner runner ma slavesNum cont = fst <$> runner ma slavesNum cont
+
 spec :: Spec
 spec = do
-  describe "Pure" (genericSpec runSimplePureStateful)
-  describe "NetworkMessage" (genericSpec (runSimpleNMStateful "127.0.0.1"))
+  describe "Pure" (genericSpec (dropProflingFromRunner runSimplePureStateful))
+  describe "NetworkMessage" (genericSpec (dropProflingFromRunner (runSimpleNMStateful "127.0.0.1")))
   describe "JobQueue" $ do
     redisIt "gets all slaves available (short)" $ \r -> do
       let jqc = testJobQueueConfig
@@ -130,7 +132,7 @@ spec = do
                 return $ DontReenqueue nSlaves
           workersToSpawn = 10
           client :: forall m. (MonadConnect m) => m ()
-          client = withJobClient jqc $ \(jc :: JobClient Int) -> do
+          client = withJobClient jqc $ \(jc :: JobClient (Int, Maybe SlaveProfiling)) -> do
             rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
             submitRequest jc rid ()
             void $ waitForResponse_ jc rid
@@ -175,10 +177,10 @@ fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do
             atomicModifyIORef' numSlavesAtShutdownRef (\sl -> (HMS.insert reqId numSlaves' sl, ()))
             return (DontReenqueue ())
       requestLoop :: (MonadConnect m) => Int -> m ()
-      requestLoop _n = withJobClient jqc $ \(jc :: JobClient ()) -> forM_ [1..requestsPerClient] $ \(_m :: Int) -> do
+      requestLoop _n = withJobClient jqc $ \(jc :: JobClient ((), Maybe SlaveProfiling)) -> forM_ [1..requestsPerClient] $ \(_m :: Int) -> do
         rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
         submitRequest jc rid ()
-        Just () <- waitForResponse_ jc rid
+        Just ((), _) <- waitForResponse_ jc rid
         return ()
   raceAgainstVoids
     (void (Async.mapConcurrently requestLoop [(1::Int)..numClients]))

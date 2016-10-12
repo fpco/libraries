@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -65,11 +66,12 @@ module Distributed.Stateful
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import qualified Data.HashMap.Strict as HMS
 import           Distributed.Heartbeat
 import           Distributed.Stateful.Slave
 import           Distributed.Stateful.Internal
 import           Distributed.Stateful.Master
-import           FP.Redis (MonadConnect)
+import           FP.Redis (MonadConnect, Milliseconds)
 import           Data.Store (Store)
 import           Control.Concurrent.STM.TMChan
 import           Data.Streaming.NetworkMessage
@@ -86,7 +88,6 @@ import qualified Data.Streaming.Network.Internal as CN
 import           Distributed.JobQueue.Worker
 import           Distributed.Types
 import           Distributed.JobQueue.MasterOrSlave
-import           FP.Redis (Milliseconds)
 
 -- * Pure version, useful for testing, debugging, etc.
 -----------------------------------------------------------------------
@@ -140,7 +141,7 @@ runSimplePureStateful :: forall m context input state output a.
     => MasterArgs m state context input output
     -> Int -- ^ Desired slaves. Must be >= 0
     -> (MasterHandle m state context input output -> m a)
-    -> m a
+    -> m (a, Maybe SlaveProfiling)
 runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
     then fail "runSimplePureStateful: slavesNum0 < 0"
     else do
@@ -148,10 +149,21 @@ runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
         go mh slavesNum0
   where
     go mh slavesNum = if slavesNum == 0
-        then finally (cont mh) (closeMaster mh)
+        then finally (addSlaveProfiling cont mh)
+             (closeMaster mh)
         else runPureStatefulSlave (maUpdate ma) $ \conn -> do
           addSlaveConnection mh conn
           go mh (slavesNum - 1)
+
+addSlaveProfiling :: MonadConnect m
+    => (MasterHandle m state context input output -> m a)
+    -> (MasterHandle m state context input output -> m (a, Maybe SlaveProfiling))
+addSlaveProfiling cont mh = do
+    res <- cont mh
+    sp <- catMaybes . HMS.elems <$> getSlavesProfiling mh >>= \case
+        [] -> return Nothing
+        sp:sps -> return . Just $ foldl' (<>) sp sps
+    return (res, sp)
 
 nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> StatefulConn m a b
 nmStatefulConn ad = StatefulConn
@@ -199,7 +211,7 @@ runNMStatefulMaster :: forall m state output input context b.
     -- of slaves is reached. It'll never return if there is no maximum. This is useful
     -- if for example we're requesting the slaves with the RequestSlaves and we want
     -- to stop.
-    -> m (Maybe b)
+    -> m (Maybe (b, Maybe SlaveProfiling))
     -- ^ 'Nothing' if we ran out of time waiting for slaves.
 runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
     case nmsmaMinimumSlaves of
@@ -229,7 +241,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
             if added
                 then readMVar doneVar
                 else $logWarnJ ("Slave tried to connect while past the number of maximum slaves" :: Text)
-    let server :: m (Maybe b)
+    let server :: m (Maybe (b, Maybe SlaveProfiling))
         server = do
             let waitForMaxSlaves n = atomically $ do
                     connected <- readTVar slavesConnectedVar
@@ -247,7 +259,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
                 then do
                     $logErrorJ ("Timed out waiting for slaves to connect. Needed " ++ tshow minSlaves ++ ", got " ++ tshow slaves)
                     return Nothing
-                else Just <$> cont mh doneWaitingForSlaves
+                else Just <$> addSlaveProfiling (`cont` doneWaitingForSlaves) mh
     fmap (either absurd id) $ Async.race (runServer onSlaveConnection) $ finally server $ do
         closeMaster mh
         putMVar doneVar ()
@@ -264,7 +276,7 @@ runSimpleNMStateful :: forall m state input output context a.
     -> MasterArgs m state context input output
     -> Int -- ^ Desired slaves
     -> (MasterHandle m state context input output -> m a)
-    -> m a
+    -> m (a, Maybe SlaveProfiling)
 runSimpleNMStateful host ma numSlaves cont = do
     when (numSlaves < 0) $
         fail ("runSimpleNMStateful: numSlaves < 0 (" ++ show numSlaves ++ ")")
@@ -283,7 +295,7 @@ runSimpleNMStateful host ma numSlaves cont = do
             let cs = CN.clientSettings port host
             go cs nmSettings numSlaves
     mbX <- fmap snd $ Async.concurrently runAllSlaves $
-        runNMStatefulMaster ma nmsma acceptConns (\mh wait -> wait >> cont mh)
+        runNMStatefulMaster ma nmsma acceptConns $ \mh wait -> wait >> cont mh -- do
     case mbX of
         Nothing -> fail ("runSimpleNMStateful: failed waiting for slaves, should not happen.")
         Just x -> return x
@@ -321,7 +333,7 @@ runRequestingStatefulMaster :: forall m state output context input b.
     -> MasterArgs m state context input output
     -> NMStatefulMasterArgs
     -> (MasterHandle m state context input output -> m b)
-    -> m (Maybe b)
+    -> m (Maybe (b, Maybe SlaveProfiling))
 runRequestingStatefulMaster r (heartbeatingWorkerId -> wid) ss0 host mbPort ma nmsma cont = do
     nmSettings <- defaultNMSettings
     (ss, getPort) <- liftIO (getPortAfterBind ss0)
@@ -394,4 +406,5 @@ runJobQueueStatefulWorker jqc ss host mbPort ma nmsma cont =
               mbResp <- runRequestingStatefulMaster redis hb ss host mbPort ma nmsma (\mh -> cont mh reqId req)
               case mbResp of
                 Nothing -> liftIO (fail "Timed out waiting for slaves to connect")
-                Just resp -> return resp)
+                Just (Reenqueue, _) -> return Reenqueue
+                Just (DontReenqueue resp, msp) -> return (DontReenqueue (resp, msp)))

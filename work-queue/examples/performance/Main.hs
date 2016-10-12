@@ -151,9 +151,9 @@ runBench nSlaves commonCsvInfo Options{..} =
         BenchPFilter pfOpts -> do
             let cfg = PFilter.pfConfig pfOpts
                 slave = PFilter.dpfSlave cfg
-                masterArgs = MasterArgs
+                masterArgs = (defaultMasterArgs slave)
                     { maMaxBatchSize = Just 5
-                    , maUpdate = slave
+                    , maDoProfiling = DoProfiling
                     }
             randomsrc <- newIORef (pureMT 42)
             let master = PFilter.dpfMaster cfg randomsrc

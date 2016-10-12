@@ -53,7 +53,6 @@ runSlave :: forall state context input output m.
   -> m ()
 runSlave SlaveArgs{..} = do
     states <- liftIO HT.new
-    sp <- newIORef emptySlaveProfiling
     let recv = scRead saConn
     let send = scWrite saConn
         -- We're only catching 'SlaveException's here, since they
@@ -63,7 +62,7 @@ runSlave SlaveArgs{..} = do
         handler err = do
             send (SRespError (pack (show err)))
             throwAndLog err
-    go recv send states sp `catch` handler
+    go recv send states Nothing `catch` handler
   where
     throw = throwAndLog
     debug msg = logDebugNSJ "Distributed.Stateful.Slave" msg
@@ -71,20 +70,25 @@ runSlave SlaveArgs{..} = do
          m (SlaveReq state context input)
       -> (SlaveResp state output -> m ())
       -> HashTable StateId state
-      -> IORef SlaveProfiling
+      -> Maybe (IORef SlaveProfiling)
       -> m ()
     go recv send states sp = do
       req <- withProfiling sp spReceive recv
       debug (displayReq req)
       -- WARNING: All exceptions thrown here should be of type
       -- 'SlaveException', as only those will be catched.
-      (output, mbStates) <- withProfiling sp spWork $ case req of
+      (output, mbStates, sp') <- withProfiling sp spWork $ case req of
+          SReqInit doProfiling -> do
+              sp' <- case doProfiling of
+                  NoProfiling -> return Nothing
+                  DoProfiling -> Just <$> newIORef emptySlaveProfiling
+              return (SRespInit, Just states, sp')
           SReqResetState states' -> do
               statesMap' <- liftIO . withProfiling sp spHTFromList $ HT.fromList states'
-              return (SRespResetState, Just statesMap')
+              return (SRespResetState, Just statesMap', sp)
           SReqGetStates -> do
               statesList <- liftIO . withProfiling sp spHTToList $ HT.toList states
-              return (SRespGetStates statesList, (Just states))
+              return (SRespGetStates statesList, Just states, sp)
           SReqAddStates newStates0 -> do
             let decodeOrThrow bs = case S.decode bs of
                   Left err -> throw (DecodeStateError (show err))
@@ -98,7 +102,7 @@ runSlave SlaveArgs{..} = do
                         return (sid, isJust mVal))
             unless (null aliased) $ throw (AddingExistingStates $ map fst aliased)
             forM_ newStates $ \(sid, state) -> liftIO . withProfiling sp spHTInserts $ HT.insert states sid state
-            return (SRespAddStates (fst <$> newStates), Just states)
+            return (SRespAddStates (fst <$> newStates), Just states, sp)
           SReqRemoveStates requesting stateIdsToDelete -> do
             let eitherLookup sid = (liftIO . withProfiling sp spHTLookups $ HT.lookup states sid) >>= \case
                     Nothing -> return $ Left sid
@@ -106,17 +110,19 @@ runSlave SlaveArgs{..} = do
             (missing, toSend) <- partitionEithers <$> mapM eitherLookup (HS.toList stateIdsToDelete)
             unless (null missing) $ throw (MissingStatesToRemove missing)
             withProfiling sp spHTDeletes $ forM_ stateIdsToDelete (liftIO . HT.delete states)
-            return (SRespRemoveStates requesting (second S.encode <$> toSend), Just states)
+            return (SRespRemoveStates requesting (second S.encode <$> toSend), Just states, sp)
           SReqUpdate context inputs -> do
             outputs <- statefulUpdate sp saUpdate states context inputs
-            return (SRespUpdate outputs, Just states)
+            return (SRespUpdate outputs, Just states, sp)
           SReqGetProfile -> do
-            slaveProfile <- readIORef sp
-            return (SRespGetProfile slaveProfile, Just states)
+            slaveProfile <- case sp of
+                Just sp' -> Just <$> readIORef sp'
+                Nothing -> return Nothing
+            return (SRespGetProfile slaveProfile, Just states, sp)
           SReqQuit -> do
-            return (SRespQuit, Nothing)
+            return (SRespQuit, Nothing, sp)
       withProfiling sp spSend $ send output
       debug (displayResp output)
       case mbStates of
             Nothing -> return ()
-            Just states' -> go recv send states' sp
+            Just states' -> go recv send states' sp'
