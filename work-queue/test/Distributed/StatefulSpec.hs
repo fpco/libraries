@@ -69,7 +69,7 @@ type Runner m = forall a.
        MasterArgs m State () Input Output
     -> Int -- ^ Desired slaves
     -> (MasterHandle m State () Input Output -> m a)
-    -> m (a, Maybe SlaveProfiling)
+    -> m (a, Maybe Profiling)
 
 performSimpleTest :: (MonadConnect m) => Int -> MasterHandle m State () Input Output -> m ()
 performSimpleTest initialStates mh = do
@@ -99,7 +99,9 @@ genericSpec :: (forall m. (MonadConnect m) => Runner m) -> Spec
 genericSpec runner = do
   loggingIt "Passes simple comparison with pure implementation (no slaves)" $ do
     ((), mprof) <- runner (testMasterArgs (Just delay) 2) 0 (performSimpleTest 10)
-    mprof `shouldBe` Nothing
+    mprof `shouldSatisfy` \case
+        Just (Profiling _ Nothing) -> True
+        _ -> False
   loggingIt "Passes simple comparison with pure implementation (one slave)" $ do
     ((), mprof) <- runner (testMasterArgs (Just delay) 2) 1 (performSimpleTest 10)
     checkDelay mprof
@@ -111,16 +113,18 @@ genericSpec runner = do
     checkDelay mprof
   where
     delay = (10, 500) :: (Int, Int)
-    checkDelay msp = shouldSatisfy msp $ \case
+    checkDelay msp = msp `shouldSatisfy` \case
         Nothing -> False
-        Just sp -> let updateWallTime = _pcWallTime . _spUpdate $ sp
-                       nUpdates = _pcCount . _spUpdate $ sp
-                  in updateWallTime >= fromIntegral nUpdates * (fromIntegral (fst delay) / (1000 * 1000))
+        Just (Profiling _ Nothing) -> False
+        Just (Profiling _ (Just sp)) ->
+            let updateWallTime = _pcWallTime . _spUpdate $ sp
+                nUpdates = _pcCount . _spUpdate $ sp
+            in updateWallTime >= fromIntegral nUpdates * (fromIntegral (fst delay) / (1000 * 1000))
 
 spec :: Spec
 spec = do
   describe "Pure" (genericSpec runSimplePureStateful)
-  describe "NetworkMessage" (genericSpec ((runSimpleNMStateful "127.0.0.1")))
+  describe "NetworkMessage" (genericSpec (runSimpleNMStateful "127.0.0.1"))
   describe "JobQueue" $ do
     redisIt "gets all slaves available (short)" $ \r -> do
       let jqc = testJobQueueConfig
@@ -141,7 +145,7 @@ spec = do
                 return $ DontReenqueue nSlaves
           workersToSpawn = 10
           client :: forall m. (MonadConnect m) => m ()
-          client = withJobClient jqc $ \(jc :: JobClient (Int, Maybe SlaveProfiling)) -> do
+          client = withJobClient jqc $ \(jc :: JobClient (Int, Maybe Profiling)) -> do
             rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
             submitRequest jc rid ()
             void $ waitForResponse_ jc rid
@@ -186,7 +190,7 @@ fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do
             atomicModifyIORef' numSlavesAtShutdownRef (\sl -> (HMS.insert reqId numSlaves' sl, ()))
             return (DontReenqueue ())
       requestLoop :: (MonadConnect m) => Int -> m ()
-      requestLoop _n = withJobClient jqc $ \(jc :: JobClient ((), Maybe SlaveProfiling)) -> forM_ [1..requestsPerClient] $ \(_m :: Int) -> do
+      requestLoop _n = withJobClient jqc $ \(jc :: JobClient ((), Maybe Profiling)) -> forM_ [1..requestsPerClient] $ \(_m :: Int) -> do
         rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
         submitRequest jc rid ()
         Just ((), _) <- waitForResponse_ jc rid
