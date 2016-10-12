@@ -27,7 +27,8 @@
 ## - adjust the following line to match the first 8 digits of the
 ##   commit hash you want to compare performance against.
 ##
-masterHash <- "51a07603"
+masterHash <- "12362735"
+masterText <- paste("master (", masterHash, ")")
 ##
 ## - Use R to run this file, as in
 ##
@@ -40,11 +41,11 @@ masterHash <- "51a07603"
 ##   wall-time(commit)/wall-time(master)
 ## - Rplots.pdf, containing both plots
 
-
+## required libraries
 library('ggplot2')
 library('plyr')
-
-masterText <- paste("master (", masterHash, ")")
+library('tidyr')
+library('data.table')
 
 ## Read in data from benchmark runs
 timings <- read.csv('bench-pfilter.csv')
@@ -57,19 +58,18 @@ timings$omega2_interval <- as.factor(timings$omega2_interval)
 timings$phi0 <- as.factor(timings$phi0)
 timings$resample_threshold <- as.factor(timings$resample_threshold)
 levels(timings$commit)[levels(timings$commit)==masterHash] <- masterText
-levels(timings$commit)[levels(timings$commit)=="21e644a8"] <- "less conversions (21e644a8)"
-levels(timings$commit)[levels(timings$commit)=="ab89d49d"] <- "hashtables (ab89d49d)"
-## ## If you have aggregated a lot of data and want to plot only a subset, you can filter it:
-## timings <- timings[timings$slaves > 3,]
-## timings <- timings[timings$slaves < 18,]
-## timings <- timings[timings$particles == 10000,]
+timings$slaveWorkFraction <- timings$spWorkWall/(timings$spWorkWall + timings$spReceiveWall + timings$spSendWall)
+profiling <- gather(timings, action, t, spReceiveWall:spUpdateCount
+                  , na.rm = TRUE
+                  , factor_key=TRUE)
 
-## Draw log/log plot of the wall-time.
-timingsPlot <- qplot(slaves, time/(particles/1000)/steps
+## Draw log/log plot of the wall-time over the slave count.  For
+## perfect 1/n scaling, this will be a straight line with slope of -1.
+scalingPlot <- qplot(slaves, time/(particles/1000)/steps
                    , data=timings
                    , colour=commit
                    , alpha = I(1/3))
-timingsPlot +
+scalingPlot +
     ggtitle("wall-time of particle filter benchmark") +
     ylab("time[s] per iteration per 1000 particles") +
     xlab("number of slaves")+
@@ -84,7 +84,6 @@ timingsPlot +
     geom_abline(intercept = log10(mean(timings[(timings$slaves==1),]$time)/100)
               , slope=-1
               , linetype="dotted")
-
 ggsave("pfilter-scaling.png")
 
 ## Show speedup relative to master branch before optimisations.
@@ -100,69 +99,24 @@ qplot(slaves, Ratio, data=normalizedTimings[normalizedTimings$commit != masterTe
     xlab("number of slaves") +
     ylab(paste("time/time(", masterText, ")")) +
     geom_smooth()
-
 ggsave('pfilter-improvements.png')
 
-## Show average 'productivity' of the slaves (i.e., t_work/(t_total),
-## where t_work is the time spent calculating responses to requests,
-## and t_total is t_work plus the time spent receiving requests and
-## sending responses).
-qplot(slaves, slaveWorkFraction,
-      data=timings,
-      colour=commit,
-      alpha = I(1/3)) +
-    ggtitle("average productivity of slaves") +
-    labs(y=expression(t[work]/(t[work]+t[receive]+t[send])),
-         x="number of slaves")+
-    geom_smooth()
-
-ggsave('pfilter-productivity.png')
-
-## Average time a slave performs "true work"
-qplot(slaves, slaveWorkTime/slaves,
-      data=timings[timings$slaves > 0,],
-      colour=commit,
-      alpha = I(1/3)) +
-    ggtitle("average time eachs slave spent working") +
-    labs(y=expression(mean(t[work])),
-         x="number of slaves")+
+## Show an overview of all slave profiling times
+qplot(slaves, t, data=profiling[(profiling$action %like% '^sp') & !(profiling$action %like% 'Count$'),]
+    , colour=commit
+    , alpha = I(1/3)) +
     scale_x_log10() +
     scale_y_log10() +
     geom_smooth() +
-    geom_abline(intercept = log10(mean(timings[(timings$slaves==1),]$slaveWorkTime, na.rm = TRUE)),
-                slope = -1,
-                linetype = "dotted")
-ggsave('pfilter-average-twork.png')
+    facet_wrap( ~ action)
+ggsave('pfilter-slave-times.png')
 
-## Summed wall-time of slaves performing "true work"
-qplot(slaves, slaveWorkTime/(particles/1000)/steps,
-      data=timings[timings$slaves > 0,],
-      colour=commit,
-      alpha = I(1/3)) +
-    ggtitle("accumulated time spent working") +
-    labs(y=expression(sum(t[work])),
-         x="number of slaves")+
-    geom_smooth()
-ggsave('pfilter-summed-twork.png')
-
-## Average t[receive]
-qplot(slaves, slaveReceiveTime/slaves,
-      data=timings[timings$slaves > 0,],
-      colour=commit,
-      alpha = I(1/3)) +
-    ggtitle("average time each slave spent waiting for messages") +
-    labs(y=expression(t[receive]),
-         x="number of slaves")+
-    geom_smooth() ## +
-ggsave('pfilter-average-treceive.png')
-
-## Average t[send]
-qplot(slaves, slaveSendTime/slaves,
-      data=timings[timings$slaves > 0,],
-      colour=commit,
-      alpha = I(1/3)) +
-    ggtitle("average time each slave spent sending messages") +
-    labs(y=expression(t[send]),
-         x="number of slaves")+
-    geom_smooth() ## +
-ggsave('pfilter-average-tsend.png')
+## Show an overview of all slave profiling counts
+qplot(slaves, t, data=profiling[(profiling$action %like% '^sp') & (profiling$action %like% 'Count$'),]
+    , colour=commit
+    , alpha = I(1/3)) +
+    scale_x_log10() +
+    scale_y_log10() +
+    geom_smooth() +
+    facet_wrap( ~ action)
+ggsave('pfilter-slave-counts.png')
