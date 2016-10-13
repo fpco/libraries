@@ -86,7 +86,7 @@ performSimpleTest initialStates mh = do
     testUpdate mh inputs
 
 testMasterArgs :: forall m. (MonadConnect m) => Maybe (Int, Int) -> Int -> MasterArgs m State () Input Output
-testMasterArgs mbDelay n = (defaultMasterArgs f) { maMaxBatchSize = Just n, maDoProfiling = DoProfiling }
+testMasterArgs mbDelay n = (defaultMasterArgs f) { maMinBatchSize = Just n, maDoProfiling = DoProfiling }
   where
     f :: () -> Input -> State -> m (State, Output)
     f _ input (State inputs) = do
