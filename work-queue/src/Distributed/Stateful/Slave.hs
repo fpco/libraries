@@ -41,6 +41,7 @@ data SlaveException
   | MissingStatesToRemove [StateId]
   | InputStateNotFound StateId
   | DecodeStateError String
+  | UnexpectedRequest Text
   deriving (Eq, Show, Typeable)
 
 instance Exception SlaveException
@@ -58,14 +59,26 @@ runSlave SlaveArgs{..} = do
         -- We're only catching 'SlaveException's here, since they
         -- indicate that something was wrong about the request, and
         -- should be sent back to the master.
-        handler :: SlaveException -> m ()
+        handler :: SlaveException -> m a
         handler err = do
             send (SRespError (pack (show err)))
             throwAndLog err
-    go recv send states Nothing `catch` handler
+    sp <- init recv send `catch` handler
+    go recv send states sp `catch` handler
   where
     throw = throwAndLog
-    debug msg = logDebugNSJ "Distributed.Stateful.Slave" msg
+    debug = logDebugNSJ "Distributed.Stateful.Slave"
+    init recv send = do
+      req <- recv
+      debug (displayReq req)
+      sp <- case req of
+          SReqInit NoProfiling -> return Nothing
+          SReqInit DoProfiling -> Just <$> newIORef emptySlaveProfiling
+          _ -> throwIO (UnexpectedRequest (displayReq req))
+      let output = SRespInit
+      withProfiling sp spSend $ send output
+      debug (displayResp output)
+      return sp
     go ::
          m (SlaveReq state context input)
       -> (SlaveResp state output -> m ())
@@ -77,18 +90,14 @@ runSlave SlaveArgs{..} = do
       debug (displayReq req)
       -- WARNING: All exceptions thrown here should be of type
       -- 'SlaveException', as only those will be catched.
-      (output, mbStates, sp') <- withProfiling sp spWork $ case req of
-          SReqInit doProfiling -> do
-              sp' <- case doProfiling of
-                  NoProfiling -> return Nothing
-                  DoProfiling -> Just <$> newIORef emptySlaveProfiling
-              return (SRespInit, Just states, sp')
+      (output, mbStates) <- withProfiling sp spWork $ case req of
+          SReqInit doProfiling -> throwIO (UnexpectedRequest (displayReq req))
           SReqResetState states' -> do
               statesMap' <- liftIO . withProfiling sp spHTFromList $ HT.fromList states'
-              return (SRespResetState, Just statesMap', sp)
+              return (SRespResetState, Just statesMap')
           SReqGetStates -> do
               statesList <- liftIO . withProfiling sp spHTToList $ HT.toList states
-              return (SRespGetStates statesList, Just states, sp)
+              return (SRespGetStates statesList, Just states)
           SReqAddStates newStates0 -> do
             let decodeOrThrow bs = case S.decode bs of
                   Left err -> throw (DecodeStateError (show err))
@@ -102,7 +111,7 @@ runSlave SlaveArgs{..} = do
                         return (sid, isJust mVal))
             unless (null aliased) $ throw (AddingExistingStates $ map fst aliased)
             forM_ newStates $ \(sid, state) -> liftIO . withProfiling sp spHTInserts $ HT.insert states sid state
-            return (SRespAddStates (fst <$> newStates), Just states, sp)
+            return (SRespAddStates (fst <$> newStates), Just states)
           SReqRemoveStates requesting stateIdsToDelete -> do
             let eitherLookup sid = (liftIO . withProfiling sp spHTLookups $ HT.lookup states sid) >>= \case
                     Nothing -> return $ Left sid
@@ -110,19 +119,19 @@ runSlave SlaveArgs{..} = do
             (missing, toSend) <- partitionEithers <$> mapM eitherLookup (HS.toList stateIdsToDelete)
             unless (null missing) $ throw (MissingStatesToRemove missing)
             withProfiling sp spHTDeletes $ forM_ stateIdsToDelete (liftIO . HT.delete states)
-            return (SRespRemoveStates requesting (second S.encode <$> toSend), Just states, sp)
+            return (SRespRemoveStates requesting (second S.encode <$> toSend), Just states)
           SReqUpdate context inputs -> do
             outputs <- statefulUpdate sp saUpdate states context inputs
-            return (SRespUpdate outputs, Just states, sp)
+            return (SRespUpdate outputs, Just states)
           SReqGetProfile -> do
             slaveProfile <- case sp of
                 Just sp' -> Just <$> readIORef sp'
                 Nothing -> return Nothing
-            return (SRespGetProfile slaveProfile, Just states, sp)
+            return (SRespGetProfile slaveProfile, Just states)
           SReqQuit -> do
-            return (SRespQuit, Nothing, sp)
+            return (SRespQuit, Nothing)
       withProfiling sp spSend $ send output
       debug (displayResp output)
       case mbStates of
             Nothing -> return ()
-            Just states' -> go recv send states' sp'
+            Just states' -> go recv send states' sp

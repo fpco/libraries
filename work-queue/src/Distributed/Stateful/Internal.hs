@@ -68,7 +68,7 @@ type Update m state context input output =
 -- | A request to the slaves
 data SlaveReq state context input
   = -- | Initialise a slave, specify whether it should perform profiling.
-    SReqInit DoProfiling
+    SReqInit !DoProfiling
     -- | Get all the states.
   | SReqResetState
       ![(StateId, state)] -- New states

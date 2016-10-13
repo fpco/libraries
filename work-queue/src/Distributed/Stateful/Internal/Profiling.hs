@@ -54,19 +54,6 @@ instance Monoid ProfilingCounter where
     mempty = ProfilingCounter 0 0 0
     mappend = (<>)
 
--- | Representation of profiling data to store in CSV files.
---
--- Each tuple has the name and the printed representation of the
--- profiling result.
-type ProfilingOutput = [(Text, Text)]
-
-profilingCounterOutput :: Text -> ProfilingCounter -> ProfilingOutput
-profilingCounterOutput name ProfilingCounter{..} =
-    [ (name ++ "Wall", tshow _pcWallTime)
-    , (name ++ "CPU", tshow _pcCPUTime)
-    , (name ++ "Count", tshow _pcCount)
-    ]
-
 -- | Profiling data for a slave.
 data SlaveProfiling = SlaveProfiling
     { _spReceive        :: !ProfilingCounter
@@ -102,20 +89,6 @@ instance Semigroup SlaveProfiling where
         , _spUpdate = view spUpdate sp <> view spUpdate sp'
         }
 
-slaveProfilingOutput :: SlaveProfiling -> ProfilingOutput
-slaveProfilingOutput SlaveProfiling{..} = concat
-    [ profilingCounterOutput "spReceive" _spReceive
-    , profilingCounterOutput "spWork" _spWork
-    , profilingCounterOutput "spSend" _spSend
-    , profilingCounterOutput "spStatefulUpdate" _spStatefulUpdate
-    , profilingCounterOutput "spHTLookups" _spHTLookups
-    , profilingCounterOutput "spHTInserts" _spHTInserts
-    , profilingCounterOutput "spHTDeletes" _spHTDeletes
-    , profilingCounterOutput "spHTFromList" _spHTFromList
-    , profilingCounterOutput "spHTToList" _spHTToList
-    , profilingCounterOutput "spUpdate" _spUpdate
-    ]
-
 -- | Collect timing data for some action
 withProfiling :: forall a b m. MonadIO m
     => Maybe (IORef b)
@@ -137,3 +110,30 @@ withProfiling (Just ref) l action = do
                              & l . pcCPUTime +~ tcpu
                              & l . pcCount +~ 1
 {-# INLINE withProfiling #-}
+
+-- | Representation of profiling data to store in CSV files.
+--
+-- Each tuple has the name and the printed representation of the
+-- profiling result.
+type ProfilingColumns = [(Text, Text)]
+
+profilingCounterColumns :: Text -> ProfilingCounter -> ProfilingColumns
+profilingCounterColumns name ProfilingCounter{..} =
+    [ (name ++ "Wall", tshow _pcWallTime)
+    , (name ++ "CPU", tshow _pcCPUTime)
+    , (name ++ "Count", tshow _pcCount)
+    ]
+
+slaveProfilingColumns :: SlaveProfiling -> ProfilingColumns
+slaveProfilingColumns SlaveProfiling{..} = concat
+    [ profilingCounterColumns "spReceive" _spReceive
+    , profilingCounterColumns "spWork" _spWork
+    , profilingCounterColumns "spSend" _spSend
+    , profilingCounterColumns "spStatefulUpdate" _spStatefulUpdate
+    , profilingCounterColumns "spHTLookups" _spHTLookups
+    , profilingCounterColumns "spHTInserts" _spHTInserts
+    , profilingCounterColumns "spHTDeletes" _spHTDeletes
+    , profilingCounterColumns "spHTFromList" _spHTFromList
+    , profilingCounterColumns "spHTToList" _spHTToList
+    , profilingCounterColumns "spUpdate" _spUpdate
+    ]

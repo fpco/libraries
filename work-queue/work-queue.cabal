@@ -219,4 +219,4 @@ executable wq-performance
                      , vector
                      , work-queue
 
-  ghc-options:         -Wall -threaded -rtsopts -fprof-auto -funbox-strict-fields
+  ghc-options:         -Wall -threaded -rtsopts
