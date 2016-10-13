@@ -45,6 +45,7 @@ module Distributed.Stateful.Master
     , SlaveId
     , StatefulConn(..)
     , SlaveProfiling(..), emptySlaveProfiling
+    , ProfilingCounter(..)
     ) where
 
 import           ClassyPrelude
