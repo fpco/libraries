@@ -27,7 +27,7 @@
 ## - adjust the following line to match the first 8 digits of the
 ##   commit hash you want to compare performance against.
 ##
-masterHash <- "12362735"
+masterHash <- "ba02e697"
 masterText <- paste("master (", masterHash, ")")
 ##
 ## - Use R to run this file, as in
@@ -59,7 +59,7 @@ timings$phi0 <- as.factor(timings$phi0)
 timings$resample_threshold <- as.factor(timings$resample_threshold)
 levels(timings$commit)[levels(timings$commit)==masterHash] <- masterText
 timings$slaveWorkFraction <- timings$spWorkWall/(timings$spWorkWall + timings$spReceiveWall + timings$spSendWall)
-profiling <- gather(timings, action, t, spReceiveWall:spUpdateCount
+profiling <- gather(timings, action, t, spReceiveWall:mpReceiveCount
                   , na.rm = TRUE
                   , factor_key=TRUE)
 
@@ -113,6 +113,26 @@ ggsave('pfilter-slave-times.png')
 
 ## Show an overview of all slave profiling counts
 qplot(slaves, t, data=profiling[(profiling$action %like% '^sp') & (profiling$action %like% 'Count$'),]
+    , colour=commit
+    , alpha = I(1/3)) +
+    scale_x_log10() +
+    scale_y_log10() +
+    geom_smooth() +
+    facet_wrap( ~ action)
+ggsave('pfilter-slave-counts.png')
+
+## Show an overview of all master profiling times
+qplot(slaves, t, data=profiling[(profiling$action %like% '^mp') & !(profiling$action %like% 'Count$'),]
+    , colour=commit
+    , alpha = I(1/3)) +
+    scale_x_log10() +
+    scale_y_log10() +
+    geom_smooth() +
+    facet_wrap( ~ action)
+ggsave('pfilter-slave-times.png')
+
+## Show an overview of all master profiling counts
+qplot(slaves, t, data=profiling[(profiling$action %like% '^mp') & (profiling$action %like% 'Count$'),]
     , colour=commit
     , alpha = I(1/3)) +
     scale_x_log10() +
