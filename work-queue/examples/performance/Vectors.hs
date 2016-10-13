@@ -98,7 +98,7 @@ data Options = Options
                , optOutput :: FilePath
                }
 
-csvInfo :: Options -> ProfilingOutput
+csvInfo :: Options -> ProfilingColumns
 csvInfo opts =
     [ ("l", pack . show . optVLength $ opts)
     , ("N", pack . show . optNStates $ opts)]

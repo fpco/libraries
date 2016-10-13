@@ -61,6 +61,8 @@ module Distributed.Stateful
       -- * Reference implementation using one process
     , runPureStatefulSlave
     , runSimplePureStateful
+    , ProfilingColumns
+    , slaveProfilingColumns
     ) where
 
 import           ClassyPrelude

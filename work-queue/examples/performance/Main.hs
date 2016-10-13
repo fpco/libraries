@@ -145,7 +145,7 @@ options = Options
          <> command "kmeans"  (BenchKMeans <$> benchKMeans `info` progDesc "Benchmark with a parallel KMeans algorithm.")
         )
 
-runBench :: Int -> ProfilingOutput -> Options -> IO (Int, Double)
+runBench :: Int -> ProfilingColumns -> Options -> IO (Int, Double)
 runBench nSlaves commonCsvInfo Options{..} =
     case optBench of
         BenchPFilter pfOpts -> do
