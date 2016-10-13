@@ -30,6 +30,7 @@ library
                        Distributed.Stateful.Slave
                        Distributed.Stateful
                        Distributed.Stateful.Internal
+                       Distributed.Stateful.Internal.Profiling
                        Data.WorkQueue
                        Control.Concurrent.ThreadPool
                        Control.Exception.Mask
@@ -42,6 +43,7 @@ library
                      , bytestring
                      , classy-prelude
                      , conduit-extra
+                     , criterion
                      , cryptohash
                      , deepseq
                      , exceptions
@@ -198,6 +200,7 @@ executable wq-performance
                      , directory
                      , erf
                      , extra
+                     , lens
                      , lifted-base
                      , mesosync
                      , monad-logger
@@ -216,4 +219,4 @@ executable wq-performance
                      , vector
                      , work-queue
 
-  ghc-options:         -Wall -threaded -rtsopts -fprof-auto -funbox-strict-fields
+  ghc-options:         -Wall -threaded -rtsopts

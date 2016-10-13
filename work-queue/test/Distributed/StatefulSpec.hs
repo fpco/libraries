@@ -36,7 +36,7 @@ import           Distributed.Stateful.Master
 import           Distributed.Types
 import           FP.Redis (MonadConnect)
 import           System.Random (randomRIO)
-import           Test.Hspec hiding (shouldBe)
+import           Test.Hspec hiding (shouldBe, shouldSatisfy)
 import qualified Test.QuickCheck as QC
 import           TestUtils
 
@@ -69,7 +69,7 @@ type Runner m = forall a.
        MasterArgs m State () Input Output
     -> Int -- ^ Desired slaves
     -> (MasterHandle m State () Input Output -> m a)
-    -> m a
+    -> m (a, Maybe SlaveProfiling)
 
 performSimpleTest :: (MonadConnect m) => Int -> MasterHandle m State () Input Output -> m ()
 performSimpleTest initialStates mh = do
@@ -86,7 +86,7 @@ performSimpleTest initialStates mh = do
     testUpdate mh inputs
 
 testMasterArgs :: forall m. (MonadConnect m) => Maybe (Int, Int) -> Int -> MasterArgs m State () Input Output
-testMasterArgs mbDelay n = MasterArgs{maMaxBatchSize = Just n, maUpdate = f}
+testMasterArgs mbDelay n = (defaultMasterArgs f) { maMaxBatchSize = Just n, maDoProfiling = DoProfiling }
   where
     f :: () -> Input -> State -> m (State, Output)
     f _ input (State inputs) = do
@@ -97,19 +97,30 @@ testMasterArgs mbDelay n = MasterArgs{maMaxBatchSize = Just n, maUpdate = f}
 
 genericSpec :: (forall m. (MonadConnect m) => Runner m) -> Spec
 genericSpec runner = do
-  loggingIt "Passes simple comparison with pure implementation (no slaves)" $
-    runner (testMasterArgs (Just (10, 500)) 2) 0 (performSimpleTest 10)
-  loggingIt "Passes simple comparison with pure implementation (one slave)" $
-    runner (testMasterArgs (Just (10, 500)) 2) 1 (performSimpleTest 10)
-  loggingIt "Passes simple comparison with pure implementation (10 slaves)" $
-    runner (testMasterArgs (Just (10, 500)) 3) 10 (performSimpleTest 100)
-  stressfulTest $ loggingIt "Passes simple comparison with pure implementation (50 slaves)" $
-    runner (testMasterArgs (Just (10, 500)) 5) 50 (performSimpleTest 1000)
+  loggingIt "Passes simple comparison with pure implementation (no slaves)" $ do
+    ((), mprof) <- runner (testMasterArgs (Just delay) 2) 0 (performSimpleTest 10)
+    mprof `shouldBe` Nothing
+  loggingIt "Passes simple comparison with pure implementation (one slave)" $ do
+    ((), mprof) <- runner (testMasterArgs (Just delay) 2) 1 (performSimpleTest 10)
+    checkDelay mprof
+  loggingIt "Passes simple comparison with pure implementation (10 slaves)" $ do
+    ((), mprof) <- runner (testMasterArgs (Just delay) 3) 10 (performSimpleTest 100)
+    checkDelay mprof
+  stressfulTest $ loggingIt "Passes simple comparison with pure implementation (50 slaves)" $ do
+    ((), mprof) <- runner (testMasterArgs (Just delay) 5) 50 (performSimpleTest 1000)
+    checkDelay mprof
+  where
+    delay = (10, 500) :: (Int, Int)
+    checkDelay msp = shouldSatisfy msp $ \case
+        Nothing -> False
+        Just sp -> let updateWallTime = _pcWallTime . _spUpdate $ sp
+                       nUpdates = _pcCount . _spUpdate $ sp
+                  in updateWallTime >= fromIntegral nUpdates * (fromIntegral (fst delay) / (1000 * 1000))
 
 spec :: Spec
 spec = do
   describe "Pure" (genericSpec runSimplePureStateful)
-  describe "NetworkMessage" (genericSpec (runSimpleNMStateful "127.0.0.1"))
+  describe "NetworkMessage" (genericSpec ((runSimpleNMStateful "127.0.0.1")))
   describe "JobQueue" $ do
     redisIt "gets all slaves available (short)" $ \r -> do
       let jqc = testJobQueueConfig
@@ -130,7 +141,7 @@ spec = do
                 return $ DontReenqueue nSlaves
           workersToSpawn = 10
           client :: forall m. (MonadConnect m) => m ()
-          client = withJobClient jqc $ \(jc :: JobClient Int) -> do
+          client = withJobClient jqc $ \(jc :: JobClient (Int, Maybe SlaveProfiling)) -> do
             rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
             submitRequest jc rid ()
             void $ waitForResponse_ jc rid
@@ -175,10 +186,10 @@ fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do
             atomicModifyIORef' numSlavesAtShutdownRef (\sl -> (HMS.insert reqId numSlaves' sl, ()))
             return (DontReenqueue ())
       requestLoop :: (MonadConnect m) => Int -> m ()
-      requestLoop _n = withJobClient jqc $ \(jc :: JobClient ()) -> forM_ [1..requestsPerClient] $ \(_m :: Int) -> do
+      requestLoop _n = withJobClient jqc $ \(jc :: JobClient ((), Maybe SlaveProfiling)) -> forM_ [1..requestsPerClient] $ \(_m :: Int) -> do
         rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
         submitRequest jc rid ()
-        Just () <- waitForResponse_ jc rid
+        Just ((), _) <- waitForResponse_ jc rid
         return ()
   raceAgainstVoids
     (void (Async.mapConcurrently requestLoop [(1::Int)..numClients]))

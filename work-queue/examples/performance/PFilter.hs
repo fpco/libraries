@@ -124,7 +124,7 @@ newtype PFResponse parameter = PFResponse parameter
 
 dpfMaster :: forall m s parameter state summary input .
              (MonadConnect m, RandomSource m s
-             , NFData parameter, NFData state, NFData summary)
+             , NFData parameter, NFData state, NFData summary, NFData input)
              => PFConfig parameter state summary input
              -> s
              -> PFRequest parameter state summary input
@@ -138,15 +138,13 @@ dpfMaster PFConfig{..} s PFRequest{..} mh = do
     let initialWeights = (const (PFOutput $ 1/fromIntegral nParticles) <$> sids :: HMS.HashMap WQ.StateId PFOutput)
     evolve initialWeights pfcSystem
   where
-      evolve :: HMS.HashMap WQ.StateId PFOutput -> EvolvingSystem input summary -> m (PFResponse parameter)
       evolve weights system = case evolveStep system of
           Nothing -> sendResponse
           Just (system', (minput, msummary)) -> do
               weights' <- fold <$> WQ.update mh (PFContext minput msummary) (const [PFInput] <$> weights)
               resample weights' system'
-      resample :: HashMap StateId PFOutput -> EvolvingSystem input summary -> m (PFResponse parameter)
       resample weights system = do
-          let nEffParticles = (sum $ pfoWeight <$> weights) / fromIntegral nParticles
+          let nEffParticles = sum (pfoWeight <$> weights) / fromIntegral nParticles
           if nEffParticles > pfcEffectiveParticleThreshold
               then $logInfoS logSourceBench (unwords ["not resampling,", tshow nEffParticles, ">", tshow pfcEffectiveParticleThreshold])
                    >> evolve weights system
@@ -160,7 +158,7 @@ dpfMaster PFConfig{..} s PFRequest{..} mh = do
                   let newParticles =
                           pfsParticle
                           . fromMaybe (error "lookup in states failed")
-                          . (flip HMS.lookup states) <$> sids :: Particles parameter state summary
+                          . flip HMS.lookup states <$> sids :: Particles parameter state summary
                       regulator = pfcRegulator newParticles :: parameter -> RVar parameter
                   regulatedParticles <- V.mapM (\p@Particle{..} -> do
                                                       parameter' <- sampleFrom s $ regulator pparameter
@@ -174,7 +172,7 @@ dpfMaster PFConfig{..} s PFRequest{..} mh = do
       sendResponse = do
           states <- WQ.getStates mh
           let parameterEstimate = pfcSampleParameter $ (\(PFState p) -> (pweight p, pparameter p)) <$> states
-          return $ PFResponse parameterEstimate
+          return (PFResponse parameterEstimate)
       nParticles = V.length rparticles
 
 weightedVectorRVar :: Show a => V.Vector (Double, a) -> RVar a
@@ -307,8 +305,8 @@ $(mkManyHasTypeHash [ [t| PFResponse MyParameter |]
                     , [t| PFState MyParameter MyState MySummary |]
                     ])
 
-csvInfo ::  Options -> CSVInfo
-csvInfo opts = CSVInfo
+csvInfo ::  Options -> ProfilingColumns
+csvInfo opts =
     [ ("stepsize", pack . show . optStepsize $ opts)
     , ("deltat", pack . show . optDeltaT $ opts)
     , ("steps", pack . show . optSteps $ opts)

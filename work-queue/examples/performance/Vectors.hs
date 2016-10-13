@@ -60,10 +60,7 @@ myUpdate Options{..} context input (!v, !v') = do
 
 
 masterArgs :: MonadConnect m => Options -> MasterArgs m State Context Input Output
-masterArgs opts = MasterArgs
-    { maMaxBatchSize = Just 5
-    , maUpdate = myUpdate opts
-    }
+masterArgs opts = (defaultMasterArgs (myUpdate opts)) {maDoProfiling = DoProfiling}
 
 -- | Random states (with fixed random generator)
 myStates :: Options -> [State]
@@ -101,7 +98,7 @@ data Options = Options
                , optOutput :: FilePath
                }
 
-csvInfo :: Options -> CSVInfo
-csvInfo opts = CSVInfo
+csvInfo :: Options -> ProfilingColumns
+csvInfo opts =
     [ ("l", pack . show . optVLength $ opts)
     , ("N", pack . show . optNStates $ opts)]

@@ -165,7 +165,7 @@ chunksOfVec n vec = unfoldr (\v -> case splitAt n v of
                                     (emptyvec, _) | V.null emptyvec -> Nothing
                                     (chunk, rest) -> Just (chunk, rest)) vec
 
-distributeKMeans :: forall m . MonadConnect m => Request -> MasterHandle m State Context Input Output -> m Response
+distributeKMeans :: forall m . MonadConnect m => Request -> MasterHandle m State Context Input Output -> m (Response)
 distributeKMeans Request{..} mh = do
     resetStates mh (replicate nStates ()) >> distrib rMaxIterations rInitialClusters
   where
@@ -193,6 +193,7 @@ masterArgs :: MonadConnect m => Options -> MasterArgs m State Context Input Outp
 masterArgs opts = MasterArgs
     { maMaxBatchSize = Just 5
     , maUpdate = updateFn opts
+    , maDoProfiling = DoProfiling
     }
 
 instance MonadLogger m => MonadLogger (RandT StdGen m) where
@@ -232,8 +233,8 @@ generateRequest Options{..} = do
 jqc :: JobQueueConfig
 jqc = defaultJobQueueConfig "perf:kmeans:"
 
-csvInfo :: Options -> CSVInfo
-csvInfo opts = CSVInfo
+csvInfo :: Options -> ProfilingColumns
+csvInfo opts =
     [ ("clusters", pack . show . optNClusters $ opts)
     , ("points", pack . show . optNPoints $ opts)
     , ("granularity", pack . show . optGranularity $ opts)
