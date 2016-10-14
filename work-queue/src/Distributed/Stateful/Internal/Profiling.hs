@@ -96,11 +96,12 @@ data MasterProfiling = MasterProfiling
     , _mpHandleResponse   :: !ProfilingCounter
     , _mpDecode           :: !ProfilingCounter
     , _mpReceive          :: !ProfilingCounter
+    , _mpWait             :: !ProfilingCounter
     } deriving (Eq, Generic, Show, Store)
 makeLenses ''MasterProfiling
 
 emptyMasterProfiling :: MasterProfiling
-emptyMasterProfiling = MasterProfiling mempty mempty mempty mempty mempty mempty mempty mempty
+emptyMasterProfiling = MasterProfiling mempty mempty mempty mempty mempty mempty mempty mempty mempty
 
 -- | Profiling data for a Stateful computation.
 data Profiling = Profiling
@@ -170,6 +171,7 @@ masterProfilingColumns MasterProfiling{..} = concat
     , profilingCounterColumns "mpHandleResponse" _mpHandleResponse
     , profilingCounterColumns "mpDecode" _mpDecode
     , profilingCounterColumns "mpReceive" _mpReceive
+    , profilingCounterColumns "mpWait" _mpWait
     ]
 
 mProfilingColumns :: Maybe Profiling -> ProfilingColumns

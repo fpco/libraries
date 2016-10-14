@@ -14,7 +14,6 @@ import qualified Data.WorkQueueSpec
 
 main :: IO ()
 main = do
-  return ()
   -- Some tests open _a lot_ of connections to redis
   rl <- getResourceLimit ResourceOpenFiles
   setResourceLimit ResourceOpenFiles rl{softLimit = ResourceLimit 50000}

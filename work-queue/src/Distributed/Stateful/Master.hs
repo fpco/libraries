@@ -11,6 +11,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-|
 Module: Distributed.Stateful.Master
 Description: Master nodes for a distributed stateful computation.
@@ -29,7 +30,8 @@ module Distributed.Stateful.Master
     , MasterHandle
     , initMaster
     , DoProfiling (..)
-    , StateId , SlaveId
+    , StateId
+    , SlaveId
     , StatefulConn(..)
       -- * Operations on master nodes
     , closeMaster
@@ -40,7 +42,6 @@ module Distributed.Stateful.Master
     , addSlaveConnection
     , getNumSlaves
       -- * Types
-    , SlaveConn
     , MasterException(..)
       -- * Performance profiling
     , getSlavesProfiling
@@ -50,12 +51,15 @@ module Distributed.Stateful.Master
     , MasterProfiling(..), emptyMasterProfiling
     , Profiling (..)
     , ProfilingCounter(..)
+    , SlaveResp
+    , SlaveReq
+    , SlaveConn
     ) where
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Lens (makeLenses, set, at, _Just, over)
-import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
+import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logErrorJ, logDebugJ)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -67,6 +71,10 @@ import           FP.Redis (MonadConnect)
 import           Text.Printf (printf)
 import qualified Data.Store as S
 import qualified Data.Store.Streaming as S
+import           Control.Monad.Trans.Free (FreeT, runFreeT, FreeF(..))
+import           Control.Monad.Trans.Free.Church (fromFT)
+import           System.IO (hSetBuffering, BufferMode(..))
+import qualified Data.Vector as V
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -88,28 +96,29 @@ defaultMasterArgs upd = MasterArgs
   }
 
 -- | Handle to a master.  Can be created using 'initMaster'.
-newtype MasterHandle m state context input output =
-  MasterHandle {_unMasterHandle :: MVar (MasterHandle_ m state context input output)}
+newtype MasterHandle m key state context input output =
+  MasterHandle {_unMasterHandle :: MVar (MasterHandle_ m key state context input output)}
 
-data Slaves m state context input output
+data Slaves m key state context input output
   = NoSlavesYet ![(StateId, state)]
-  | Slaves !(HMS.HashMap SlaveId (Slave m state context input output))
+  | Slaves !(HMS.HashMap SlaveId (Slave m key state context input output))
 
-data MasterHandle_ m state context input output = MasterHandle_
-  { mhSlaves :: !(Slaves m state context input output)
+data MasterHandle_ m key state context input output = MasterHandle_
+  { mhSlaves :: !(Slaves m key state context input output)
   , mhSlaveIdSupply :: !(Supply SlaveId)
   , mhStateIdSupply :: !(Supply StateId)
+  , mhEventManager :: !(EventManager m key)
   , mhArgs :: !(MasterArgs m state context input output)
   , mhProfiling :: !(Maybe (IORef MasterProfiling))
   }
 
 -- | Connection to a slave.  Requests to the slave can be written, and
 -- responses read, with this.
-type SlaveConn m state context input output =
-  StatefulConn m (SlaveReq state context input) (SlaveResp state output)
+type SlaveConn m key state context input output =
+  StatefulConn m key (SlaveReq state context input) (SlaveResp state output)
 
-data Slave m state context input output = Slave
-  { slaveConnection :: !(SlaveConn m state context input output)
+data Slave m key state context input output = Slave
+  { slaveConnection :: !(SlaveConn m key state context input output)
   , slaveStates :: !(HMS.HashMap StateId ())
   }
 
@@ -129,8 +138,9 @@ instance Exception MasterException
 initMaster ::
      (MonadBaseControl IO m, MonadIO m, MonadLogger m)
   => MasterArgs m state context input output
-  -> m (MasterHandle m state context input output)
-initMaster ma@MasterArgs{..} = do
+  -> EventManager m key
+  -> m (MasterHandle m key state context input output)
+initMaster ma@MasterArgs{..} em = do
   let throwME = throwAndLog . MasterException . pack
   case maMaxBatchSize of
     Just maxBatchSize | maxBatchSize < 1 ->
@@ -145,15 +155,16 @@ initMaster ma@MasterArgs{..} = do
         { mhSlaves = NoSlavesYet mempty
         , mhSlaveIdSupply = slaveIdSupply
         , mhStateIdSupply = stateIdSupply
+        , mhEventManager = em
         , mhArgs = ma
         , mhProfiling = mmp
         }
   MasterHandle <$> newMVar mh
 
 -- | This will shut down all the slaves.
-closeMaster :: forall m state context input output.
+closeMaster ::
      (MonadConnect m, S.Store state, S.Store context, S.Store input, S.Store output)
-  => MasterHandle m state context input output
+  => MasterHandle m key state context input output
   -> m ()
 closeMaster (MasterHandle mhv) =
   withMVar mhv $ \MasterHandle_{..} -> do
@@ -174,10 +185,10 @@ closeMaster (MasterHandle mhv) =
             Right () -> return ()
 
 {-# INLINE readExpect #-}
-readExpect :: forall m state context input output a.
+readExpect ::
      (MonadIO m, MonadBaseControl IO m, S.Store state, S.Store output)
   => Text
-  -> SlaveConn m state context input output
+  -> SlaveConn m key state context input output
   -> (SlaveResp state output -> Maybe a)
   -> m a
 readExpect loc slave f = do
@@ -190,9 +201,9 @@ readExpect loc slave f = do
 
 {-# INLINE integrateNewStates #-}
 integrateNewStates ::
-     HMS.HashMap SlaveId (Slave m state context input output)
+     HMS.HashMap SlaveId (Slave m key state context input output)
   -> [(SlaveId, HMS.HashMap StateId ())]
-  -> HMS.HashMap SlaveId (Slave m state context input output)
+  -> HMS.HashMap SlaveId (Slave m key state context input output)
 integrateNewStates oldSlaves =
   go ((\sl -> sl{slaveStates = mempty}) <$> oldSlaves)
   where
@@ -347,11 +358,13 @@ updateSlavesStep mp maxBatchSize inputs respSlaveId resp statuses0 = withProfili
             set (at requestingSlaveId . _Just . ssWaitingForStates) True uss
       return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
 
-data SlaveWithConnection m state context input output =
+type SWCCont m state output = S.ReadMoreData -> FreeT ((->) S.ReadMoreData) m (S.Message (SlaveResp state output))
+
+data SlaveWithConnection m key state context input output =
     SlaveWithConnection
         { swcSlaveId :: !SlaveId
-        , swcConn :: !(SlaveConn m state context input output)
-        , swcCont :: !(IORef (Maybe (ByteString -> m (S.PeekMessage m (SlaveResp state output)))))
+        , swcConn :: !(SlaveConn m key state context input output)
+        , swcCont :: !(IORef (SWCCont m state output))
         }
 
 data MasterLoopState output = MasterLoopState
@@ -360,74 +373,88 @@ data MasterLoopState output = MasterLoopState
   , mlsNumActiveSlaves :: !Int
   }
 
+type SlavesHashTable m key state context input output =
+  HT.LinearHashTable key (SlaveWithConnection m key state context input output)
+
 {-# INLINE updateSlaves #-}
-updateSlaves :: forall state context input output m.
-     (MonadConnect m, NFData input, NFData output
-     , S.Store state, S.Store context, S.Store input, S.Store output)
+updateSlaves :: forall state context input output m key.
+     (MonadConnect m, NFData input, NFData output, S.Store state, S.Store context, S.Store input, S.Store output, Eq key, Hashable key)
   => Maybe (IORef MasterProfiling)
+  -> EventManager m key
   -> Int -- ^ Max batch size
-  -> HMS.HashMap SlaveId (Slave m state context input output)
+  -> HMS.HashMap SlaveId (Slave m key state context input output)
   -- ^ Slaves connections
   -> context
   -- ^ Context to the computation
   -> HMS.HashMap StateId [(StateId, input)]
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
-updateSlaves mp maxBatchSize slaves context inputMap = withProfiling mp mpUpdateSlaves $ do
+updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpdateSlaves $ do
+  liftIO $ hSetBuffering stdout LineBuffering
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
         , _ssRemainingStates = HMS.keys (slaveStates slave)
         , _ssWaitingForStates = False
         }
-      statuses0 = slaveStatus0 <$> slaves
-  statuses1 <- foldM sendRespInit statuses0 (HMS.keys slaves)
-  swcList <- forM (HMS.toList slaves) $ \(slaveId, slave) -> do
-      cont <- newIORef Nothing
-      return (SlaveWithConnection slaveId (slaveConnection slave) cont)
-  masterLoopStateRef :: IORef (MasterLoopState output) <- newIORef (MasterLoopState statuses1 HMS.empty (HMS.size slaves))
-  masterLoopLock :: MVar () <- newMVar ()
-  masterLoopDone :: MVar [(SlaveId, [(StateId, [(StateId, output)])])] <- newEmptyMVar -- once the masterLoop is finished, this MVar will contain the result.  Before that, it is empty.
-  let registerAll :: [SlaveWithConnection m state context input output] -> m a -> m a
-      registerAll [] cont = cont
-      registerAll (swc@SlaveWithConnection{..} : xs) cont =
-        registerAll xs $
-          scRegisterCanRead swcConn (withMVar masterLoopLock (\() -> masterLoopEntry swc masterLoopStateRef masterLoopDone)) cont
-          -- scRegisterCanRead swcConn (masterLoopEntry swc masterLoopStateRef masterLoopDone) cont
-  registerAll swcList (takeMVar masterLoopDone)
+  let statuses0 = slaveStatus0 <$> slaves
+  connsHashTable :: SlavesHashTable m key state context input output <- liftIO $ HT.newSized (HMS.size slaves)
+  let registerSlaves :: [(SlaveId, Slave m key state context input output)] -> m a -> m a
+      registerSlaves [] cont = cont
+      registerSlaves ((slaveId, slave) : slaves_) cont = do
+        let conn = slaveConnection slave
+        bracket
+          (emControl em (scConnKey conn) ETRead)
+          (\() -> emControlDelete em (scConnKey conn))
+          (\() -> do
+            contRef <- newIORef =<< doPeekStart conn
+            let swc = SlaveWithConnection slaveId (slaveConnection slave) contRef
+            liftIO $ HT.insert connsHashTable (scConnKey conn) swc
+            registerSlaves slaves_ cont)
+  registerSlaves (HMS.toList slaves) $ do
+    statuses1 <- foldM sendRespInit statuses0 (HMS.keys slaves)
+    let loop1 !mls0 = do
+          let loop2 !mls = \case
+                [] -> loop1 mls
+                (key, _) : evts -> do
+                  mbSwc <- liftIO $ HT.lookup connsHashTable key
+                  swc <- case mbSwc of
+                    Nothing -> fail "Couldn't find slave in map!"
+                    Just swc -> return swc
+                  mbRes <- masterLoopEntry swc mls
+                  case mbRes of
+                    Left mls' -> loop2 mls' evts
+                    Right res -> case evts of
+                      _:_ -> fail "Leftover events even if we're done"
+                      [] -> return res
+          evts <- withProfiling mp mpWait (emWait em)
+          loop2 mls0 (V.toList evts)
+    let mls0 :: MasterLoopState output = MasterLoopState statuses1 HMS.empty (HMS.size slaves)
+    loop1 mls0
   where
     masterLoopEntry ::
-         SlaveWithConnection m state context input output
-      -> IORef (MasterLoopState output)
-      -> MVar [(SlaveId, [(StateId, [(StateId, output)])])]
-      -> m ()
-    masterLoopEntry swc masterLoopStateRef masterLoopDone = do
-      mls <- readIORef masterLoopStateRef
+         SlaveWithConnection m key state context input output
+      -> MasterLoopState output
+      -> m (Either (MasterLoopState output) ([(SlaveId, [(StateId, [(StateId, output)])])]))
+    masterLoopEntry swc mls = do
       mls' <- withProfiling mp mpMasterLoop $ masterLoop swc mls
-      writeIORef masterLoopStateRef mls'
-      when (mlsNumActiveSlaves mls' == 0) $
-      -- unless done $
-        putMVar masterLoopDone (HMS.toList (mlsOutputs mls'))
+      return $ if (mlsNumActiveSlaves mls' == 0)
+        then Right (HMS.toList (mlsOutputs mls'))
+        else Left mls'
 
     masterLoop ::
-         SlaveWithConnection m state context input output
+         SlaveWithConnection m key state context input output
       -> MasterLoopState output
       -> m (MasterLoopState output)
     masterLoop swc@SlaveWithConnection{..} mls@(MasterLoopState statuses outputs nActiveSlaves) = if nActiveSlaves == 0
       then return mls
       else do
-        cont0 <- readIORef swcCont >>= \case
-            Nothing -> doPeek swcConn
-            Just cont0 -> return (S.NeedMoreInput cont0)
-        case cont0 of
-            S.Done (S.Message _resp) -> error "updateSlaves.masterLoop: unexpected Done continuation."
-            S.NeedMoreInput cont -> do
-                bs <- withProfiling mp mpReceive $ scRead swcConn
-                cont bs >>= \case
-                    (S.NeedMoreInput cont') -> do
-                        writeIORef swcCont (Just cont')
-                        return mls
-                    S.Done (S.Message resp) -> withProfiling mp mpHandleResponse $
-                        handleResponse statuses outputs nActiveSlaves swc resp
+        cont <- readIORef swcCont
+        runDecodeFreeT (cont S.ReadMoreData) >>= \case
+          Free cont' -> do
+            writeIORef swcCont cont'
+            return mls
+          Pure (S.Message resp) -> withProfiling mp mpHandleResponse $ do
+            handleResponse statuses outputs nActiveSlaves swc resp
 
     handleResponse statuses outputs nActiveSlaves swc@SlaveWithConnection{..} resp = do
         resp' <- case resp of
@@ -452,27 +479,37 @@ updateSlaves mp maxBatchSize slaves context inputMap = withProfiling mp mpUpdate
                          else return nActiveSlaves
         -- see if we can decode another message from the chunk we read
         doPeek swcConn >>= \case
-            S.Done (S.Message newResp) -> handleResponse statuses' outputs' nActiveSlaves' swc newResp
-            S.NeedMoreInput cont' -> do
-                writeIORef swcCont (Just cont')
+            Pure (S.Message newResp) -> do
+              handleResponse statuses' outputs' nActiveSlaves' swc newResp
+            Free cont' -> do
+                writeIORef swcCont cont'
                 let mls = MasterLoopState statuses' outputs' nActiveSlaves'
                 return mls
 
-    doPeek conn = withProfiling mp mpDecode $ S.peekMessage (scByteBuffer conn)
-        `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("updateSlaves: " ++) . show $ ex)
+    runDecodeFreeT x = withProfiling mp mpDecode $
+      runFreeT x
+      `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("updateSlaves: " ++) . show $ ex)
+
+    doPeekStart conn = doPeek conn >>= \case
+      Pure _ -> fail "doPeek: unexpected Pure. This means the byte buffer was not empty when we expected it to be empty."
+      Free f -> return f
+
+    doPeek conn =
+      runDecodeFreeT (fromFT (S.peekMessage (\bs n _ -> withProfiling mp mpReceive (scFillByteBuffer conn bs n ())) (scByteBuffer conn)))
 
     sendRespInit statuses slaveId = do
         UpdateSlaveStep{..} <- updateSlavesStep mp maxBatchSize inputMap slaveId USRespInit statuses
         forM_ ussReqs sendRequest
         return ussSlavesStatus
 
+    sendRequest :: (SlaveId, UpdateSlaveReq input) -> m ()
     sendRequest (slaveId, req) = do
-        let req' = case req of
+        let req' :: SlaveReq state context input
+            req' = case req of
                       USReqUpdate inputs -> SReqUpdate context inputs
                       USReqRemoveStates x y -> SReqRemoveStates x y
                       USReqAddStates y -> SReqAddStates y
             conn = slaveConnection (slaves HMS.! slaveId)
-        $logDebugJ ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req')
         withProfiling mp mpSend $ scEncodeAndWrite conn req'
 
 -- | Send an update request to all the slaves. This will cause each of
@@ -486,10 +523,10 @@ updateSlaves mp maxBatchSize slaves context inputMap = withProfiling mp mpUpdate
 -- NOTE: if this throws an exception, then `MasterHandle` may be in an
 -- inconsistent state, and the whole computation should be aborted.
 {-# INLINE update #-}
-update :: forall state context input output m.
+update :: forall state context input output m key.
      (MonadConnect m, NFData input, NFData output, NFData state, NFData context
-     , S.Store context, S.Store input, S.Store state, S.Store output)
-  => MasterHandle m state context input output
+     , S.Store context, S.Store input, S.Store state, S.Store output, Eq key, Hashable key)
+  => MasterHandle m key state context input output
   -> context
   -> HMS.HashMap StateId [input]
   -> m (HMS.HashMap StateId (HMS.HashMap StateId output))
@@ -528,7 +565,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
                 (SRespUpdate outputs :: SlaveResp state output) -> Just outputs
                 _ -> Nothing
           Just maxBatchSize -> withProfiling (mhProfiling mh) mpTotalUpdate $
-              updateSlaves (mhProfiling mh) maxBatchSize slaves context inputMap
+              updateSlaves (mhProfiling mh) (mhEventManager mh) maxBatchSize slaves context inputMap
       let mh' = mh
             { mhSlaves = Slaves $
                 integrateNewStates slaves (second (fmap (const ()) . HMS.fromList . mconcat . map snd) <$> outputs)
@@ -536,14 +573,19 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
       return (mh', fmap HMS.fromList . HMS.fromList $ foldMap snd outputs)
 
 -- | Adds a connection to a slave.
-addSlaveConnection ::
+addSlaveConnection :: forall m state context input output key.
      (MonadConnect m, S.Store state, S.Store context, S.Store input, S.Store output)
-  => MasterHandle m state context input output
-  -> SlaveConn m state context input output
+  => MasterHandle m key state context input output
+  -> SlaveConn m key state context input output
   -> m ()
 addSlaveConnection (MasterHandle mhv) conn = modifyMVar_ mhv $ \mh -> do
   slaveId <- askSupply (mhSlaveIdSupply mh)
-  initSlave (maDoProfiling . mhArgs $ mh) conn
+  -- Init slave
+  scEncodeAndWrite conn (SReqInit (maDoProfiling (mhArgs mh)) :: SlaveReq state context input)
+  readExpect "initSlave" conn $ \case
+      (SRespInit :: SlaveResp state output) -> Just ()
+      _ -> Nothing
+  -- Send states over
   case mhSlaves mh of
     NoSlavesYet states -> do
       let slaves = HMS.fromList [(slaveId, Slave conn (const () <$> HMS.fromList states))]
@@ -552,20 +594,9 @@ addSlaveConnection (MasterHandle mhv) conn = modifyMVar_ mhv $ \mh -> do
     Slaves slaves -> do
       return mh{mhSlaves = Slaves (HMS.insert slaveId (Slave conn mempty) slaves)}
 
-initSlave ::
-       (MonadConnect m, S.Store state, S.Store context, S.Store input, S.Store output)
-    => DoProfiling
-    -> SlaveConn m state context input output
-    -> m ()
-initSlave doProfiling conn = do
-    scEncodeAndWrite conn (SReqInit doProfiling)
-    readExpect "initSlave" conn $ \case
-        SRespInit -> Just ()
-        _ -> Nothing
-
-sendStates :: forall m state context input output.
+sendStates :: forall m state context input output key.
        (Monad m, MonadBaseControl IO m, MonadIO m, S.Store state, S.Store context, S.Store input, S.Store output)
-    => [(SlaveConn m state context input output, [(StateId, state)])]
+    => [(SlaveConn m key state context input output, [(StateId, state)])]
     -> m ()
 sendStates slavesWithStates = do
   -- Send states
@@ -582,10 +613,9 @@ sendStates slavesWithStates = do
 -- If no slaves are connected, this will throw a
 -- 'NoSlavesConnectedException'.
 {-# INLINE resetStates #-}
-resetStates :: forall state context input output m.
-     (MonadBaseControl IO m, MonadIO m, MonadLogger m
-     , S.Store state, S.Store context, S.Store input, S.Store output)
-  => MasterHandle m state context input output
+resetStates :: forall state context input output m key.
+     (MonadBaseControl IO m, MonadIO m, MonadLogger m, S.Store state, S.Store context, S.Store input, S.Store output)
+  => MasterHandle m key state context input output
   -> [state]
   -> m (HMS.HashMap StateId state)
 resetStates (MasterHandle mhv) states0 = modifyMVar mhv $ \mh -> do
@@ -618,7 +648,7 @@ resetStates (MasterHandle mhv) states0 = modifyMVar mhv $ \mh -> do
 -- master.
 getStateIds ::
      (MonadConnect m)
-  => MasterHandle m state context input output
+  => MasterHandle m key state context input output
   -> m (HS.HashSet StateId)
 getStateIds (MasterHandle mhv) = do
   mh <- readMVar mhv
@@ -628,9 +658,9 @@ getStateIds (MasterHandle mhv) = do
 
 -- | Fetches current states stored in the slaves.
 {-# INLINE getStates #-}
-getStates :: forall m state context input output.
+getStates :: forall m state context input output key.
      (MonadConnect m, S.Store state, S.Store context, S.Store input, S.Store output)
-  => MasterHandle m state context input output
+  => MasterHandle m key state context input output
   -> m (HMS.HashMap StateId state)
 getStates (MasterHandle mhv) = withMVar mhv $ \mh -> do
   -- Send states
@@ -645,9 +675,9 @@ getStates (MasterHandle mhv) = withMVar mhv $ \mh -> do
       return (HMS.fromList $ mconcat responses)
 
 -- | Retrieves performance profiling data for each slave.
-getSlavesProfiling :: forall m state context input output.
+getSlavesProfiling :: forall m state context input output key.
        (MonadConnect m, S.Store state, S.Store context, S.Store input, S.Store output)
-    => MasterHandle m state context input output
+    => MasterHandle m key state context input output
     -> m (HMS.HashMap SlaveId (Maybe SlaveProfiling))
 getSlavesProfiling (MasterHandle mhv) = withMVar mhv $ \mh ->
     case mhSlaves mh of
@@ -662,7 +692,7 @@ getSlavesProfiling (MasterHandle mhv) = withMVar mhv $ \mh ->
 -- | Retrieves performance profiling data for the master.
 getMasterProfilng ::
        MonadConnect m
-    => MasterHandle m state context input output
+    => MasterHandle m key state context input output
     -> m (Maybe MasterProfiling)
 getMasterProfilng (MasterHandle mhv) = readMVar mhv >>= \mh ->
     case mhProfiling mh of
@@ -672,9 +702,9 @@ getMasterProfilng (MasterHandle mhv) = readMVar mhv >>= \mh ->
 -- | Retrieves performance profiling data for the whole computation, master and slaves.
 --
 -- The profiling data for the slaves is summed.
-getProfiling :: forall m state context input output.
+getProfiling :: forall m state context input output key.
        (MonadConnect m, S.Store state, S.Store context, S.Store input, S.Store output)
-    => MasterHandle m state context input output
+    => MasterHandle m key state context input output
     -> m (Maybe Profiling)
 getProfiling mhandle@(MasterHandle mhv) = readMVar mhv >>= \mh ->
     case mhProfiling mh of
@@ -689,7 +719,7 @@ getProfiling mhandle@(MasterHandle mhv) = readMVar mhv >>= \mh ->
 -- | Get the number of slaves connected to a master.
 getNumSlaves ::
      (MonadConnect m)
-  => MasterHandle m state context input output
+  => MasterHandle m conn state context input output
   -> m Int
 getNumSlaves (MasterHandle mhv) = do
   mh <- readMVar mhv

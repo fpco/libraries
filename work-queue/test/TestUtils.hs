@@ -14,6 +14,7 @@ module TestUtils
     , redisIt
     , redisIt_
     , loggingIt
+    , loggingIt_
     , loggingProperty
     , randomThreadDelay
     , KillRandomly(..)
@@ -78,6 +79,14 @@ minimumLogLevel ll = ll >= LevelError
 
 loggingIt :: String -> (forall m. (MonadConnect m) => m ()) -> Spec
 loggingIt msg cont = it msg x
+  where
+    x :: IO ()
+    x = runStdoutJSONLoggingT $ filterLogger (\_ -> minimumLogLevel) $ do
+        $logInfoJ msg
+        cont
+
+loggingIt_ :: String -> (LoggingT IO ()) -> Spec
+loggingIt_ msg cont = it msg x
   where
     x :: IO ()
     x = runStdoutJSONLoggingT $ filterLogger (\_ -> minimumLogLevel) $ do

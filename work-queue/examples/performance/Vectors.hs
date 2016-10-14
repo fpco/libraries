@@ -10,6 +10,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RankNTypes #-}
 module Vectors ( Options (..)
                , masterArgs
                , myAction, myStates
@@ -77,7 +78,7 @@ myStates Options{..} =
 myInputs :: [Input]
 myInputs = [V.enumFromN 1 20]
 
-myAction :: MonadConnect m => Request -> MasterHandle m State Context Input Output -> m Response
+myAction :: (MonadConnect m, Eq key, Hashable key) => Request -> MasterHandle m key State Context Input Output -> m Response
 myAction req mh = do
     _ <- resetStates mh req
     finalStates <- mapM (\_ -> do
