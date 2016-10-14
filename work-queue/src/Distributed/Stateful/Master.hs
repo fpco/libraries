@@ -25,6 +25,7 @@ module Distributed.Stateful.Master
     ( -- * Configuration and creation of master nodes
       MasterArgs(..)
     , defaultMasterArgs
+    , BatchConfig(..)
     , Update
     , MasterHandle
     , initMaster
@@ -71,13 +72,9 @@ import qualified Data.Store.Streaming as S
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
-  { maMinBatchSize :: !(Maybe Int)
-    -- ^ The master will transfer states in batches with a random size
-    -- taken from the interval @[maMinBatchSize, nStates `div` (2 *
-    -- nSlaves)@, where @nStates@ is the number of states that have to
-    -- be sent to slaves, and @nSlaves@ is the number of connected
-    -- slaves.  If 'Nothing' all states will be transferred at once,
-    -- will be all transferred at once, and no "rebalancing" will ever happen.
+  { maBatchConfig :: !BatchConfig
+    -- ^ Determines how the master sends batches of states and inputs
+    -- to slaves.
   , maUpdate :: !(Update m state context input output)
     -- ^ This argument will be used if 'update' is invoked when no slaves have
     -- been added yet.
@@ -85,9 +82,35 @@ data MasterArgs m state context input output = MasterArgs
     -- ^ Specifies whether to perform profiling or not.
   }
 
+-- | Define how the master should distribute batches of states between the clients
+data BatchConfig
+    = EqualBatches
+      -- ^ Every slave gets about the same number of states to
+      -- process.  There is no rebalancing.
+    | StaticBatchSize !Int
+      -- ^ States are always sent in batches with a fixed size.
+    | DynamicBatchSize
+      { bcFractionOfTotalJobs :: !Double
+        -- ^ Each slave will take this fraction of (nStates/nSlaves).
+        -- Should satisfy @0 < bcFractionOfTotalJobs <= 1@.
+      , bcRandomCorrection :: !Double
+        -- ^ If non-zero, each batch will be multiplied with a factor
+        -- of @(1 + r)@, where @r@ is a random number from the
+        -- interval @[-bcRandomCorrection, bcRandomCorrection]@.  This
+        -- can be useful to prevent the slaves from finishing their
+        -- batches all at the same time, which can lead to congestion
+        -- in the master.
+      , bcMinBatchSize :: !Int
+        -- ^ Minimal size of a batch (unless the total number of
+        -- states to be handled is smaller, of courrse).
+      , bcRandomizeAtReset :: !Bool
+        -- ^ If true, randomisation will also be used in
+        -- 'resetStates'.
+      }
+
 defaultMasterArgs :: Update m state context input output -> MasterArgs m state context input output
 defaultMasterArgs upd = MasterArgs
-  { maMinBatchSize = Just 5
+  { maBatchConfig = DynamicBatchSize 1 0.1 5 True
   , maUpdate = upd
   , maDoProfiling = NoProfiling
   }
@@ -137,9 +160,15 @@ initMaster ::
   -> m (MasterHandle m state context input output)
 initMaster ma@MasterArgs{..} = do
   let throwME = throwAndLog . MasterException . pack
-  case maMinBatchSize of
-    Just minBatchSize | minBatchSize < 1 ->
-      throwME (printf "Distribute.master: maMinBatchSize must be > 0 (got %d)" minBatchSize)
+  case maBatchConfig of
+    StaticBatchSize n | n < 1 ->
+      throwME (printf "Distributed.Stateful.initMaster: StaticBatchSize must be > 0 (got %d)" n)
+    DynamicBatchSize{..} | bcFractionOfTotalJobs <= 0
+                           || bcFractionOfTotalJobs > 1 ->
+      throwME (printf "Distributed.Stateful.initMaster: bcFractionOfTotalJobs should be in (0, 1] (got %d)" bcFractionOfTotalJobs)
+    DynamicBatchSize{..} | bcRandomCorrection < 0
+                           || bcRandomCorrection > 0.5 ->
+      throwME (printf "Distributed.Stateful.initMaster: bcRandomCorrection should be in [0, 0.5] (got %d)" bcRandomCorrection)
     _ -> return ()
   slaveIdSupply <- newSupply (SlaveId 0) (\(SlaveId n) -> SlaveId (n + 1))
   stateIdSupply <- newSupply (StateId 0) (\(StateId n) -> StateId (n + 1))
@@ -263,13 +292,13 @@ updateSlavesStep :: forall m input output.
      (MonadThrow m, MonadLogger m, MonadIO m)
   => Maybe (IORef MasterProfiling)
   -> Int -- ^ Number of slaves
-  -> Int -- ^ Min batch size
+  -> BatchConfig -- ^ Min batch size
   -> HMS.HashMap StateId [(StateId, input)]  -- we need lookup here, so this should be a 'HashMap'
   -> SlaveId
   -> UpdateSlaveResp output
   -> SlavesStatus
   -> m (UpdateSlaveStep input output)
-updateSlavesStep mp nSlaves minBatchSize inputs respSlaveId resp statuses0 = withProfiling mp mpUpdateSlavesStep $ do
+updateSlavesStep mp nSlaves batchConfig inputs respSlaveId resp statuses0 = withProfiling mp mpUpdateSlavesStep $ do
   let statuses1 = over (at respSlaveId . _Just . ssWaitingResps) (\c -> c - 1) statuses0
   (statuses2, requests, outputs) <- case resp of
     USRespInit -> do
@@ -322,13 +351,13 @@ updateSlavesStep mp nSlaves minBatchSize inputs respSlaveId resp statuses0 = wit
          [StateId]
       -> m ([(StateId, [(StateId, input)])], [StateId])
     takeEnoughStatesToUpdate remaining00 = do
-        -- We randomise the batchsize, in order to vary the load
-        -- between the slaves.  If the slaves all have the same load,
-        -- they are likely to finish their batches and request new
-        -- jobs at the same time, which would lead to contention in
-        -- the master.
-        let maxLength = (length remaining00 `div` nSlaves)
-        batchSize <- liftM (max minBatchSize) <$> liftIO $ R.randomRIO (maxLength `div` 2, maxLength)
+        batchSize <- case batchConfig of
+            EqualBatches -> error "Distributed.Stateful.updateSlavesStep: unexpected BatchConfig."
+            StaticBatchSize x -> return x
+            DynamicBatchSize{..} -> do
+                let avgLength = bcFractionOfTotalJobs * fromIntegral (length remaining00 `div` nSlaves)
+                correction <- liftIO $ R.randomRIO (- bcRandomCorrection, bcRandomCorrection)
+                return . max bcMinBatchSize . round $ avgLength * (1 + correction)
         return $ go batchSize remaining00 0
       where
         go batchSize remaining0 grabbed = if grabbed >= batchSize
@@ -382,7 +411,7 @@ updateSlaves :: forall state context input output m.
      , S.Store state, S.Store context, S.Store input, S.Store output)
   => Maybe (IORef MasterProfiling)
   -> Int -- ^ Number of slaves
-  -> Int -- ^ Max batch size
+  -> BatchConfig -- ^ Max batch size
   -> HMS.HashMap SlaveId (Slave m state context input output)
   -- ^ Slaves connections
   -> context
@@ -390,7 +419,7 @@ updateSlaves :: forall state context input output m.
   -> HMS.HashMap StateId [(StateId, input)]
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
-updateSlaves mp nSlaves minBatchSize slaves context inputMap = withProfiling mp mpUpdateSlaves $ do
+updateSlaves mp nSlaves batchConfig slaves context inputMap = withProfiling mp mpUpdateSlaves $ do
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
         , _ssRemainingStates = HMS.keys (slaveStates slave)
@@ -458,7 +487,7 @@ updateSlaves mp nSlaves minBatchSize slaves context inputMap = withProfiling mp 
               return (USRespRemoveStates requestingSlaveId removedStates)
             SRespUpdate outputs_ -> return (USRespUpdate outputs_)
             SRespGetProfile _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
-        UpdateSlaveStep requests statuses' newOutputs <- updateSlavesStep mp nSlaves minBatchSize inputMap swcSlaveId resp' statuses
+        UpdateSlaveStep requests statuses' newOutputs <- updateSlavesStep mp nSlaves batchConfig inputMap swcSlaveId resp' statuses
         forM_ requests sendRequest
         let status = statuses' HMS.! swcSlaveId
             outputs' = HMS.insertWith (<>) swcSlaveId newOutputs outputs
@@ -479,7 +508,7 @@ updateSlaves mp nSlaves minBatchSize slaves context inputMap = withProfiling mp 
         `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("updateSlaves: " ++) . show $ ex)
 
     sendRespInit statuses slaveId = do
-        UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves minBatchSize inputMap slaveId USRespInit statuses
+        UpdateSlaveStep{..} <- updateSlavesStep mp nSlaves batchConfig inputMap slaveId USRespInit statuses
         forM_ ussReqs sendRequest
         return ussSlavesStatus
 
@@ -532,8 +561,8 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
       let inputMap = HMS.fromList inputList
       -- Update the slave states.
       outputs :: [(SlaveId, [(StateId, [(StateId, output)])])] <-
-        case maMinBatchSize (mhArgs mh) of
-          Nothing -> do
+        case maBatchConfig (mhArgs mh) of
+          EqualBatches -> do
             slaveIdsAndInputs <- either throwAndLog return $
               assignInputsToSlaves (slaveStates <$> slaves) inputMap
             forM_ slaveIdsAndInputs $ \(slaveId, inps) -> do
@@ -544,8 +573,8 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
               liftM (slaveId,) $ readExpect "update (1)" (slaveConnection (slaves HMS.! slaveId)) $ \case
                 (SRespUpdate outputs :: SlaveResp state output) -> Just outputs
                 _ -> Nothing
-          Just minBatchSize -> withProfiling (mhProfiling mh) mpTotalUpdate $
-              updateSlaves (mhProfiling mh) (HMS.size slaves) minBatchSize slaves context inputMap
+          batchConfig -> withProfiling (mhProfiling mh) mpTotalUpdate $
+              updateSlaves (mhProfiling mh) (HMS.size slaves) batchConfig slaves context inputMap
       let mh' = mh
             { mhSlaves = Slaves $
                 integrateNewStates slaves (second (fmap (const ()) . HMS.fromList . mconcat . map snd) <$> outputs)
@@ -609,7 +638,7 @@ resetStates (MasterHandle mhv) states0 = modifyMVar mhv $ \mh -> do
   -- Get a list of StateIds for states
   allStates <- withSupplyM (mhStateIdSupply mh) $ mapM (\state -> (, state) <$> askSupplyM) states0
   case mhSlaves mh of
-    NoSlavesYet _oldStates -> do
+    NoSlavesYet _oldStates ->
       return (mh{mhSlaves = NoSlavesYet allStates}, HMS.fromList allStates)
     Slaves slaves -> do
       -- Divide up the states among the slaves
@@ -618,9 +647,27 @@ resetStates (MasterHandle mhv) states0 = modifyMVar mhv $ \mh -> do
       let numStatesPerSlave =
             let (chunkSize, leftover) = length states0 `quotRem` length slaves
             in if leftover == 0 then chunkSize else chunkSize + 1
-      let slavesStates :: HMS.HashMap SlaveId [(StateId, state)]
-          slavesStates = HMS.fromList $ zip (HMS.keys slaves) $
-            -- Note that some slaves might be initially empty. That's fine and inevitable.
+      slavesStates :: HMS.HashMap SlaveId [(StateId, state)] <- case maBatchConfig (mhArgs mh) of
+          DynamicBatchSize{..} | bcRandomizeAtReset -> do
+            -- each slave will take a randomised number of states
+            -- (until all are taken).
+            (states, leftover) <- foldM
+                (\(!acc, !remaining) slaveId -> do
+                        r <- liftIO $ R.randomRIO (- bcRandomCorrection, bcRandomCorrection)
+                        let n = round $ (1+r) * fromIntegral numStatesPerSlave
+                        let (takeStates, rest) = splitAt n remaining
+                        return ((slaveId, takeStates):acc, rest))
+                ([], allStates)
+                (HMS.keys slaves)
+            -- It is possible that after the fold, there will still be
+            -- states available. Those will be given to the last
+            -- slave.
+            let (slaveId, x):xs = states
+            return . HMS.fromList . reverse $ (slaveId, x ++ leftover):xs
+          _ -> return $ HMS.fromList $ zip (HMS.keys slaves) $
+            -- No randomisation, all slaves get (about) the same
+            -- number of states.  Note that some slaves might be
+            -- initially empty. That's fine and inevitable.
             chunksOf numStatesPerSlave allStates ++ repeat []
       let slaveStatesId :: [(SlaveId, HMS.HashMap StateId ())]
           slaveStatesId = map (second (HMS.fromList . map (second (const ())))) (HMS.toList slavesStates)
