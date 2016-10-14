@@ -78,7 +78,7 @@ spec = do
             bogusData = "short"
             server app = liftIO (appWrite (nmAppData app) $ bogusData)
         mb <- try (runClientAndServer client server)
-        mb `shouldBe` Left (NMDecodeFailure "nmRead Couldn't decode: no data")
+        mb `shouldBe` Left (NMDecodeFailure "nmRead PeekException {peekExBytesFromEnd = 5, peekExMessage = \"Data.Store.Streaming.decodeMessage: could not get enough bytes to decode message\"}")
     loggingIt "one side can terminate" $ do
         let client :: (MonadConnect m) => NMApp () () m ()
             client _ = return ()

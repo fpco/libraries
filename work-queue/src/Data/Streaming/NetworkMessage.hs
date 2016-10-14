@@ -149,16 +149,14 @@ appGet :: (Store a)
        -> ByteBuffer  -- ^ 'ByteBuffer' for streaming
        -> AppData
        -> IO a  -- ^ result
-appGet loc bb ad =
-    (runFreeT (fromFT (S.peekMessageBS bb)) >>= loop)
-    `catch` (\ ex@(PeekException _ _) -> throwIO . NMDecodeFailure . ((loc ++ " ") ++) . show $ ex)
-  where
-    loop (Free cont) = do
+appGet loc bb ad = catch
+  (do mbResp <- S.decodeMessageBS bb $ do
         bs <- appRead ad
-        if null bs
-            then throwIO (NMDecodeFailure (loc ++ " Couldn't decode: no data"))
-            else runFreeT (cont bs) >>= loop
-    loop (Pure (S.Message x)) = return x
+        if null bs then return Nothing else return (Just bs)
+      case mbResp of
+        Nothing -> liftIO (throwIO (NMDecodeFailure (loc ++ ": no data")))
+        Just (S.Message resp) -> return resp)
+  (\ ex@(PeekException _ _) -> throwIO . NMDecodeFailure . ((loc ++ " ") ++) . show $ ex)
 
 -- | Data compared between both parties during the initial handshake.
 data Handshake = Handshake

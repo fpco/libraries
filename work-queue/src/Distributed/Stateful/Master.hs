@@ -52,7 +52,7 @@ module Distributed.Stateful.Master
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Lens (makeLenses, set, at, _Just, over)
-import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
+import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logErrorJ, logDebugJ)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -66,6 +66,7 @@ import qualified Data.Store as S
 import qualified Data.Store.Streaming as S
 import           Control.Monad.Trans.Free (FreeT, runFreeT, FreeF(..))
 import           Control.Monad.Trans.Free.Church (fromFT)
+import qualified System.IO.ByteBuffer as BB
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -340,7 +341,7 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
             set (at requestingSlaveId . _Just . ssWaitingForStates) True uss
       return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
 
-type SWCCont m state output = ByteString -> FreeT ((->) ByteString) m (S.Message (SlaveResp state output))
+type SWCCont m state output = S.ReadMoreData -> FreeT ((->) S.ReadMoreData) m (S.Message (SlaveResp state output))
 
 data SlaveWithConnection m state context input output =
     SlaveWithConnection
@@ -357,8 +358,7 @@ data MasterLoopState output = MasterLoopState
 
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m.
-     (MonadConnect m, NFData input, NFData output
-     , S.Store state, S.Store context, S.Store input, S.Store output)
+     (MonadConnect m, NFData input, NFData output, S.Store state, S.Store context, S.Store input, S.Store output)
   => Int -- ^ Max batch size
   -> HMS.HashMap SlaveId (Slave m state context input output)
   -- ^ Slaves connections
@@ -375,19 +375,18 @@ updateSlaves maxBatchSize slaves context inputMap = do
         }
       statuses0 = slaveStatus0 <$> slaves
   statuses1 <- foldM sendRespInit statuses0 (HMS.keys slaves)
-  swcList <- forM (HMS.toList slaves) $ \(slaveId, slave) -> do
-      cont <- newIORef =<< doPeekStart (slaveConnection slave)
-      return (SlaveWithConnection slaveId (slaveConnection slave) cont)
   masterLoopStateRef :: IORef (MasterLoopState output) <- newIORef (MasterLoopState statuses1 HMS.empty (HMS.size slaves))
   masterLoopLock :: MVar () <- newMVar ()
   masterLoopDone :: MVar [(SlaveId, [(StateId, [(StateId, output)])])] <- newEmptyMVar -- once the masterLoop is finished, this MVar will contain the result.  Before that, it is empty.
-  let registerAll :: [SlaveWithConnection m state context input output] -> m a -> m a
+  let registerAll :: [(SlaveId, Slave m state context input output)] -> m a -> m a
       registerAll [] cont = cont
-      registerAll (swc@SlaveWithConnection{..} : xs) cont =
-        registerAll xs $
-          scRegisterCanRead swcConn (withMVar masterLoopLock (\() -> masterLoopEntry swc masterLoopStateRef masterLoopDone)) cont
-          -- scRegisterCanRead swcConn (masterLoopEntry swc masterLoopStateRef masterLoopDone) cont
-  registerAll swcList (takeMVar masterLoopDone)
+      registerAll ((slaveId, slave) : slaves_) cont = do
+        let conn = slaveConnection slave
+        contRef <- newIORef =<< doPeekStart conn
+        let swc = SlaveWithConnection slaveId conn contRef
+        scRegisterCanRead conn (withMVar masterLoopLock (\() -> masterLoopEntry swc masterLoopStateRef masterLoopDone)) $
+          registerAll slaves_ cont
+  registerAll (HMS.toList slaves) (takeMVar masterLoopDone)
   where
     masterLoopEntry ::
          SlaveWithConnection m state context input output
@@ -410,8 +409,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
       then return mls
       else do
         cont <- readIORef swcCont
-        bs <- scRead swcConn
-        runDecodeFreeT (cont bs) >>= \case
+        runDecodeFreeT (cont S.ReadMoreData) >>= \case
           Free cont' -> do
               writeIORef swcCont cont'
               return mls
@@ -450,12 +448,12 @@ updateSlaves maxBatchSize slaves context inputMap = do
       runFreeT x
       `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("updateSlaves: " ++) . show $ ex)
 
-    doPeekStart :: SlaveConn m state context input output -> m (SWCCont m state output)
     doPeekStart conn = doPeek conn >>= \case
-      Pure _ -> error "doPeek: unexpected Pure"
+      Pure _ -> fail "doPeek: unexpected Pure. This means the byte buffer was not empty when we expected it to be empty."
       Free f -> return f
 
-    doPeek conn = runDecodeFreeT (fromFT (S.peekMessageBS (scByteBuffer conn)))
+    doPeek conn =
+      runDecodeFreeT (fromFT (S.peekMessage (\bs n _ -> scFillByteBuffer conn bs n ()) (scByteBuffer conn)))
 
     sendRespInit statuses slaveId = do
         UpdateSlaveStep{..} <- updateSlavesStep maxBatchSize inputMap slaveId USRespInit statuses

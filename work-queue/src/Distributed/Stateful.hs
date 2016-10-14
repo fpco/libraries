@@ -10,6 +10,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE BangPatterns #-}
 {-|
 Module: Distributed.Stateful
 Description: Distribute stateful computations.
@@ -91,6 +92,9 @@ import           Distributed.JobQueue.Worker
 import           Distributed.Types
 import           Distributed.JobQueue.MasterOrSlave
 import qualified System.IO.ByteBuffer as BB
+import qualified Data.ByteString as BS
+import           GHC.Event (getSystemEventManager, registerFd, evtRead, Lifetime(..), unregisterFd)
+import           Control.Monad.Trans.Unlift (askUnliftBase, unliftBase)
 import           GHC.Conc (threadWaitRead)
 
 -- * Pure version, useful for testing, debugging, etc.
@@ -136,7 +140,7 @@ runPureStatefulSlave update_ cont = do
                 case mbX of
                     Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
                     Just x -> return x
-            , scRegisterCanRead = \callback cont -> do
+            , scRegisterCanRead = \callback cont__ -> do
                 let loop :: m void
                     loop = do
                         closed <- atomically $ do
@@ -148,8 +152,20 @@ runPureStatefulSlave update_ cont = do
                             callback
                             loop
                         fail "scRegisterCanRead read input from closed channel."
-                either absurd id <$> Async.race loop cont
+                either absurd id <$> Async.race loop cont__
             , scByteBuffer = bb
+            , scFillByteBuffer = \bb needed () -> do
+                let go !n = if n >= needed
+                        then return ()
+                        else do
+                            mbBs <- atomically (tryReadTMChan respChan)
+                            case mbBs of
+                                Nothing -> fail "runPureStatefulSlave: trying to read on a closed chan"
+                                Just Nothing -> return ()
+                                Just (Just bs) -> do
+                                    BB.copyByteString bb bs
+                                    go (n + BS.length bs)
+                go 0
             }
 
 -- | Run a computation, where the slaves run as separate threads
@@ -189,14 +205,27 @@ nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> Statefu
 nmStatefulConn ad = StatefulConn
     { scWrite = nmRawWrite ad
     , scRegisterCanRead = \callback cont ->
-          let fd = nmFileDescriptor ad
-              loop = do
-                  liftIO $ threadWaitRead fd
-                  callback
-                  loop
-          in either id absurd <$> Async.race cont loop
+        let fd = nmFileDescriptor ad
+            loop = do
+                liftIO $ threadWaitRead fd
+                callback
+                loop
+        in either id absurd <$> Async.race cont loop
+    {-
+    , scRegisterCanRead = \callback cont -> do
+        mbEvtMgr <- liftIO getSystemEventManager
+        evtMgr <- case mbEvtMgr of
+            Nothing -> fail "nmStatefulConn: could not get the event manager"
+            Just evtMgr -> return evtMgr
+        run <- askUnliftBase
+        liftIO $ bracket
+            (registerFd evtMgr (\_ _ -> unliftBase run callback) (nmFileDescriptor ad) evtRead MultiShot)
+            (unregisterFd evtMgr)
+            (\_ -> unliftBase run cont)
+    -}
     , scRead = nmRawRead ad
     , scByteBuffer = nmByteBuffer ad
+    , scFillByteBuffer = \bb needed () -> void (BB.fillFromFd bb (nmFileDescriptor ad) needed)
     }
 
 -- | Run a slave that uses "Data.Streaming.NetworkMessage" for sending

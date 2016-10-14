@@ -26,12 +26,12 @@ import           Data.Store.TypeHash
 import           Data.Store.TypeHash.Orphans ()
 import           Distributed.Stateful.Internal.Profiling
 import           Text.Printf (PrintfArg(..))
-import qualified Data.Store as S
 import qualified Data.Store.Streaming as S
 import qualified System.IO.ByteBuffer as BB
 import qualified Data.ByteString as BS
 import           Control.Monad.Trans.Free.Church (fromFT)
 import           Control.Monad.Trans.Free (runFreeT, FreeF(..))
+import qualified Data.Store as S
 
 type HashTable k v = HT.CuckooHashTable k v
 
@@ -41,10 +41,15 @@ type HashTable k v = HT.CuckooHashTable k v
 -- can be read from the connection.
 data StatefulConn m req resp = StatefulConn
   { scWrite :: !(BS.ByteString -> m ())
-    -- ^ Write a request to the connection.
+    -- ^ A blocking write.
   , scRegisterCanRead :: !(forall a. m () -> m a -> m a)
+    -- ^ Calls the callback when the stateful conn can read.
   , scRead :: !(m BS.ByteString)
+    -- ^ A blocking read.
   , scByteBuffer :: !BB.ByteBuffer
+  , scFillByteBuffer :: !(S.FillByteBuffer () m)
+    -- ^ Non-blockingly write all the readable stuff in the conn into a byte
+    -- buffer.
   }
 
 scEncodeAndWrite :: (Store req, MonadIO m) => StatefulConn m req resp -> req -> m ()
@@ -55,16 +60,14 @@ newtype StatefulConnDecodeFailure = StatefulConnDecodeFailure String
 instance Exception StatefulConnDecodeFailure
 
 scDecodeAndRead :: forall m req resp. (Store resp, MonadIO m, MonadBaseControl IO m) => StatefulConn m req resp -> m resp
-scDecodeAndRead conn =
-    (runFreeT (fromFT (S.peekMessageBS (scByteBuffer conn))) >>= loop)
-    `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("scDecodeAndRead: " ++) . show $ ex)
-  where
-    loop (Free cont) = do
+scDecodeAndRead conn = catch
+  (do mbResp <- S.decodeMessageBS (scByteBuffer conn) $ do
         bs <- scRead conn
-        if null bs
-            then throwIO (StatefulConnDecodeFailure "scDecodeAndRead: Couldn't decode: no data")
-            else runFreeT (cont bs) >>= loop
-    loop (Pure (S.Message x)) = return x
+        if null bs then return Nothing else return (Just bs)
+      case mbResp of
+        Nothing -> liftIO (throwIO (StatefulConnDecodeFailure "scDecodeAndRead: no data"))
+        Just (S.Message resp) -> return resp)
+  (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("scDecodeAndRead: " ++) . show $ ex)
 
 -- | Identifier for a slave.
 newtype SlaveId = SlaveId {unSlaveId :: Int}
