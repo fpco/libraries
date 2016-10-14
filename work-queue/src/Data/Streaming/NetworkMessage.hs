@@ -69,6 +69,8 @@ import           Network.Socket (socketPort, fdSocket)
 import           System.Executable.Hash (executableHash)
 import           System.Posix.Types (Fd (..))
 import           FP.Redis (MonadConnect)
+import           Control.Monad.Trans.Free.Church (fromFT)
+import           Control.Monad.Trans.Free (runFreeT, FreeF(..))
 
 -- | Exceptions specific to "Data.Streaming.NetworkMessage".
 data NetworkMessageException
@@ -148,15 +150,15 @@ appGet :: (Store a)
        -> AppData
        -> IO a  -- ^ result
 appGet loc bb ad =
-    ((S.peekMessage bb) >>= loop)
+    (runFreeT (fromFT (S.peekMessageBS bb)) >>= loop)
     `catch` (\ ex@(PeekException _ _) -> throwIO . NMDecodeFailure . ((loc ++ " ") ++) . show $ ex)
   where
-    loop (S.NeedMoreInput cont) = do
+    loop (Free cont) = do
         bs <- appRead ad
         if null bs
             then throwIO (NMDecodeFailure (loc ++ " Couldn't decode: no data"))
-            else cont bs >>= loop
-    loop (S.Done (S.Message x)) = return x
+            else runFreeT (cont bs) >>= loop
+    loop (Pure (S.Message x)) = return x
 
 -- | Data compared between both parties during the initial handshake.
 data Handshake = Handshake

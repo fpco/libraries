@@ -30,6 +30,8 @@ import qualified Data.Store as S
 import qualified Data.Store.Streaming as S
 import qualified System.IO.ByteBuffer as BB
 import qualified Data.ByteString as BS
+import           Control.Monad.Trans.Free.Church (fromFT)
+import           Control.Monad.Trans.Free (runFreeT, FreeF(..))
 
 type HashTable k v = HT.CuckooHashTable k v
 
@@ -54,15 +56,15 @@ instance Exception StatefulConnDecodeFailure
 
 scDecodeAndRead :: forall m req resp. (Store resp, MonadIO m, MonadBaseControl IO m) => StatefulConn m req resp -> m resp
 scDecodeAndRead conn =
-    (S.peekMessage (scByteBuffer conn) >>= loop)
+    (runFreeT (fromFT (S.peekMessageBS (scByteBuffer conn))) >>= loop)
     `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("scDecodeAndRead: " ++) . show $ ex)
   where
-    loop (S.NeedMoreInput cont) = do
+    loop (Free cont) = do
         bs <- scRead conn
         if null bs
             then throwIO (StatefulConnDecodeFailure "scDecodeAndRead: Couldn't decode: no data")
-            else cont bs >>= loop
-    loop (S.Done (S.Message x)) = return x
+            else runFreeT (cont bs) >>= loop
+    loop (Pure (S.Message x)) = return x
 
 -- | Identifier for a slave.
 newtype SlaveId = SlaveId {unSlaveId :: Int}

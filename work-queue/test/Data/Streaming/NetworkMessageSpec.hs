@@ -75,7 +75,7 @@ spec = do
     loggingIt "throws NMDecodeFailure when fed too little data" $ do
         let client :: (MonadConnect m) => NMApp Bool Int m ()
             client app = void $ nmRead app
-            bogusData = "short data"
+            bogusData = "short"
             server app = liftIO (appWrite (nmAppData app) $ bogusData)
         mb <- try (runClientAndServer client server)
         mb `shouldBe` Left (NMDecodeFailure "nmRead Couldn't decode: no data")

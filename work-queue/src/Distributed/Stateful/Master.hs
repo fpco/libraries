@@ -64,6 +64,8 @@ import           FP.Redis (MonadConnect)
 import           Text.Printf (printf)
 import qualified Data.Store as S
 import qualified Data.Store.Streaming as S
+import           Control.Monad.Trans.Free (FreeT, runFreeT, FreeF(..))
+import           Control.Monad.Trans.Free.Church (fromFT)
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -338,11 +340,13 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
             set (at requestingSlaveId . _Just . ssWaitingForStates) True uss
       return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
 
+type SWCCont m state output = ByteString -> FreeT ((->) ByteString) m (S.Message (SlaveResp state output))
+
 data SlaveWithConnection m state context input output =
     SlaveWithConnection
         { swcSlaveId :: !SlaveId
         , swcConn :: !(SlaveConn m state context input output)
-        , swcCont :: !(IORef (Maybe (ByteString -> m (S.PeekMessage m (SlaveResp state output)))))
+        , swcCont :: !(IORef (SWCCont m state output))
         }
 
 data MasterLoopState output = MasterLoopState
@@ -372,7 +376,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
       statuses0 = slaveStatus0 <$> slaves
   statuses1 <- foldM sendRespInit statuses0 (HMS.keys slaves)
   swcList <- forM (HMS.toList slaves) $ \(slaveId, slave) -> do
-      cont <- newIORef Nothing
+      cont <- newIORef =<< doPeekStart (slaveConnection slave)
       return (SlaveWithConnection slaveId (slaveConnection slave) cont)
   masterLoopStateRef :: IORef (MasterLoopState output) <- newIORef (MasterLoopState statuses1 HMS.empty (HMS.size slaves))
   masterLoopLock :: MVar () <- newMVar ()
@@ -405,18 +409,13 @@ updateSlaves maxBatchSize slaves context inputMap = do
     masterLoop swc@SlaveWithConnection{..} mls@(MasterLoopState statuses outputs nActiveSlaves) = if nActiveSlaves == 0
       then return mls
       else do
-        cont0 <- readIORef swcCont >>= \case
-            Nothing -> doPeek swcConn
-            Just cont0 -> return (S.NeedMoreInput cont0)
-        case cont0 of
-            S.Done (S.Message _resp) -> error "updateSlaves.masterLoop: unexpected Done continuation."
-            S.NeedMoreInput cont -> do
-                bs <- scRead swcConn
-                cont bs >>= \case
-                    (S.NeedMoreInput cont') -> do
-                        writeIORef swcCont (Just cont')
-                        return mls
-                    S.Done (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
+        cont <- readIORef swcCont
+        bs <- scRead swcConn
+        runDecodeFreeT (cont bs) >>= \case
+          Free cont' -> do
+              writeIORef swcCont cont'
+              return mls
+          Pure (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
 
     handleResponse statuses outputs nActiveSlaves swc@SlaveWithConnection{..} resp = do
         resp' <- case resp of
@@ -441,14 +440,22 @@ updateSlaves maxBatchSize slaves context inputMap = do
                          else return nActiveSlaves
         -- see if we can decode another message from the chunk we read
         doPeek swcConn >>= \case
-            S.Done (S.Message newResp) -> handleResponse statuses' outputs' nActiveSlaves' swc newResp
-            S.NeedMoreInput cont' -> do
-                writeIORef swcCont (Just cont')
+            Pure (S.Message newResp) -> handleResponse statuses' outputs' nActiveSlaves' swc newResp
+            Free cont' -> do
+                writeIORef swcCont cont'
                 let mls = MasterLoopState statuses' outputs' nActiveSlaves'
                 return mls
 
-    doPeek conn = S.peekMessage (scByteBuffer conn)
-        `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("updateSlaves: " ++) . show $ ex)
+    runDecodeFreeT x =
+      runFreeT x
+      `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("updateSlaves: " ++) . show $ ex)
+
+    doPeekStart :: SlaveConn m state context input output -> m (SWCCont m state output)
+    doPeekStart conn = doPeek conn >>= \case
+      Pure _ -> error "doPeek: unexpected Pure"
+      Free f -> return f
+
+    doPeek conn = runDecodeFreeT (fromFT (S.peekMessageBS (scByteBuffer conn)))
 
     sendRespInit statuses slaveId = do
         UpdateSlaveStep{..} <- updateSlavesStep maxBatchSize inputMap slaveId USRespInit statuses
