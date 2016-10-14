@@ -38,6 +38,7 @@ import           FP.Redis (MonadConnect)
 import           System.Random (randomRIO)
 import           Test.Hspec hiding (shouldBe, shouldSatisfy)
 import qualified Test.QuickCheck as QC
+import           Control.Monad.Logger.JSON.Extra (LoggingT)
 import           TestUtils
 
 newtype State = State [Input] -- All the inputs up to now
@@ -50,8 +51,8 @@ newtype Output = Output [Input] -- All the inputs up to now
 mkManyHasTypeHash [[t|State|], [t|Input|], [t|Output|], [t|Int|]]
 
 testUpdate ::
-     (MonadConnect m)
-  => MasterHandle m State () Input Output
+     (MonadConnect m, Eq key, Hashable key)
+  => MasterHandle m key State () Input Output
   -> HMS.HashMap StateId [Input] -- ^ Inputs
   -> m () -- ^ Will crash if the output is not right
 testUpdate mh inputs = do
@@ -65,13 +66,13 @@ testUpdate mh inputs = do
         let expectedOutputs = [Output (input : inputs_) | input <- stateInputs]
         sort (HMS.elems stateOutputs) `shouldBe`  sort expectedOutputs
 
-type Runner m = forall a.
+type Runner m key = forall a.
        MasterArgs m State () Input Output
     -> Int -- ^ Desired slaves
-    -> (MasterHandle m State () Input Output -> m a)
+    -> (MasterHandle m key State () Input Output -> m a)
     -> m (a, Maybe Profiling)
 
-performSimpleTest :: (MonadConnect m) => Int -> MasterHandle m State () Input Output -> m ()
+performSimpleTest :: (MonadConnect m, Eq key, Hashable key) => Int -> MasterHandle m key State () Input Output -> m ()
 performSimpleTest initialStates mh = do
   void (resetStates mh (map State (replicate initialStates [])))
   tokenCount :: IORef Int <- newIORef 0
@@ -95,20 +96,20 @@ testMasterArgs mbDelay n = (defaultMasterArgs f) { maMaxBatchSize = Just n, maDo
         Just x -> threadDelay =<< randomRIO x
       return (State (input : inputs), Output (input : inputs))
 
-genericSpec :: (forall m. (MonadConnect m) => Runner m) -> Spec
+genericSpec :: forall key. (Eq key, Hashable key) => Runner (LoggingT IO) key -> Spec
 genericSpec runner = do
-  loggingIt "Passes simple comparison with pure implementation (no slaves)" $ do
+  loggingIt_ "Passes simple comparison with pure implementation (no slaves)" $ do
     ((), mprof) <- runner (testMasterArgs (Just delay) 2) 0 (performSimpleTest 10)
     mprof `shouldSatisfy` \case
         Just (Profiling _ Nothing) -> True
         _ -> False
-  loggingIt "Passes simple comparison with pure implementation (one slave)" $ do
+  loggingIt_ "Passes simple comparison with pure implementation (one slave)" $ do
     ((), mprof) <- runner (testMasterArgs (Just delay) 2) 1 (performSimpleTest 10)
     checkDelay mprof
-  loggingIt "Passes simple comparison with pure implementation (10 slaves)" $ do
+  loggingIt_ "Passes simple comparison with pure implementation (10 slaves)" $ do
     ((), mprof) <- runner (testMasterArgs (Just delay) 3) 10 (performSimpleTest 100)
     checkDelay mprof
-  stressfulTest $ loggingIt "Passes simple comparison with pure implementation (50 slaves)" $ do
+  stressfulTest $ loggingIt_ "Passes simple comparison with pure implementation (50 slaves)" $ do
     ((), mprof) <- runner (testMasterArgs (Just delay) 5) 50 (performSimpleTest 1000)
     checkDelay mprof
   where

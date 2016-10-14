@@ -8,6 +8,10 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 module Distributed.Stateful.Internal
        ( module Distributed.Stateful.Internal
        , module Distributed.Stateful.Internal.Profiling
@@ -26,43 +30,68 @@ import           Data.Store.TypeHash
 import           Data.Store.TypeHash.Orphans ()
 import           Distributed.Stateful.Internal.Profiling
 import           Text.Printf (PrintfArg(..))
-import qualified Data.Store as S
 import qualified Data.Store.Streaming as S
 import qualified System.IO.ByteBuffer as BB
 import qualified Data.ByteString as BS
+import qualified Data.Store as S
+import qualified Data.Vector as V
 
-type HashTable k v = HT.CuckooHashTable k v
+data EventType
+  = ETRead
+  deriving (Show, Eq)
 
+data EventManager m key = EventManager
+  { emControl :: !(key -> EventType -> m ())
+  , emControlDelete :: !(key -> m ())
+  , emWait :: !(m (V.Vector (key, EventType)))
+  }
+
+data StatefulConn m key req resp = StatefulConn
+  { scWrite :: !(BS.ByteString -> m ())
+  , scRead :: !(m BS.ByteString)
+
+  , scByteBuffer :: !(BB.ByteBuffer)
+  , scFillByteBuffer :: !(S.FillByteBuffer () m)
+
+  , scConnKey :: !key
+  }
+
+{-
 -- | Stateful connection.
 --
 -- Values of type @req@ can be written to, and values of type @resp@
 -- can be read from the connection.
 data StatefulConn m req resp = StatefulConn
   { scWrite :: !(BS.ByteString -> m ())
-    -- ^ Write a request to the connection.
+    -- ^ A blocking write.
   , scRegisterCanRead :: !(forall a. m () -> m a -> m a)
+    -- ^ Calls the callback when the stateful conn can read.
   , scRead :: !(m BS.ByteString)
+    -- ^ A blocking read.
   , scByteBuffer :: !BB.ByteBuffer
+  , scFillByteBuffer :: !(S.FillByteBuffer () m)
+    -- ^ Non-blockingly write all the readable stuff in the conn into a byte
+    -- buffer.
   }
+-}
 
-scEncodeAndWrite :: (Store req, MonadIO m) => StatefulConn m req resp -> req -> m ()
+{-# INLINE scEncodeAndWrite #-}
+scEncodeAndWrite :: (Store req, MonadIO m) => StatefulConn m key req resp -> req -> m ()
 scEncodeAndWrite conn x = scWrite conn (S.encodeMessage (S.Message x))
 
 newtype StatefulConnDecodeFailure = StatefulConnDecodeFailure String
   deriving (Typeable, Show)
 instance Exception StatefulConnDecodeFailure
 
-scDecodeAndRead :: forall m req resp. (Store resp, MonadIO m, MonadBaseControl IO m) => StatefulConn m req resp -> m resp
-scDecodeAndRead conn =
-    (S.peekMessage (scByteBuffer conn) >>= loop)
-    `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("scDecodeAndRead: " ++) . show $ ex)
-  where
-    loop (S.NeedMoreInput cont) = do
+scDecodeAndRead :: (Store resp, MonadIO m, MonadBaseControl IO m) => StatefulConn m key req resp -> m resp
+scDecodeAndRead conn = catch
+  (do mbResp <- S.decodeMessageBS (scByteBuffer conn) $ do
         bs <- scRead conn
-        if null bs
-            then throwIO (StatefulConnDecodeFailure "scDecodeAndRead: Couldn't decode: no data")
-            else cont bs >>= loop
-    loop (S.Done (S.Message x)) = return x
+        if null bs then return Nothing else return (Just bs)
+      case mbResp of
+        Nothing -> liftIO (throwIO (StatefulConnDecodeFailure "scDecodeAndRead: no data"))
+        Just (S.Message resp) -> return resp)
+  (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("scDecodeAndRead: " ++) . show $ ex)
 
 -- | Identifier for a slave.
 newtype SlaveId = SlaveId {unSlaveId :: Int}
@@ -169,6 +198,8 @@ data StatefulUpdateException
   = InputStateNotFound !StateId
   deriving (Eq, Show, Typeable)
 instance Exception StatefulUpdateException
+
+type HashTable k v = HT.CuckooHashTable k v
 
 statefulUpdate ::
      (MonadThrow m, MonadIO m, MonadBaseControl IO m, NFData state, NFData output, NFData input, NFData context)

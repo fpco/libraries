@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoImplicitPrelude #-}
@@ -10,6 +9,10 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 {-|
 Module: Distributed.Stateful
 Description: Distribute stateful computations.
@@ -48,11 +51,14 @@ communication between the threads, is also provided.
 module Distributed.Stateful
     ( -- * Re-exported types
       Update
+    , EventManager
       -- * NetworkMessage backend
+    , PureStatefulConnKey
     , runNMStatefulSlave
     , runNMStatefulMaster
     , runSimpleNMStateful
       -- * NetworkMessage backend with automatic slave request
+    , NMStatefulConnKey
     , NMStatefulMasterArgs(..)
     , runRequestedStatefulSlave
     , runRequestingStatefulMaster
@@ -90,16 +96,60 @@ import           Distributed.JobQueue.Worker
 import           Distributed.Types
 import           Distributed.JobQueue.MasterOrSlave
 import qualified System.IO.ByteBuffer as BB
-import           GHC.Conc (threadWaitRead)
+import qualified Data.ByteString as BS
+import           System.Posix.Types (Fd(..))
+import           Foreign.C.Types (CInt(..))
+import qualified System.Poll.EPoll as EPoll
+import qualified Data.HashTable.IO as HT
+import           System.IO.Unsafe (unsafePerformIO)
+import qualified Data.Vector as V
+import qualified Data.Vector.Storable as VS
 
 -- * Pure version, useful for testing, debugging, etc.
 -----------------------------------------------------------------------
+
+data PureStatefulConn = PureStatefulConn
+    { pscReqs :: !(TMChan ByteString)
+    , pscResps :: !(TMChan ByteString)
+    , pscByteBuffer :: !BB.ByteBuffer
+    }
+
+data PureStatefulConnBookkeping = PureStatefulConnBookkeping
+    { pscbCounter :: !(IORef Int64)
+    , psbcConns :: !(HT.LinearHashTable PureStatefulConnKey PureStatefulConn)
+    }
+
+newtype PureStatefulConnKey = PureStatefulConnKey Int64
+    deriving (Eq, Generic, Hashable)
+
+{-# NOINLINE pureStatefulConnBookkeping #-}
+pureStatefulConnBookkeping :: PureStatefulConnBookkeping
+pureStatefulConnBookkeping = unsafePerformIO $
+    PureStatefulConnBookkeping <$> newIORef 0 <*> HT.new
+
+withPureStatefulConnManager ::
+       (MonadConnect m)
+    => (EventManager m PureStatefulConnKey -> m a) -> m a
+withPureStatefulConnManager cont = do
+    ht :: HT.LinearHashTable PureStatefulConnKey EventType <- liftIO HT.new
+    cont EventManager
+        { emControl = \k et -> liftIO (HT.insert ht k et)
+        , emControlDelete = \k -> liftIO (HT.delete ht k)
+        , emWait = fmap V.fromList $ liftIO $ HT.foldM
+            (\evts (key, ETRead) -> do
+                Just PureStatefulConn{..} <- HT.lookup (psbcConns pureStatefulConnBookkeping) key
+                ready <- atomically (tryPeekTMChan pscResps)
+                return $ case ready of
+                    Just (Just _) -> ((key, ETRead) : evts)
+                    _ -> evts)
+            [] ht
+        }
 
 -- | Run a slave that communicates with a master via 'TMChan's.
 runPureStatefulSlave :: forall m context input state output a.
        (MonadConnect m, NFData state, NFData output, Store state, Store context, Store output, Store input, NFData input, NFData context)
     => (context -> input -> state -> m (state, output))
-    -> (SlaveConn m state context input output -> m a)
+    -> (SlaveConn m PureStatefulConnKey state context input output -> m a)
     -> m a
 runPureStatefulSlave update_ cont = do
     reqChan :: TMChan ByteString <- liftIO newTMChanIO
@@ -113,42 +163,44 @@ runPureStatefulSlave update_ cont = do
                     closeTMChan respChan)
   where
     chanStatefulConn :: forall req resp.
-        TMChan ByteString -> TMChan ByteString -> (StatefulConn m req resp -> m a) -> m a
-    chanStatefulConn reqChan respChan cont = BB.with Nothing $ \bb ->
-        cont StatefulConn
+        TMChan ByteString -> TMChan ByteString -> (StatefulConn m PureStatefulConnKey req resp -> m a) -> m a
+    chanStatefulConn pscReqs pscResps cont_ = BB.with Nothing $ \pscByteBuffer -> do
+        key <- PureStatefulConnKey <$> liftIO (atomicModifyIORef (pscbCounter pureStatefulConnBookkeping) (\c -> (c+1, c)))
+        liftIO (HT.insert (psbcConns pureStatefulConnBookkeping) key PureStatefulConn{..})
+        cont_ StatefulConn
             { scWrite = \x -> do
                 closed <- atomically $ do
-                    closed <- isClosedTMChan reqChan
+                    closed <- isClosedTMChan pscReqs
                     if closed
                         then return True
                         else do
-                            writeTMChan reqChan x
+                            writeTMChan pscReqs x
                             return False
                 when closed $
-                    fail "runPureStatefulSlave: trying to write to closed chan"
+                    fail "PureStatefulConn: trying to write to closed chan"
             , scRead = do
                 mbX <- atomically $ do
-                    closed <- isClosedTMChan respChan
+                    closed <- isClosedTMChan pscResps
                     if closed
                         then return Nothing
-                        else readTMChan respChan
+                        else readTMChan pscResps
                 case mbX of
-                    Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
+                    Nothing -> fail "PureStatefulConn: trying to read on closed chan"
                     Just x -> return x
-            , scRegisterCanRead = \callback cont -> do
-                let loop :: m void
-                    loop = do
-                        closed <- atomically $ do
-                            let waitUntilClosed = do
-                                    closed <- isClosedTMChan respChan
-                                    unless closed STM.retry
-                            (True <$ waitUntilClosed) <|> (False <$ void (peekTMChan respChan))
-                        unless closed $ do
-                            callback
-                            loop
-                        fail "scRegisterCanRead read input from closed channel."
-                either absurd id <$> Async.race loop cont
-            , scByteBuffer = bb
+            , scByteBuffer = pscByteBuffer
+            , scFillByteBuffer = \bb needed () -> do
+                let go !n = if n >= needed
+                        then return ()
+                        else do
+                            mbBs <- atomically (tryReadTMChan pscResps)
+                            case mbBs of
+                                Nothing -> fail "PureStatefulConn: trying to read on a closed chan"
+                                Just Nothing -> return ()
+                                Just (Just bs) -> do
+                                    BB.copyByteString bb bs
+                                    go (n + BS.length bs)
+                go 0
+            , scConnKey = key
             }
 
 -- | Run a computation, where the slaves run as separate threads
@@ -158,12 +210,12 @@ runSimplePureStateful :: forall m context input state output a.
        (MonadConnect m, NFData state, NFData output, Store state, Store context, Store input, Store output, NFData input, NFData context)
     => MasterArgs m state context input output
     -> Int -- ^ Desired slaves. Must be >= 0
-    -> (MasterHandle m state context input output -> m a)
+    -> (MasterHandle m PureStatefulConnKey state context input output -> m a)
     -> m (a, Maybe Profiling)
 runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
     then fail "runSimplePureStateful: slavesNum0 < 0"
-    else do
-        mh <- initMaster ma
+    else withPureStatefulConnManager $ \em -> do
+        mh <- initMaster ma em
         go mh slavesNum0
   where
     go mh slavesNum = if slavesNum == 0
@@ -174,26 +226,45 @@ runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
           go mh (slavesNum - 1)
 
 addSlaveProfiling ::
-    (MonadConnect m, Store state, Store context, Store input, Store output)
-    => (MasterHandle m state context input output -> m a)
-    -> (MasterHandle m state context input output -> m (a, Maybe Profiling))
+       (MonadConnect m, Store state, Store context, Store input, Store output)
+    => (MasterHandle m conn state context input output -> m a)
+    -> (MasterHandle m conn state context input output -> m (a, Maybe Profiling))
 addSlaveProfiling cont mh = do
     res <- cont mh
     prof <- getProfiling mh
     return (res, prof)
 
-nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> StatefulConn m a b
+newtype NMStatefulConnKey = NMStatefulConnKey Fd
+    deriving (Eq, Show, Hashable)
+
+instance Hashable CInt where
+    hashWithSalt s (CInt x) = hashWithSalt s x
+
+instance Hashable Fd where
+    hashWithSalt s (Fd x) = hashWithSalt s x
+
+withNMStatefulConnEventManager ::
+       (MonadConnect m)
+    => (EventManager m NMStatefulConnKey -> m a) -> m a
+withNMStatefulConnEventManager cont = control $ \run -> EPoll.with 1000 $ \epoll -> run $
+    cont EventManager
+        { emControl = \(NMStatefulConnKey fd) ETRead -> liftIO $
+            EPoll.control epoll EPoll.controlOpAdd fd EPoll.epollIn
+        , emControlDelete = \(NMStatefulConnKey fd) -> liftIO $
+            EPoll.control epoll EPoll.controlOpDelete fd EPoll.epollIn
+        , emWait = liftIO $ do
+            evts <- EPoll.wait epoll Nothing
+            return $
+                V.fromList (map (\evt -> (NMStatefulConnKey (EPoll.eventFd evt), ETRead)) (VS.toList evts))
+        }
+
+nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> StatefulConn m NMStatefulConnKey a b
 nmStatefulConn ad = StatefulConn
     { scWrite = nmRawWrite ad
-    , scRegisterCanRead = \callback cont ->
-          let fd = nmFileDescriptor ad
-              loop = do
-                  liftIO $ threadWaitRead fd
-                  callback
-                  loop
-          in either id absurd <$> Async.race cont loop
     , scRead = nmRawRead ad
     , scByteBuffer = nmByteBuffer ad
+    , scFillByteBuffer = \bb needed () -> void (BB.fillFromFd bb (nmFileDescriptor ad) needed)
+    , scConnKey = NMStatefulConnKey (nmFileDescriptor ad)
     }
 
 -- | Run a slave that uses "Data.Streaming.NetworkMessage" for sending
@@ -202,10 +273,11 @@ runNMStatefulSlave ::
        (MonadConnect m, NFData state, Store state, NFData output, Store output, Store context, Store input, NFData input, NFData context)
     => Update m state context input output
     -> NMApp (SlaveResp state output) (SlaveReq state context input) m ()
-runNMStatefulSlave update_ ad = runSlave SlaveArgs
-    { saUpdate = update_
-    , saConn = nmStatefulConn ad
-    }
+runNMStatefulSlave update_ ad = do
+    runSlave SlaveArgs
+        { saUpdate = update_
+        , saConn = nmStatefulConn ad
+        }
 
 -- | Connection preferences for a master that communicates with slaves
 -- via "Data.Streaming.NetworkMessage".
@@ -231,14 +303,14 @@ runNMStatefulMaster :: forall m state output input context b.
     -- is the handler that gets called on each connection. The second argument
     -- is a continuation that will run alongside with the server, when the continuation
     -- quits the server will quit too.
-    -> (MasterHandle m state context input output -> m () -> m b)
+    -> (MasterHandle m NMStatefulConnKey state context input output -> m () -> m b)
     -- ^ The second argument is a function that will return when the maximum number
     -- of slaves is reached. It'll never return if there is no maximum. This is useful
     -- if for example we're requesting the slaves with the RequestSlaves and we want
     -- to stop.
     -> m (Maybe (b, Maybe Profiling))
     -- ^ 'Nothing' if we ran out of time waiting for slaves.
-runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
+runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = withNMStatefulConnEventManager $ \em -> do
     case nmsmaMinimumSlaves of
         Just n | n < 0 -> fail ("runTCPStatefulMaster: nmsmaMinimumSlaves < 0 (" ++ show n ++ ")")
         _ -> return ()
@@ -248,7 +320,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
             when (n < minMax) $
               fail ("runTCPStatefulMaster: nmsmaMaximumSlaves < " ++ show minMax ++ " (" ++ show n ++ ")")
         _ -> return ()
-    mh <- initMaster ma
+    mh <- initMaster ma em
     slavesConnectedVar :: TVar Int <- liftIO (newTVarIO 0)
     slaveAddLock :: MVar () <- newMVar ()
     doneVar :: MVar () <- newEmptyMVar
@@ -300,7 +372,7 @@ runSimpleNMStateful :: forall m state input output context a.
     => ByteString -- ^ Desired host for the master
     -> MasterArgs m state context input output
     -> Int -- ^ Desired slaves
-    -> (MasterHandle m state context input output -> m a)
+    -> (MasterHandle m NMStatefulConnKey state context input output -> m a)
     -> m (a, Maybe Profiling)
 runSimpleNMStateful host ma numSlaves cont = do
     when (numSlaves < 0) $
@@ -357,7 +429,7 @@ runRequestingStatefulMaster :: forall m state output context input b.
     -- If Nothing, the port the server is locally bound to will be used
     -> MasterArgs m state context input output
     -> NMStatefulMasterArgs
-    -> (MasterHandle m state context input output -> m b)
+    -> (MasterHandle m NMStatefulConnKey state context input output -> m b)
     -> m (Maybe (b, Maybe Profiling))
 runRequestingStatefulMaster r (heartbeatingWorkerId -> wid) ss0 host mbPort ma nmsma cont = do
     nmSettings <- defaultNMSettings
@@ -420,7 +492,7 @@ runJobQueueStatefulWorker ::
     -- If Nothing, the port the server is locally bound to will be used
     -> MasterArgs m state context input output
     -> NMStatefulMasterArgs
-    -> (MasterHandle m state context input output -> RequestId -> request -> m (Reenqueue response))
+    -> (MasterHandle m NMStatefulConnKey state context input output -> RequestId -> request -> m (Reenqueue response))
     -> m void
 runJobQueueStatefulWorker jqc ss host mbPort ma nmsma cont =
     withRedis (jqcRedisConfig jqc) $ \redis ->

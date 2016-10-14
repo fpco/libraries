@@ -16,7 +16,7 @@ module Distributed.Stateful.Slave
   , Update
   , runSlave
     -- * Stateful Connection
-  , StatefulConn(..)
+  , StatefulConn
   ) where
 
 import           ClassyPrelude
@@ -29,11 +29,11 @@ import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
 
 -- | Arguments for 'runSlave'.
-data SlaveArgs m state context input output = SlaveArgs
+data SlaveArgs m key state context input output = SlaveArgs
   { saUpdate :: !(Update m state context input output)
     -- ^ Function run on the slave when 'update' is invoked on the
     -- master.
-  , saConn :: !(StatefulConn m (SlaveResp state output) (SlaveReq state context input))
+  , saConn :: !(StatefulConn m key (SlaveResp state output) (SlaveReq state context input))
   }
 
 data SlaveException
@@ -48,9 +48,9 @@ instance Exception SlaveException
 
 -- | Runs a stateful slave. Returns when the master sends the "quit" command.
 {-# INLINE runSlave #-}
-runSlave :: forall state context input output m.
+runSlave :: forall state context input output m key.
      (MonadConnect m, NFData state, NFData output, S.Store state, S.Store context, S.Store output, S.Store input, NFData input, NFData context)
-  => SlaveArgs m state context input output
+  => SlaveArgs m key state context input output
   -> m ()
 runSlave SlaveArgs{..} = do
     states <- liftIO HT.new

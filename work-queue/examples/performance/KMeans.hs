@@ -12,6 +12,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE RankNTypes #-}
 module KMeans ( Options (..)
               , masterArgs
               , distributeKMeans
@@ -165,7 +166,7 @@ chunksOfVec n vec = unfoldr (\v -> case splitAt n v of
                                     (emptyvec, _) | V.null emptyvec -> Nothing
                                     (chunk, rest) -> Just (chunk, rest)) vec
 
-distributeKMeans :: forall m . MonadConnect m => Request -> MasterHandle m State Context Input Output -> m (Response)
+distributeKMeans :: forall m key. (MonadConnect m, Eq key, Hashable key) => Request -> MasterHandle m key State Context Input Output -> m (Response)
 distributeKMeans Request{..} mh = do
     resetStates mh (replicate nStates ()) >> distrib rMaxIterations rInitialClusters
   where
