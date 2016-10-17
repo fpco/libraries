@@ -29,15 +29,13 @@ packages:
       git: git@github.com:fpco/monad-logger-json-extra.git
       commit: dd40b3c96e67f41da984ba6d203c6c82b1932d00
     extra-dep: true
-  - /home/bitonic/src/fpco/store
-  - /home/bitonic/src/fpco/store/store-core
-  # - location:
-  #     git: git@github.com:fpco/store.git
-  #     commit: 6477d4f6056dc8f8d9fc2861e781559274314a50
-  #   extra-dep: true
-  #   subdirs:
-  #     - '.'
-  #     - store-core
+  - location:
+      git: git@github.com:fpco/store.git
+      commit: cdfbbe5987f6bda1ea44ddead7531a1925dc5964
+    extra-dep: true
+    subdirs:
+      - '.'
+      - store-core
 
 image:
   container:
