@@ -39,8 +39,7 @@ data ProfilingCounter = ProfilingCounter
     { _pcWallTime :: {-# UNPACK #-} !Double -- ^ Accumulated wall-time spent in a section
     , _pcCPUTime  :: {-# UNPACK #-} !Double -- ^ Accumulated CPU-time spent in a section
     , _pcCount    :: {-# UNPACK #-} !Int    -- ^ Number of times a section is invoked
-    } deriving (Eq, Show, Generic, NFData)
-instance Store ProfilingCounter
+    } deriving (Eq, Show, Generic, NFData, Store)
 makeLenses ''ProfilingCounter
 
 instance Semigroup ProfilingCounter where
@@ -66,10 +65,8 @@ data SlaveProfiling = SlaveProfiling
     , _spHTFromList     :: !ProfilingCounter
     , _spHTToList       :: !ProfilingCounter
     , _spUpdate         :: !ProfilingCounter
-    } deriving (Eq, Show, Generic, NFData)
-instance Store SlaveProfiling
+    } deriving (Eq, Show, Generic, NFData, Store)
 makeLenses ''SlaveProfiling
-$(mkHasTypeHash =<< [t|Maybe SlaveProfiling|])
 
 emptySlaveProfiling :: SlaveProfiling
 emptySlaveProfiling = SlaveProfiling mempty mempty mempty mempty mempty mempty mempty mempty mempty mempty
@@ -88,6 +85,31 @@ instance Semigroup SlaveProfiling where
         , _spHTToList = view spHTToList sp <> view spHTToList sp'
         , _spUpdate = view spUpdate sp <> view spUpdate sp'
         }
+
+-- | Profiling data for the master
+data MasterProfiling = MasterProfiling
+    { _mpTotalUpdate      :: !ProfilingCounter
+    , _mpUpdateSlaves     :: !ProfilingCounter
+    , _mpUpdateSlavesStep :: !ProfilingCounter
+    , _mpSend             :: !ProfilingCounter
+    , _mpMasterLoop       :: !ProfilingCounter
+    , _mpHandleResponse   :: !ProfilingCounter
+    , _mpDecode           :: !ProfilingCounter
+    , _mpReceive          :: !ProfilingCounter
+    } deriving (Eq, Generic, Show, Store)
+makeLenses ''MasterProfiling
+
+emptyMasterProfiling :: MasterProfiling
+emptyMasterProfiling = MasterProfiling mempty mempty mempty mempty mempty mempty mempty mempty
+
+-- | Profiling data for a Stateful computation.
+data Profiling = Profiling
+    { profMaster :: !MasterProfiling
+      -- ^ profiling for the master
+    , profSlave  :: !(Maybe SlaveProfiling)
+      -- ^ summed profiling of all slaves (if there were any)
+    } deriving (Eq, Generic, Show, Store)
+$(mkHasTypeHash =<< [t|Maybe Profiling|])
 
 -- | Collect timing data for some action
 withProfiling :: forall a b m. MonadIO m
@@ -137,3 +159,20 @@ slaveProfilingColumns SlaveProfiling{..} = concat
     , profilingCounterColumns "spHTToList" _spHTToList
     , profilingCounterColumns "spUpdate" _spUpdate
     ]
+
+masterProfilingColumns :: MasterProfiling -> ProfilingColumns
+masterProfilingColumns MasterProfiling{..} = concat
+    [ profilingCounterColumns "mpTotalUpdate" _mpTotalUpdate
+    , profilingCounterColumns "mpUpdateSlaves" _mpUpdateSlaves
+    , profilingCounterColumns "mpUpdateSlavesStep" _mpUpdateSlavesStep
+    , profilingCounterColumns "mpSend" _mpSend
+    , profilingCounterColumns "mpMasterLoop" _mpMasterLoop
+    , profilingCounterColumns "mpHandleResponse" _mpHandleResponse
+    , profilingCounterColumns "mpDecode" _mpDecode
+    , profilingCounterColumns "mpReceive" _mpReceive
+    ]
+
+mProfilingColumns :: Maybe Profiling -> ProfilingColumns
+mProfilingColumns Nothing = map (second (const "NA")) $ slaveProfilingColumns emptySlaveProfiling <> masterProfilingColumns emptyMasterProfiling
+mProfilingColumns (Just (Profiling mp Nothing)) = map (second (const "NA")) (slaveProfilingColumns emptySlaveProfiling) <> masterProfilingColumns mp
+mProfilingColumns (Just (Profiling mp (Just sp))) = slaveProfilingColumns sp <> masterProfilingColumns mp

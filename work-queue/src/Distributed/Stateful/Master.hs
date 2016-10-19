@@ -29,23 +29,26 @@ module Distributed.Stateful.Master
     , MasterHandle
     , initMaster
     , DoProfiling (..)
+    , StateId , SlaveId
+    , StatefulConn(..)
       -- * Operations on master nodes
     , closeMaster
     , update
     , resetStates
     , getStateIds
     , getStates
-    , getSlavesProfiling
     , addSlaveConnection
     , getNumSlaves
       -- * Types
     , SlaveConn
     , MasterException(..)
-      -- those are re-exported from Internal.
-    , StateId
-    , SlaveId
-    , StatefulConn(..)
+      -- * Performance profiling
+    , getSlavesProfiling
+    , getMasterProfilng
+    , getProfiling
     , SlaveProfiling(..), emptySlaveProfiling
+    , MasterProfiling(..), emptyMasterProfiling
+    , Profiling (..)
     , ProfilingCounter(..)
     ) where
 
@@ -97,6 +100,7 @@ data MasterHandle_ m state context input output = MasterHandle_
   , mhSlaveIdSupply :: !(Supply SlaveId)
   , mhStateIdSupply :: !(Supply StateId)
   , mhArgs :: !(MasterArgs m state context input output)
+  , mhProfiling :: !(Maybe (IORef MasterProfiling))
   }
 
 -- | Connection to a slave.  Requests to the slave can be written, and
@@ -134,11 +138,15 @@ initMaster ma@MasterArgs{..} = do
     _ -> return ()
   slaveIdSupply <- newSupply (SlaveId 0) (\(SlaveId n) -> SlaveId (n + 1))
   stateIdSupply <- newSupply (StateId 0) (\(StateId n) -> StateId (n + 1))
+  mmp <- case maDoProfiling of
+      DoProfiling -> Just <$> newIORef emptyMasterProfiling
+      NoProfiling -> return Nothing
   let mh = MasterHandle_
         { mhSlaves = NoSlavesYet mempty
         , mhSlaveIdSupply = slaveIdSupply
         , mhStateIdSupply = stateIdSupply
         , mhArgs = ma
+        , mhProfiling = mmp
         }
   MasterHandle <$> newMVar mh
 
@@ -248,13 +256,14 @@ makeLenses ''SlaveStatus
 {-# INLINE updateSlavesStep #-}
 updateSlavesStep :: forall m input output.
      (MonadThrow m, MonadLogger m, MonadIO m)
-  => Int -- ^ Max batch size
+  => Maybe (IORef MasterProfiling)
+  -> Int -- ^ Max batch size
   -> HMS.HashMap StateId [(StateId, input)]  -- we need lookup here, so this should be a 'HashMap'
   -> SlaveId
   -> UpdateSlaveResp output
   -> SlavesStatus
   -> m (UpdateSlaveStep input output)
-updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
+updateSlavesStep mp maxBatchSize inputs respSlaveId resp statuses0 = withProfiling mp mpUpdateSlavesStep $ do
   let statuses1 = over (at respSlaveId . _Just . ssWaitingResps) (\c -> c - 1) statuses0
   (statuses2, requests, outputs) <- case resp of
     USRespInit -> do
@@ -355,7 +364,8 @@ data MasterLoopState output = MasterLoopState
 updateSlaves :: forall state context input output m.
      (MonadConnect m, NFData input, NFData output
      , S.Store state, S.Store context, S.Store input, S.Store output)
-  => Int -- ^ Max batch size
+  => Maybe (IORef MasterProfiling)
+  -> Int -- ^ Max batch size
   -> HMS.HashMap SlaveId (Slave m state context input output)
   -- ^ Slaves connections
   -> context
@@ -363,7 +373,7 @@ updateSlaves :: forall state context input output m.
   -> HMS.HashMap StateId [(StateId, input)]
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
-updateSlaves maxBatchSize slaves context inputMap = do
+updateSlaves mp maxBatchSize slaves context inputMap = withProfiling mp mpUpdateSlaves $ do
   let slaveStatus0 slave = SlaveStatus
         { _ssWaitingResps = 1 -- The init
         , _ssRemainingStates = HMS.keys (slaveStates slave)
@@ -392,7 +402,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
       -> m ()
     masterLoopEntry swc masterLoopStateRef masterLoopDone = do
       mls <- readIORef masterLoopStateRef
-      mls' <- masterLoop swc mls
+      mls' <- withProfiling mp mpMasterLoop $ masterLoop swc mls
       writeIORef masterLoopStateRef mls'
       when (mlsNumActiveSlaves mls' == 0) $
       -- unless done $
@@ -411,12 +421,13 @@ updateSlaves maxBatchSize slaves context inputMap = do
         case cont0 of
             S.Done (S.Message _resp) -> error "updateSlaves.masterLoop: unexpected Done continuation."
             S.NeedMoreInput cont -> do
-                bs <- scRead swcConn
+                bs <- withProfiling mp mpReceive $ scRead swcConn
                 cont bs >>= \case
                     (S.NeedMoreInput cont') -> do
                         writeIORef swcCont (Just cont')
                         return mls
-                    S.Done (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
+                    S.Done (S.Message resp) -> withProfiling mp mpHandleResponse $
+                        handleResponse statuses outputs nActiveSlaves swc resp
 
     handleResponse statuses outputs nActiveSlaves swc@SlaveWithConnection{..} resp = do
         resp' <- case resp of
@@ -430,7 +441,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
               return (USRespRemoveStates requestingSlaveId removedStates)
             SRespUpdate outputs_ -> return (USRespUpdate outputs_)
             SRespGetProfile _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
-        UpdateSlaveStep requests statuses' newOutputs <- updateSlavesStep maxBatchSize inputMap swcSlaveId resp' statuses
+        UpdateSlaveStep requests statuses' newOutputs <- updateSlavesStep mp maxBatchSize inputMap swcSlaveId resp' statuses
         forM_ requests sendRequest
         let status = statuses' HMS.! swcSlaveId
             outputs' = HMS.insertWith (<>) swcSlaveId newOutputs outputs
@@ -447,11 +458,11 @@ updateSlaves maxBatchSize slaves context inputMap = do
                 let mls = MasterLoopState statuses' outputs' nActiveSlaves'
                 return mls
 
-    doPeek conn = S.peekMessage (scByteBuffer conn)
+    doPeek conn = withProfiling mp mpDecode $ S.peekMessage (scByteBuffer conn)
         `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("updateSlaves: " ++) . show $ ex)
 
     sendRespInit statuses slaveId = do
-        UpdateSlaveStep{..} <- updateSlavesStep maxBatchSize inputMap slaveId USRespInit statuses
+        UpdateSlaveStep{..} <- updateSlavesStep mp maxBatchSize inputMap slaveId USRespInit statuses
         forM_ ussReqs sendRequest
         return ussSlavesStatus
 
@@ -462,7 +473,7 @@ updateSlaves maxBatchSize slaves context inputMap = do
                       USReqAddStates y -> SReqAddStates y
             conn = slaveConnection (slaves HMS.! slaveId)
         $logDebugJ ("Sending request to slave " ++ tshow (unSlaveId slaveId) ++ ": " ++ displayReq req')
-        scEncodeAndWrite conn req'
+        withProfiling mp mpSend $ scEncodeAndWrite conn req'
 
 -- | Send an update request to all the slaves. This will cause each of
 -- the slaves to apply 'Distributed.Stateful.Slave.saUpdate' to each of its states. The outputs of
@@ -516,7 +527,8 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
               liftM (slaveId,) $ readExpect "update (1)" (slaveConnection (slaves HMS.! slaveId)) $ \case
                 (SRespUpdate outputs :: SlaveResp state output) -> Just outputs
                 _ -> Nothing
-          Just maxBatchSize -> updateSlaves maxBatchSize slaves context inputMap
+          Just maxBatchSize -> withProfiling (mhProfiling mh) mpTotalUpdate $
+              updateSlaves (mhProfiling mh) maxBatchSize slaves context inputMap
       let mh' = mh
             { mhSlaves = Slaves $
                 integrateNewStates slaves (second (fmap (const ()) . HMS.fromList . mconcat . map snd) <$> outputs)
@@ -632,6 +644,7 @@ getStates (MasterHandle mhv) = withMVar mhv $ \mh -> do
           _ -> Nothing
       return (HMS.fromList $ mconcat responses)
 
+-- | Retrieves performance profiling data for each slave.
 getSlavesProfiling :: forall m state context input output.
        (MonadConnect m, S.Store state, S.Store context, S.Store input, S.Store output)
     => MasterHandle m state context input output
@@ -645,6 +658,33 @@ getSlavesProfiling (MasterHandle mhv) = withMVar mhv $ \mh ->
                 readExpect "getSlavesProfiling" (slaveConnection slave) $ \case
                     (SRespGetProfile sp :: SlaveResp state output) -> return sp
                     _ -> Nothing
+
+-- | Retrieves performance profiling data for the master.
+getMasterProfilng ::
+       MonadConnect m
+    => MasterHandle m state context input output
+    -> m (Maybe MasterProfiling)
+getMasterProfilng (MasterHandle mhv) = readMVar mhv >>= \mh ->
+    case mhProfiling mh of
+        Nothing -> return Nothing
+        Just mp -> Just <$> readIORef mp
+
+-- | Retrieves performance profiling data for the whole computation, master and slaves.
+--
+-- The profiling data for the slaves is summed.
+getProfiling :: forall m state context input output.
+       (MonadConnect m, S.Store state, S.Store context, S.Store input, S.Store output)
+    => MasterHandle m state context input output
+    -> m (Maybe Profiling)
+getProfiling mhandle@(MasterHandle mhv) = readMVar mhv >>= \mh ->
+    case mhProfiling mh of
+        Nothing -> return Nothing
+        Just mpref -> do
+            sp <- catMaybes . HMS.elems <$> getSlavesProfiling mhandle >>= \case
+                [] -> return Nothing
+                sp:sps -> return . Just $ foldl' (<>) sp sps
+            mp <- readIORef mpref
+            return . Just $ Profiling mp sp
 
 -- | Get the number of slaves connected to a master.
 getNumSlaves ::

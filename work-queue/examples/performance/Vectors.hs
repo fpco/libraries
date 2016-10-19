@@ -29,7 +29,6 @@ import           Distributed.JobQueue.Client
 import           Distributed.Stateful
 import           Distributed.Stateful.Master
 import           FP.Redis (MonadConnect)
-import           PerformanceUtils
 import           TypeHash.Orphans ()
 
 type Request = [State]

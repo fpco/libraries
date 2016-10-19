@@ -62,13 +62,12 @@ module Distributed.Stateful
     , runPureStatefulSlave
     , runSimplePureStateful
     , ProfilingColumns
-    , slaveProfilingColumns
+    , mProfilingColumns
     ) where
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
-import qualified Data.HashMap.Strict as HMS
 import           Distributed.Heartbeat
 import           Distributed.Stateful.Slave
 import           Distributed.Stateful.Internal
@@ -160,7 +159,7 @@ runSimplePureStateful :: forall m context input state output a.
     => MasterArgs m state context input output
     -> Int -- ^ Desired slaves. Must be >= 0
     -> (MasterHandle m state context input output -> m a)
-    -> m (a, Maybe SlaveProfiling)
+    -> m (a, Maybe Profiling)
 runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
     then fail "runSimplePureStateful: slavesNum0 < 0"
     else do
@@ -177,13 +176,11 @@ runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
 addSlaveProfiling ::
     (MonadConnect m, Store state, Store context, Store input, Store output)
     => (MasterHandle m state context input output -> m a)
-    -> (MasterHandle m state context input output -> m (a, Maybe SlaveProfiling))
+    -> (MasterHandle m state context input output -> m (a, Maybe Profiling))
 addSlaveProfiling cont mh = do
     res <- cont mh
-    sp <- catMaybes . HMS.elems <$> getSlavesProfiling mh >>= \case
-        [] -> return Nothing
-        sp:sps -> return . Just $ foldl' (<>) sp sps
-    return (res, sp)
+    prof <- getProfiling mh
+    return (res, prof)
 
 nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> StatefulConn m a b
 nmStatefulConn ad = StatefulConn
@@ -239,7 +236,7 @@ runNMStatefulMaster :: forall m state output input context b.
     -- of slaves is reached. It'll never return if there is no maximum. This is useful
     -- if for example we're requesting the slaves with the RequestSlaves and we want
     -- to stop.
-    -> m (Maybe (b, Maybe SlaveProfiling))
+    -> m (Maybe (b, Maybe Profiling))
     -- ^ 'Nothing' if we ran out of time waiting for slaves.
 runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
     case nmsmaMinimumSlaves of
@@ -269,7 +266,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = do
             if added
                 then readMVar doneVar
                 else $logWarnJ ("Slave tried to connect while past the number of maximum slaves" :: Text)
-    let server :: m (Maybe (b, Maybe SlaveProfiling))
+    let server :: m (Maybe (b, Maybe Profiling))
         server = do
             let waitForMaxSlaves n = atomically $ do
                     connected <- readTVar slavesConnectedVar
@@ -304,7 +301,7 @@ runSimpleNMStateful :: forall m state input output context a.
     -> MasterArgs m state context input output
     -> Int -- ^ Desired slaves
     -> (MasterHandle m state context input output -> m a)
-    -> m (a, Maybe SlaveProfiling)
+    -> m (a, Maybe Profiling)
 runSimpleNMStateful host ma numSlaves cont = do
     when (numSlaves < 0) $
         fail ("runSimpleNMStateful: numSlaves < 0 (" ++ show numSlaves ++ ")")
@@ -361,7 +358,7 @@ runRequestingStatefulMaster :: forall m state output context input b.
     -> MasterArgs m state context input output
     -> NMStatefulMasterArgs
     -> (MasterHandle m state context input output -> m b)
-    -> m (Maybe (b, Maybe SlaveProfiling))
+    -> m (Maybe (b, Maybe Profiling))
 runRequestingStatefulMaster r (heartbeatingWorkerId -> wid) ss0 host mbPort ma nmsma cont = do
     nmSettings <- defaultNMSettings
     (ss, getPort) <- liftIO (getPortAfterBind ss0)
