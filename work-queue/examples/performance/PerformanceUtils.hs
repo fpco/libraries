@@ -171,7 +171,7 @@ runWithNM fp csvInfo jqc spawnWorker masterArgs nSlaves workerFunc generateReque
 runWithoutNM ::
     ( MonadConnect m
     , Show response, NFData state, NFData input, NFData context
-    , NFData output, Store state)
+    , NFData output, Store state, Store context, Store input, Store output)
     => FilePath
     -> ProfilingColumns
     -> MasterArgs m state context input output

@@ -90,56 +90,73 @@ import qualified Data.Streaming.Network.Internal as CN
 import           Distributed.JobQueue.Worker
 import           Distributed.Types
 import           Distributed.JobQueue.MasterOrSlave
+import qualified System.IO.ByteBuffer as BB
+import           GHC.Conc (threadWaitRead)
 
 -- * Pure version, useful for testing, debugging, etc.
 -----------------------------------------------------------------------
 
 -- | Run a slave that communicates with a master via 'TMChan's.
 runPureStatefulSlave :: forall m context input state output a.
-       (MonadConnect m, NFData state, NFData output, Store state, NFData input, NFData context)
+       (MonadConnect m, NFData state, NFData output, Store state, Store context, Store output, Store input, NFData input, NFData context)
     => (context -> input -> state -> m (state, output))
     -> (SlaveConn m state context input output -> m a)
     -> m a
 runPureStatefulSlave update_ cont = do
-    reqChan :: TMChan (SlaveReq state context input) <- liftIO newTMChanIO
-    respChan :: TMChan (SlaveResp state output) <- liftIO newTMChanIO
-    let slaveConn = chanStatefulConn respChan reqChan
-    let masterConn = chanStatefulConn reqChan respChan
-    fmap snd $ Async.concurrently
-        (runSlave (SlaveArgs update_ slaveConn))
-        (finally (cont masterConn) $ atomically $ do
-            closeTMChan reqChan
-            closeTMChan respChan)
+    reqChan :: TMChan ByteString <- liftIO newTMChanIO
+    respChan :: TMChan ByteString <- liftIO newTMChanIO
+    chanStatefulConn respChan reqChan $ \slaveConn ->
+        chanStatefulConn reqChan respChan $ \masterConn ->
+            fmap snd $ Async.concurrently
+                (runSlave (SlaveArgs update_ slaveConn))
+                (finally (cont masterConn) $ atomically $ do
+                    closeTMChan reqChan
+                    closeTMChan respChan)
   where
     chanStatefulConn :: forall req resp.
-        TMChan req -> TMChan resp -> StatefulConn m req resp
-    chanStatefulConn reqChan respChan = StatefulConn
-        { scWrite = \x -> do
-            closed <- atomically $ do
-                closed <- isClosedTMChan reqChan
-                if closed
-                    then return True
-                    else do
-                        writeTMChan reqChan x
-                        return False
-            when closed $
-                fail "runPureStatefulSlave: trying to write to closed chan"
-        , scRead = do
-            mbX <- atomically $ do
-                closed <- isClosedTMChan respChan
-                if closed
-                    then return Nothing
-                    else readTMChan respChan
-            case mbX of
-                Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
-                Just x -> return x
-        }
+        TMChan ByteString -> TMChan ByteString -> (StatefulConn m req resp -> m a) -> m a
+    chanStatefulConn reqChan respChan cont = BB.with Nothing $ \bb ->
+        cont StatefulConn
+            { scWrite = \x -> do
+                closed <- atomically $ do
+                    closed <- isClosedTMChan reqChan
+                    if closed
+                        then return True
+                        else do
+                            writeTMChan reqChan x
+                            return False
+                when closed $
+                    fail "runPureStatefulSlave: trying to write to closed chan"
+            , scRead = do
+                mbX <- atomically $ do
+                    closed <- isClosedTMChan respChan
+                    if closed
+                        then return Nothing
+                        else readTMChan respChan
+                case mbX of
+                    Nothing -> fail "runPureStatefulSlave: trying to read on closed chan"
+                    Just x -> return x
+            , scRegisterCanRead = \callback cont -> do
+                let loop :: m void
+                    loop = do
+                        closed <- atomically $ do
+                            let waitUntilClosed = do
+                                    closed <- isClosedTMChan respChan
+                                    unless closed STM.retry
+                            (True <$ waitUntilClosed) <|> (False <$ void (peekTMChan respChan))
+                        unless closed $ do
+                            callback
+                            loop
+                        fail "scRegisterCanRead read input from closed channel."
+                either absurd id <$> Async.race loop cont
+            , scByteBuffer = bb
+            }
 
 -- | Run a computation, where the slaves run as separate threads
 -- within the same process, and communication is performed via
 -- 'TMChan's.
 runSimplePureStateful :: forall m context input state output a.
-       (MonadConnect m, NFData state, NFData output, Store state, NFData input, NFData context)
+       (MonadConnect m, NFData state, NFData output, Store state, Store context, Store input, Store output, NFData input, NFData context)
     => MasterArgs m state context input output
     -> Int -- ^ Desired slaves. Must be >= 0
     -> (MasterHandle m state context input output -> m a)
@@ -157,7 +174,8 @@ runSimplePureStateful ma slavesNum0 cont = if slavesNum0 < 0
           addSlaveConnection mh conn
           go mh (slavesNum - 1)
 
-addSlaveProfiling :: MonadConnect m
+addSlaveProfiling ::
+    (MonadConnect m, Store state, Store context, Store input, Store output)
     => (MasterHandle m state context input output -> m a)
     -> (MasterHandle m state context input output -> m (a, Maybe SlaveProfiling))
 addSlaveProfiling cont mh = do
@@ -169,8 +187,16 @@ addSlaveProfiling cont mh = do
 
 nmStatefulConn :: (MonadConnect m, Store a, Store b) => NMAppData a b -> StatefulConn m a b
 nmStatefulConn ad = StatefulConn
-    { scWrite = nmWrite ad
-    , scRead = nmRead ad
+    { scWrite = nmRawWrite ad
+    , scRegisterCanRead = \callback cont ->
+          let fd = nmFileDescriptor ad
+              loop = do
+                  liftIO $ threadWaitRead fd
+                  callback
+                  loop
+          in either id absurd <$> Async.race cont loop
+    , scRead = nmRawRead ad
+    , scByteBuffer = nmByteBuffer ad
     }
 
 -- | Run a slave that uses "Data.Streaming.NetworkMessage" for sending
