@@ -20,7 +20,6 @@ module PerformanceUtils ( ProfilingColumns
                         ) where
 
 import           ClassyPrelude
-import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.Mesosync.Lifted.Safe
 import           Control.DeepSeq
 import           Control.Monad.Logger
@@ -29,8 +28,7 @@ import           Criterion.Measurement
 import qualified Data.Conduit.Network as CN
 import           Data.Store (Store)
 import           Data.Store.TypeHash
-import           Data.Streaming.Process (Inherited(..), ClosedStream(..), streamingProcess, waitForStreamingProcess, ProcessExitedUnsuccessfully(..), streamingProcessHandleRaw)
-import           Data.Void
+import           Data.Streaming.Process (Inherited(..), ClosedStream(..), streamingProcess, waitForStreamingProcess, streamingProcessHandleRaw)
 import           Distributed.JobQueue.Client
 import           Distributed.JobQueue.Status
 import           Distributed.JobQueue.Worker
@@ -44,7 +42,6 @@ import           System.Environment (getExecutablePath)
 import           System.Exit (ExitCode(..))
 import           System.IO (withFile, IOMode (..))
 import           System.Process
-import           System.Process.Internals
 import           TypeHash.Orphans ()
 
 -- | Key value pairs to be written to a csv file.
@@ -66,21 +63,21 @@ withWorker :: MonadConnect m
 withWorker nSlaves mCPU cont = do
     program <- liftIO getExecutablePath
     args <- liftIO getFullArgs
-    let args' = ("--spawn-worker=" ++ show nSlaves):map unpack args
-        cp = case mCPU of
+    let args' = ("--spawn-worker=" ++ show nSlaves) : map unpack args
+    let cp = case mCPU of
             Nothing -> proc program args'
             Just n -> proc "taskset" (["-c", show n, program] ++ args')
-    (x, y, z, sph) <- streamingProcess cp
-    let cont' ClosedStream Inherited Inherited = do
-            res <- cont
-            liftIO $ terminateProcess (streamingProcessHandleRaw sph)
-            return res
-    either absurd id <$> race
-        (do waitForStreamingProcess sph >>= \case
-                ExitSuccess -> forever (threadDelay maxBound)
-                ec -> liftIO . throwIO $ ProcessExitedUnsuccessfully cp ec
-        )
-        (cont' x y z `onException` liftIO (terminateProcess (streamingProcessHandleRaw sph)))
+    mbErr <- bracket
+      (streamingProcess cp)
+      (\(_, _, _, sph) -> liftIO $ do
+        terminateProcess (streamingProcessHandleRaw sph)
+        ec <- waitForStreamingProcess sph
+        unless (ec == ExitFailure (-15)) $
+          fail ("Unexpected exit code for worker: expected -15 (since it should have been SIGKILL'd), got " ++ show ec))
+      (\(ClosedStream, Inherited, Inherited, sph) -> race (liftIO (waitForStreamingProcess sph)) cont)
+    case mbErr of
+      Left ec -> fail ("Worker terminated unexpectedly with error code " ++ show ec)
+      Right x -> return x
 
 -- | Will spawn n+1 workers, that live as long as the given action
 -- takes. The 'NMStatefulMasterArgs' will be set to accept exactly n
