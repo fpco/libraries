@@ -122,14 +122,16 @@ data PFRequest parameter state summary input = PFRequest
 newtype PFResponse parameter = PFResponse parameter
                              deriving (Eq,Show,Generic,Store,NFData)
 
-dpfMaster :: forall m s parameter state summary input .
+dpfMaster :: forall m s parameter state summary input key.
              (MonadConnect m, RandomSource m s
              , NFData parameter, NFData state, NFData summary, NFData input
-             , Store parameter, Store state, Store summary, Store input)
+             , Store parameter, Store state, Store summary, Store input
+             , Eq key, Hashable key)
              => PFConfig parameter state summary input
              -> s
              -> PFRequest parameter state summary input
-             -> WQ.MasterHandle m (PFState parameter state summary)
+             -> WQ.MasterHandle m key
+                                  (PFState parameter state summary)
                                   (PFContext parameter state summary input)
                                   PFInput
                                   PFOutput

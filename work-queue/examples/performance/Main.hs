@@ -159,34 +159,31 @@ runBench nSlaves commonCsvInfo Options{..} =
                     , maDoProfiling = DoProfiling
                     }
             randomsrc <- newIORef (pureMT 42)
-            let master = PFilter.dpfMaster cfg randomsrc
-                request = PFilter.generateRequest pfOpts randomsrc
+            let request = PFilter.generateRequest pfOpts randomsrc
                 fp = PFilter.optOutput pfOpts
                 csvInfo = commonCsvInfo <> [("slaves", T.pack $ show nSlaves)] <> PFilter.csvInfo pfOpts
             logErrorsOrBench $
                 if optNoNetworkMessage
-                then runWithoutNM fp csvInfo masterArgs nSlaves master request
-                else runWithNM fp csvInfo PFilter.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
+                then runWithoutNM fp csvInfo masterArgs nSlaves (PFilter.dpfMaster cfg randomsrc) request
+                else runWithNM fp csvInfo PFilter.jqc optSpawnWorker optPinWorkers masterArgs nSlaves (PFilter.dpfMaster cfg randomsrc) request
         BenchVectors vOpts ->
             let masterArgs = Vectors.masterArgs vOpts
-                master = Vectors.myAction
                 request = return $ Vectors.myStates vOpts
                 fp = Vectors.optOutput vOpts
                 csvInfo = commonCsvInfo <> [("slaves", T.pack $ show nSlaves)] <> Vectors.csvInfo vOpts
             in logErrorsOrBench $
                 if optNoNetworkMessage
-                then runWithoutNM fp csvInfo masterArgs nSlaves master request
-                else runWithNM fp csvInfo PFilter.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
+                then runWithoutNM fp csvInfo masterArgs nSlaves Vectors.myAction request
+                else runWithNM fp csvInfo PFilter.jqc optSpawnWorker optPinWorkers masterArgs nSlaves Vectors.myAction request
         BenchKMeans kOpts ->
             let masterArgs = KMeans.masterArgs kOpts
-                master = KMeans.distributeKMeans
                 request = KMeans.generateRequest kOpts
                 fp = KMeans.optOutput kOpts
                 csvInfo = commonCsvInfo <> [("slaves", T.pack $ show nSlaves)] <> KMeans.csvInfo kOpts
             in logErrorsOrBench $
                    if optNoNetworkMessage
-                   then runWithoutNM fp csvInfo masterArgs nSlaves master request
-                   else runWithNM fp csvInfo KMeans.jqc optSpawnWorker optPinWorkers masterArgs nSlaves master request
+                   then runWithoutNM fp csvInfo masterArgs nSlaves KMeans.distributeKMeans request
+                   else runWithNM fp csvInfo KMeans.jqc optSpawnWorker optPinWorkers masterArgs nSlaves KMeans.distributeKMeans request
 
 purgeResults :: Options -> IO ()
 purgeResults Options{..} =

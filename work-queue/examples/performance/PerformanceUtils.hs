@@ -11,6 +11,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE RankNTypes #-}
 module PerformanceUtils ( ProfilingColumns
                         , PinWorkers (..)
                         , runWithNM
@@ -157,9 +158,7 @@ runWithNM :: forall m a context input output state request response.
     -> MasterArgs m state context input output
     -> Int
     -- ^ @nSlaves@
-    -> (request
-      -> MasterHandle m state context input output
-      -> m response)
+    -> (request -> MasterHandle m NMStatefulConnKey state context input output -> m response)
     -> m request
     -> m (Int, Double)
     -- ^ (@nSlaves@, walltime needed to perform the request)
@@ -194,9 +193,7 @@ runWithoutNM ::
     -> ProfilingColumns
     -> MasterArgs m state context input output
     -> Int
-    -> (request
-       -> MasterHandle m state context input output
-       -> m response)
+    -> (request -> MasterHandle m PureStatefulConnKey state context input output -> m response)
     -> m request
     -> m (Int, Double)
 runWithoutNM fp csvInfo masterArgs nSlaves masterFunc generateRequest = do

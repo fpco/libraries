@@ -27,7 +27,7 @@
 ## - adjust the following line to match the first 8 digits of the
 ##   commit hash you want to compare performance against.
 ##
-masterHash <- "ba02e697"
+masterHash <- "ec2f5ea6"
 masterText <- paste("master (", masterHash, ")")
 ##
 ## - Use R to run this file, as in
