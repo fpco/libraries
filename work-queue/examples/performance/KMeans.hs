@@ -190,11 +190,7 @@ distributeKMeans Request{..} mh = do
           distrib (n-1) clusters'
 
 masterArgs :: MonadConnect m => Options -> MasterArgs m State Context Input Output
-masterArgs opts = MasterArgs
-    { maMaxBatchSize = Just 5
-    , maUpdate = updateFn opts
-    , maDoProfiling = DoProfiling
-    }
+masterArgs opts = (defaultMasterArgs (updateFn opts)) { maDoProfiling = DoProfiling }
 
 instance MonadLogger m => MonadLogger (RandT StdGen m) where
     monadLoggerLog a b c d = Trans.lift $ monadLoggerLog a b c d

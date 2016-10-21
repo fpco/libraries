@@ -85,8 +85,8 @@ performSimpleTest initialStates mh = do
         return (Input count)
     testUpdate mh inputs
 
-testMasterArgs :: forall m. (MonadConnect m) => Maybe (Int, Int) -> Int -> MasterArgs m State () Input Output
-testMasterArgs mbDelay n = (defaultMasterArgs f) { maMaxBatchSize = Just n, maDoProfiling = DoProfiling }
+testMasterArgs :: forall m. (MonadConnect m) => Maybe (Int, Int) -> MasterArgs m State () Input Output
+testMasterArgs mbDelay = (defaultMasterArgs f) { maDoProfiling = DoProfiling }
   where
     f :: () -> Input -> State -> m (State, Output)
     f _ input (State inputs) = do
@@ -98,18 +98,18 @@ testMasterArgs mbDelay n = (defaultMasterArgs f) { maMaxBatchSize = Just n, maDo
 genericSpec :: (forall m. (MonadConnect m) => Runner m) -> Spec
 genericSpec runner = do
   loggingIt "Passes simple comparison with pure implementation (no slaves)" $ do
-    ((), mprof) <- runner (testMasterArgs (Just delay) 2) 0 (performSimpleTest 10)
+    ((), mprof) <- runner (testMasterArgs (Just delay)) 0 (performSimpleTest 10)
     mprof `shouldSatisfy` \case
         Just (Profiling _ Nothing) -> True
         _ -> False
   loggingIt "Passes simple comparison with pure implementation (one slave)" $ do
-    ((), mprof) <- runner (testMasterArgs (Just delay) 2) 1 (performSimpleTest 10)
+    ((), mprof) <- runner (testMasterArgs (Just delay)) 1 (performSimpleTest 10)
     checkDelay mprof
   loggingIt "Passes simple comparison with pure implementation (10 slaves)" $ do
-    ((), mprof) <- runner (testMasterArgs (Just delay) 3) 10 (performSimpleTest 100)
+    ((), mprof) <- runner (testMasterArgs (Just delay)) 10 (performSimpleTest 100)
     checkDelay mprof
   stressfulTest $ loggingIt "Passes simple comparison with pure implementation (50 slaves)" $ do
-    ((), mprof) <- runner (testMasterArgs (Just delay) 5) 50 (performSimpleTest 1000)
+    ((), mprof) <- runner (testMasterArgs (Just delay)) 50 (performSimpleTest 1000)
     checkDelay mprof
   where
     delay = (10, 500) :: (Int, Int)
@@ -136,7 +136,7 @@ spec = do
             }
           worker :: forall void m. (MonadConnect m) => m void
           worker =
-            runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing 5) nmsma $
+            runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing) nmsma $
               \mh _reqId () -> do
                 nSlaves <- waitForHUnitPass upToAMinute $ do
                   n <- getNumSlaves mh
@@ -181,7 +181,7 @@ fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do
   numSlavesAtShutdownRef :: IORef (HMS.HashMap RequestId Int) <- newIORef mempty
   let worker :: forall void m. (MonadConnect m) => m void
       worker =
-        runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs mbDelay 5) nmsma $
+        runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs mbDelay) nmsma $
           \mh reqId () -> do
             numSlaves <- getNumSlaves mh
             atomicModifyIORef' numSlavesAtStartupRef (\sl -> (HMS.insert reqId numSlaves sl, ()))

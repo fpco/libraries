@@ -59,7 +59,9 @@ library
                      , mtl
                      , network
                      , optparse-applicative >= 0.11
-                     , redis-fp , retry
+                     , random
+                     , redis-fp
+                     , retry
                      , safe
                      , semigroups
                      , split
