@@ -59,7 +59,7 @@ module Distributed.Stateful.Master
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Lens (makeLenses, set, at, _Just, over)
-import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logErrorJ, logDebugJ)
+import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -73,8 +73,8 @@ import qualified Data.Store as S
 import qualified Data.Store.Streaming as S
 import           Control.Monad.Trans.Free (FreeT, runFreeT, FreeF(..))
 import           Control.Monad.Trans.Free.Church (fromFT)
-import           System.IO (hSetBuffering, BufferMode(..))
 import qualified Data.Vector as V
+import           Control.Exception.Lifted (evaluate)
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -267,14 +267,13 @@ makeLenses ''SlaveStatus
 {-# INLINE updateSlavesStep #-}
 updateSlavesStep :: forall m input output.
      (MonadThrow m, MonadLogger m, MonadIO m)
-  => Maybe (IORef MasterProfiling)
-  -> Int -- ^ Max batch size
+  => Int -- ^ Max batch size
   -> HMS.HashMap StateId [(StateId, input)]  -- we need lookup here, so this should be a 'HashMap'
   -> SlaveId
   -> UpdateSlaveResp output
   -> SlavesStatus
   -> m (UpdateSlaveStep input output)
-updateSlavesStep mp maxBatchSize inputs respSlaveId resp statuses0 = withProfiling mp mpUpdateSlavesStep $ do
+updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
   let statuses1 = over (at respSlaveId . _Just . ssWaitingResps) (\c -> c - 1) statuses0
   (statuses2, requests, outputs) <- case resp of
     USRespInit -> do
@@ -390,13 +389,6 @@ updateSlaves :: forall state context input output m key.
   -- ^ Inputs to the computation
   -> m [(SlaveId, [(StateId, [(StateId, output)])])]
 updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpdateSlaves $ do
-  liftIO $ hSetBuffering stdout LineBuffering
-  let slaveStatus0 slave = SlaveStatus
-        { _ssWaitingResps = 1 -- The init
-        , _ssRemainingStates = HMS.keys (slaveStates slave)
-        , _ssWaitingForStates = False
-        }
-  let statuses0 = slaveStatus0 <$> slaves
   connsHashTable :: SlavesHashTable m key state context input output <- liftIO $ HT.newSized (HMS.size slaves)
   let registerSlaves :: [(SlaveId, Slave m key state context input output)] -> m a -> m a
       registerSlaves [] cont = cont
@@ -410,13 +402,20 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
             let swc = SlaveWithConnection slaveId (slaveConnection slave) contRef
             liftIO $ HT.insert connsHashTable (scConnKey conn) swc
             registerSlaves slaves_ cont)
-  registerSlaves (HMS.toList slaves) $ do
-    statuses1 <- foldM sendRespInit statuses0 (HMS.keys slaves)
+  withProfilingCont mp mpRegisterSlaves $ \regSlavesEnd -> registerSlaves (HMS.toList slaves) $ regSlavesEnd $ do
+    statuses1 <- withProfiling mp mpInitializeSlaves $ do
+      let slaveStatus0 slave = SlaveStatus
+            { _ssWaitingResps = 1 -- The init
+            , _ssRemainingStates = HMS.keys (slaveStates slave)
+            , _ssWaitingForStates = False
+            }
+      let statuses0 = slaveStatus0 <$> slaves
+      foldM sendRespInit statuses0 (HMS.keys slaves)
     let loop1 !mls0 = do
           let loop2 !mls = \case
                 [] -> loop1 mls
                 (key, _) : evts -> do
-                  mbSwc <- liftIO $ HT.lookup connsHashTable key
+                  mbSwc <- withProfiling mp mpGetSlaveConnection $ liftIO $ HT.lookup connsHashTable key
                   swc <- case mbSwc of
                     Nothing -> fail "Couldn't find slave in map!"
                     Just swc -> return swc
@@ -436,7 +435,7 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
       -> MasterLoopState output
       -> m (Either (MasterLoopState output) ([(SlaveId, [(StateId, [(StateId, output)])])]))
     masterLoopEntry swc mls = do
-      mls' <- withProfiling mp mpMasterLoop $ masterLoop swc mls
+      mls' <- masterLoop swc mls
       return $ if (mlsNumActiveSlaves mls' == 0)
         then Right (HMS.toList (mlsOutputs mls'))
         else Left mls'
@@ -449,36 +448,39 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
       then return mls
       else do
         cont <- readIORef swcCont
-        runDecodeFreeT (cont S.ReadMoreData) >>= \case
+        withProfiling mp mpReceive (runDecodeFreeT (cont S.ReadMoreData)) >>= \case
           Free cont' -> do
             writeIORef swcCont cont'
             return mls
-          Pure (S.Message resp) -> withProfiling mp mpHandleResponse $ do
+          Pure (S.Message resp) ->
             handleResponse statuses outputs nActiveSlaves swc resp
 
     handleResponse statuses outputs nActiveSlaves swc@SlaveWithConnection{..} resp = do
-        resp' <- case resp of
-            SRespInit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
-            SRespResetState -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
-            SRespGetStates _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
-            SRespQuit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
-            SRespError err -> throwIO (ExceptionFromSlave err)
-            SRespAddStates addedStates -> return (USRespAddStates addedStates)
-            SRespRemoveStates requestingSlaveId removedStates ->
-              return (USRespRemoveStates requestingSlaveId removedStates)
-            SRespUpdate outputs_ -> return (USRespUpdate outputs_)
-            SRespGetProfile _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
-        UpdateSlaveStep requests statuses' newOutputs <- updateSlavesStep mp maxBatchSize inputMap swcSlaveId resp' statuses
+        UpdateSlaveStep requests statuses' newOutputs <- withProfiling mp mpUpdateState $ do
+          resp' <- case resp of
+              SRespInit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
+              SRespResetState -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
+              SRespGetStates _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
+              SRespQuit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
+              SRespError err -> throwIO (ExceptionFromSlave err)
+              SRespAddStates addedStates -> return (USRespAddStates addedStates)
+              SRespRemoveStates requestingSlaveId removedStates ->
+                return (USRespRemoveStates requestingSlaveId removedStates)
+              SRespUpdate outputs_ -> return (USRespUpdate outputs_)
+              SRespGetProfile _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
+          updateSlavesStep maxBatchSize inputMap swcSlaveId resp' statuses
         forM_ requests sendRequest
-        let status = statuses' HMS.! swcSlaveId
-            outputs' = HMS.insertWith (<>) swcSlaveId newOutputs outputs
-        nActiveSlaves' <- if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
-                            then do
-                                $logInfoJ ("Slave " ++ tshow (unSlaveId swcSlaveId) ++ " is done")
-                                return (nActiveSlaves - 1)
-                         else return nActiveSlaves
+        (outputs', nActiveSlaves') <- withProfiling mp mpUpdateOutputs $ do
+          let status = statuses' HMS.! swcSlaveId
+          outputs' <- evaluate $ HMS.insertWith (<>) swcSlaveId newOutputs outputs
+          nActiveSlaves' <- if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
+            then do
+              $logInfoJ ("Slave " ++ tshow (unSlaveId swcSlaveId) ++ " is done")
+              evaluate (nActiveSlaves - 1)
+            else evaluate nActiveSlaves
+          evaluate (outputs', nActiveSlaves')
         -- see if we can decode another message from the chunk we read
-        doPeek swcConn >>= \case
+        withProfiling mp mpReceive (doPeek swcConn) >>= \case
             Pure (S.Message newResp) -> do
               handleResponse statuses' outputs' nActiveSlaves' swc newResp
             Free cont' -> do
@@ -486,7 +488,7 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
                 let mls = MasterLoopState statuses' outputs' nActiveSlaves'
                 return mls
 
-    runDecodeFreeT x = withProfiling mp mpDecode $
+    runDecodeFreeT x =
       runFreeT x
       `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("updateSlaves: " ++) . show $ ex)
 
@@ -498,7 +500,7 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
       runDecodeFreeT (fromFT (S.peekMessage (\bs n _ -> withProfiling mp mpReceive (scFillByteBuffer conn bs n ())) (scByteBuffer conn)))
 
     sendRespInit statuses slaveId = do
-        UpdateSlaveStep{..} <- updateSlavesStep mp maxBatchSize inputMap slaveId USRespInit statuses
+        UpdateSlaveStep{..} <- withProfiling mp mpUpdateState $ updateSlavesStep maxBatchSize inputMap slaveId USRespInit statuses
         forM_ ussReqs sendRequest
         return ussSlavesStatus
 
@@ -509,8 +511,8 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
                       USReqUpdate inputs -> SReqUpdate context inputs
                       USReqRemoveStates x y -> SReqRemoveStates x y
                       USReqAddStates y -> SReqAddStates y
-            conn = slaveConnection (slaves HMS.! slaveId)
-        withProfiling mp mpSend $ scEncodeAndWrite conn req'
+        slave <- withProfiling mp mpGetSlave $ evaluate (slaves HMS.! slaveId)
+        withProfiling mp mpSend $ scEncodeAndWrite (slaveConnection slave) req'
 
 -- | Send an update request to all the slaves. This will cause each of
 -- the slaves to apply 'Distributed.Stateful.Slave.saUpdate' to each of its states. The outputs of
@@ -530,7 +532,7 @@ update :: forall state context input output m key.
   -> context
   -> HMS.HashMap StateId [input]
   -> m (HMS.HashMap StateId (HMS.HashMap StateId output))
-update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
+update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> withProfiling (mhProfiling mh) mpUpdate $ do
   -- TODO add checks for well-formedness of inputs'
   -- Give state ids to each of the inputs, which will be used to label the
   -- state resulting from invoking saUpdate with that input.
@@ -564,7 +566,7 @@ update (MasterHandle mv) context inputs0 = modifyMVar mv $ \mh -> do
               liftM (slaveId,) $ readExpect "update (1)" (slaveConnection (slaves HMS.! slaveId)) $ \case
                 (SRespUpdate outputs :: SlaveResp state output) -> Just outputs
                 _ -> Nothing
-          Just maxBatchSize -> withProfiling (mhProfiling mh) mpTotalUpdate $
+          Just maxBatchSize ->
               updateSlaves (mhProfiling mh) (mhEventManager mh) maxBatchSize slaves context inputMap
       let mh' = mh
             { mhSlaves = Slaves $

@@ -27,7 +27,7 @@
 ## - adjust the following line to match the first 8 digits of the
 ##   commit hash you want to compare performance against.
 ##
-masterHash <- "ec2f5ea6"
+masterHash <- "9cf1b6f9"
 masterText <- paste("master (", masterHash, ")")
 ##
 ## - Use R to run this file, as in
@@ -59,7 +59,7 @@ timings$phi0 <- as.factor(timings$phi0)
 timings$resample_threshold <- as.factor(timings$resample_threshold)
 levels(timings$commit)[levels(timings$commit)==masterHash] <- masterText
 timings$slaveWorkFraction <- timings$spWorkWall/(timings$spWorkWall + timings$spReceiveWall + timings$spSendWall)
-profiling <- gather(timings, action, t, spReceiveWall:mpReceiveCount
+profiling <- gather(timings, action, t, spReceiveWall:mpSendCount
                   , na.rm = TRUE
                   , factor_key=TRUE)
 
