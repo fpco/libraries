@@ -69,8 +69,6 @@ import           Network.Socket (socketPort, fdSocket)
 import           System.Executable.Hash (executableHash)
 import           System.Posix.Types (Fd (..))
 import           FP.Redis (MonadConnect)
-import           Control.Monad.Trans.Free.Church (fromFT)
-import           Control.Monad.Trans.Free (runFreeT, FreeF(..))
 
 -- | Exceptions specific to "Data.Streaming.NetworkMessage".
 data NetworkMessageException

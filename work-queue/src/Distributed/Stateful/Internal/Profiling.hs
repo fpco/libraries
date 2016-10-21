@@ -88,20 +88,22 @@ instance Semigroup SlaveProfiling where
 
 -- | Profiling data for the master
 data MasterProfiling = MasterProfiling
-    { _mpTotalUpdate      :: !ProfilingCounter
-    , _mpUpdateSlaves     :: !ProfilingCounter
-    , _mpUpdateSlavesStep :: !ProfilingCounter
-    , _mpSend             :: !ProfilingCounter
-    , _mpMasterLoop       :: !ProfilingCounter
-    , _mpHandleResponse   :: !ProfilingCounter
-    , _mpDecode           :: !ProfilingCounter
-    , _mpReceive          :: !ProfilingCounter
-    , _mpWait             :: !ProfilingCounter
+    { _mpUpdate :: !ProfilingCounter
+    , _mpUpdateSlaves :: !ProfilingCounter
+    , _mpRegisterSlaves :: !ProfilingCounter
+    , _mpInitializeSlaves :: !ProfilingCounter
+    , _mpGetSlaveConnection :: !ProfilingCounter
+    , _mpGetSlave :: !ProfilingCounter
+    , _mpWait :: !ProfilingCounter
+    , _mpReceive :: !ProfilingCounter
+    , _mpUpdateState :: !ProfilingCounter
+    , _mpUpdateOutputs :: !ProfilingCounter
+    , _mpSend :: !ProfilingCounter
     } deriving (Eq, Generic, Show, Store)
 makeLenses ''MasterProfiling
 
 emptyMasterProfiling :: MasterProfiling
-emptyMasterProfiling = MasterProfiling mempty mempty mempty mempty mempty mempty mempty mempty mempty
+emptyMasterProfiling = MasterProfiling mempty mempty mempty mempty mempty mempty mempty mempty mempty mempty mempty
 
 -- | Profiling data for a Stateful computation.
 data Profiling = Profiling
@@ -134,6 +136,27 @@ withProfiling (Just ref) l action = do
                              & l . pcCount +~ 1
 {-# INLINE withProfiling #-}
 
+withProfilingCont :: forall b c m. (MonadIO m)
+    => Maybe (IORef b)
+    -> Lens' b ProfilingCounter
+    -> ((forall a. m a -> m a) -> m c)
+    -> m c
+withProfilingCont Nothing _ action = action id
+withProfilingCont (Just ref) l action = do
+    tw0 <- liftIO getTime
+    tcpu0 <- liftIO getCPUTime
+    action $ \cont -> do
+        tw1 <- liftIO getTime
+        tcpu1 <- liftIO getCPUTime
+        liftIO . modifyIORef' ref $ update (tw1 - tw0) (tcpu1 - tcpu0)
+        cont         
+  where
+      update :: Double -> Double -> b -> b
+      update tw tcpu sp = sp & l . pcWallTime +~ tw
+                             & l . pcCPUTime +~ tcpu
+                             & l . pcCount +~ 1
+{-# INLINE withProfilingCont #-}
+
 -- | Representation of profiling data to store in CSV files.
 --
 -- Each tuple has the name and the printed representation of the
@@ -163,15 +186,17 @@ slaveProfilingColumns SlaveProfiling{..} = concat
 
 masterProfilingColumns :: MasterProfiling -> ProfilingColumns
 masterProfilingColumns MasterProfiling{..} = concat
-    [ profilingCounterColumns "mpTotalUpdate" _mpTotalUpdate
+    [ profilingCounterColumns "mpUpdate" _mpUpdate
     , profilingCounterColumns "mpUpdateSlaves" _mpUpdateSlaves
-    , profilingCounterColumns "mpUpdateSlavesStep" _mpUpdateSlavesStep
-    , profilingCounterColumns "mpSend" _mpSend
-    , profilingCounterColumns "mpMasterLoop" _mpMasterLoop
-    , profilingCounterColumns "mpHandleResponse" _mpHandleResponse
-    , profilingCounterColumns "mpDecode" _mpDecode
-    , profilingCounterColumns "mpReceive" _mpReceive
+    , profilingCounterColumns "mpRegisterSlaves" _mpRegisterSlaves
+    , profilingCounterColumns "mpInitializeSlaves" _mpInitializeSlaves
+    , profilingCounterColumns "mpGetSlaveConnection" _mpGetSlaveConnection
+    , profilingCounterColumns "mpGetSlave" _mpGetSlave
     , profilingCounterColumns "mpWait" _mpWait
+    , profilingCounterColumns "mpReceive" _mpReceive
+    , profilingCounterColumns "mpUpdateState" _mpUpdateState
+    , profilingCounterColumns "mpUpdateOutputs" _mpUpdateOutputs
+    , profilingCounterColumns "mpSend" _mpSend
     ]
 
 mProfilingColumns :: Maybe Profiling -> ProfilingColumns
