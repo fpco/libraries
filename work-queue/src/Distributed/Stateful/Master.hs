@@ -373,7 +373,7 @@ data MasterLoopState output = MasterLoopState
   }
 
 type SlavesHashTable m key state context input output =
-  HT.LinearHashTable key (SlaveWithConnection m key state context input output)
+  HT.BasicHashTable key (SlaveWithConnection m key state context input output)
 
 {-# INLINE updateSlaves #-}
 updateSlaves :: forall state context input output m key.

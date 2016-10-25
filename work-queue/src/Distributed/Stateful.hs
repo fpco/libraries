@@ -116,7 +116,7 @@ data PureStatefulConn = PureStatefulConn
 
 data PureStatefulConnBookkeping = PureStatefulConnBookkeping
     { pscbCounter :: !(IORef Int64)
-    , psbcConns :: !(HT.LinearHashTable PureStatefulConnKey PureStatefulConn)
+    , psbcConns :: !(HT.BasicHashTable PureStatefulConnKey PureStatefulConn)
     }
 
 newtype PureStatefulConnKey = PureStatefulConnKey Int64
@@ -131,7 +131,7 @@ withPureStatefulConnManager ::
        (MonadConnect m)
     => (EventManager m PureStatefulConnKey -> m a) -> m a
 withPureStatefulConnManager cont = do
-    ht :: HT.LinearHashTable PureStatefulConnKey EventType <- liftIO HT.new
+    ht :: HT.BasicHashTable PureStatefulConnKey EventType <- liftIO HT.new
     cont EventManager
         { emControl = \k et -> liftIO (HT.insert ht k et)
         , emControlDelete = \k -> liftIO (HT.delete ht k)
