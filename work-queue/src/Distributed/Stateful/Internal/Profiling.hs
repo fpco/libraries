@@ -59,17 +59,20 @@ data SlaveProfiling = SlaveProfiling
     , _spWork           :: !ProfilingCounter
     , _spSend           :: !ProfilingCounter
     , _spStatefulUpdate :: !ProfilingCounter
-    , _spHTLookups      :: !ProfilingCounter
-    , _spHTInserts      :: !ProfilingCounter
-    , _spHTDeletes      :: !ProfilingCounter
-    , _spHTFromList     :: !ProfilingCounter
-    , _spHTToList       :: !ProfilingCounter
     , _spUpdate         :: !ProfilingCounter
+    , _spReceiveInit :: !ProfilingCounter
+    , _spReceiveResetState :: !ProfilingCounter
+    , _spReceiveAddStates :: !ProfilingCounter
+    , _spReceiveRemoveStates :: !ProfilingCounter
+    , _spReceiveUpdate :: !ProfilingCounter
+    , _spReceiveGetStates :: !ProfilingCounter
+    , _spReceiveGetProfile :: !ProfilingCounter
+    , _spReceiveQuit :: !ProfilingCounter
     } deriving (Eq, Show, Generic, NFData, Store)
 makeLenses ''SlaveProfiling
 
 emptySlaveProfiling :: SlaveProfiling
-emptySlaveProfiling = SlaveProfiling mempty mempty mempty mempty mempty mempty mempty mempty mempty mempty
+emptySlaveProfiling = SlaveProfiling mempty mempty mempty mempty mempty mempty mempty mempty mempty mempty mempty mempty mempty
 
 -- combine profiling data from multiple slaves by summing
 instance Semigroup SlaveProfiling where
@@ -78,12 +81,15 @@ instance Semigroup SlaveProfiling where
         , _spWork = view spWork sp <> view spWork sp'
         , _spSend = view spSend sp <> view spSend sp'
         , _spStatefulUpdate = view spStatefulUpdate sp <> view spStatefulUpdate sp'
-        , _spHTLookups = view spHTLookups sp <> view spHTLookups sp'
-        , _spHTInserts = view spHTInserts sp <> view spHTInserts sp'
-        , _spHTDeletes = view spHTDeletes sp <> view spHTDeletes sp'
-        , _spHTFromList = view spHTFromList sp <> view spHTFromList sp'
-        , _spHTToList = view spHTToList sp <> view spHTToList sp'
         , _spUpdate = view spUpdate sp <> view spUpdate sp'
+        , _spReceiveInit = view spReceiveInit sp <> view spReceiveInit sp'
+        , _spReceiveResetState = view spReceiveResetState sp <> view spReceiveResetState sp'
+        , _spReceiveAddStates = view spReceiveAddStates sp <> view spReceiveAddStates sp'
+        , _spReceiveRemoveStates = view spReceiveRemoveStates sp <> view spReceiveRemoveStates sp'
+        , _spReceiveUpdate = view spReceiveUpdate sp <> view spReceiveUpdate sp'
+        , _spReceiveGetStates = view spReceiveGetStates sp <> view spReceiveGetStates sp'
+        , _spReceiveGetProfile = view spReceiveGetProfile sp <> view spReceiveGetProfile sp'
+        , _spReceiveQuit = view spReceiveQuit sp <> view spReceiveQuit sp'
         }
 
 -- | Profiling data for the master
@@ -157,6 +163,27 @@ withProfilingCont (Just ref) l action = do
                              & l . pcCount +~ 1
 {-# INLINE withProfilingCont #-}
 
+withProfilingNamed :: forall a b m. MonadIO m
+    => Maybe (IORef b)
+    -> m (ALens' b ProfilingCounter, a)
+    -> m a
+withProfilingNamed Nothing action = snd <$> action
+withProfilingNamed (Just ref) action = do
+    tw0 <- liftIO getTime
+    tcpu0 <- liftIO getCPUTime
+    (l, res) <- action
+    tw1 <- liftIO getTime
+    tcpu1 <- liftIO getCPUTime
+    liftIO . modifyIORef' ref $ update (cloneLens l) (tw1 - tw0) (tcpu1 - tcpu0)
+    return res
+  where
+      update :: Lens' b ProfilingCounter -> Double -> Double -> b -> b
+      update l tw tcpu sp = sp & l . pcWallTime +~ tw
+                               & l . pcCPUTime +~ tcpu
+                               & l . pcCount +~ 1
+{-# INLINE withProfilingNamed #-}
+
+
 -- | Representation of profiling data to store in CSV files.
 --
 -- Each tuple has the name and the printed representation of the
@@ -176,12 +203,15 @@ slaveProfilingColumns SlaveProfiling{..} = concat
     , profilingCounterColumns "spWork" _spWork
     , profilingCounterColumns "spSend" _spSend
     , profilingCounterColumns "spStatefulUpdate" _spStatefulUpdate
-    , profilingCounterColumns "spHTLookups" _spHTLookups
-    , profilingCounterColumns "spHTInserts" _spHTInserts
-    , profilingCounterColumns "spHTDeletes" _spHTDeletes
-    , profilingCounterColumns "spHTFromList" _spHTFromList
-    , profilingCounterColumns "spHTToList" _spHTToList
     , profilingCounterColumns "spUpdate" _spUpdate
+    , profilingCounterColumns "spReceiveInit" _spReceiveInit
+    , profilingCounterColumns "spReceiveResetState" _spReceiveResetState
+    , profilingCounterColumns "spReceiveAddStates" _spReceiveAddStates
+    , profilingCounterColumns "spReceiveRemoveStates" _spReceiveRemoveStates
+    , profilingCounterColumns "spReceiveUpdate" _spReceiveUpdate
+    , profilingCounterColumns "spReceiveGetStates" _spReceiveGetStates
+    , profilingCounterColumns "spReceiveGetProfile" _spReceiveGetProfile
+    , profilingCounterColumns "spReceiveQuit" _spReceiveQuit
     ]
 
 masterProfilingColumns :: MasterProfiling -> ProfilingColumns
