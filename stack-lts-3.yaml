@@ -31,7 +31,7 @@ packages:
     extra-dep: true
   - location:
       git: git@github.com:fpco/store.git
-      commit: cdfbbe5987f6bda1ea44ddead7531a1925dc5964
+      commit: 99f22b92c4b6918e020f1c376981f8a876d3a33e
     extra-dep: true
     subdirs:
       - '.'

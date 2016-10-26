@@ -70,11 +70,13 @@ import           Distributed.Stateful.Internal
 import           FP.Redis (MonadConnect)
 import           Text.Printf (printf)
 import qualified Data.Store as S
+import qualified Data.Store.Core as S
 import qualified Data.Store.Streaming as S
-import           Control.Monad.Trans.Free (FreeT, runFreeT, FreeF(..))
-import           Control.Monad.Trans.Free.Church (fromFT)
+import qualified Data.Store.Streaming.Internal as S
 import qualified Data.Vector as V
 import           Control.Exception.Lifted (evaluate)
+import qualified System.IO.ByteBuffer as BB
+import           Foreign.Ptr (plusPtr)
 
 -- | Defines the behaviour of a master.
 data MasterArgs m state context input output = MasterArgs
@@ -357,13 +359,48 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
             set (at requestingSlaveId . _Just . ssWaitingForStates) True uss
       return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
 
-type SWCCont m state output = S.ReadMoreData -> FreeT ((->) S.ReadMoreData) m (S.Message (SlaveResp state output))
+data RespReadStatus
+  = RRSReadNothing
+      {-# UNPACK #-} !Int -- The missing bytes to decode the header
+  | RRSReadHeader
+      {-# UNPACK #-} !S.SizeTag -- The message size
+      {-# UNPACK #-} !Int -- The missing bytes
+  deriving (Eq, Show)
+
+{-# INLINE respRead #-}
+respRead :: (MonadConnect m, S.Store state, S.Store output) => SlaveConn m key state context input output -> RespReadStatus -> m (Either RespReadStatus (S.Message (SlaveResp state output)))
+respRead StatefulConn{..} = go
+  where
+    go = \case
+      RRSReadNothing missing -> do
+        scFillByteBuffer scByteBuffer missing
+        mbPtr <- BB.unsafeConsume scByteBuffer S.headerLength
+        case mbPtr of
+          Left missing' -> return (Left (RRSReadNothing missing'))
+          Right ptr -> do
+            messageMagic <- decode ptr S.magicLength
+            unless (S.messageMagic == messageMagic) $
+              liftIO . throwIO $ StatefulConnDecodeFailure $ "updateSlaves: Wrong message magic, " ++ show messageMagic
+            s <- decode (ptr `plusPtr` S.magicLength) S.sizeTagLength
+            goReadHeader s s
+      RRSReadHeader s missing -> goReadHeader s missing
+
+    goReadHeader s missing = do
+      scFillByteBuffer scByteBuffer missing
+      mbPtr <- BB.unsafeConsume scByteBuffer s
+      case mbPtr of
+        Left missing' -> return (Left (RRSReadHeader s missing'))
+        Right ptr -> Right . S.Message <$> decode ptr s
+
+    decode ptr n = catch
+      (liftIO (S.decodeIOWithFromPtr S.peek ptr n))
+      (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("updateSlaves: " ++) . show $ ex)
 
 data SlaveWithConnection m key state context input output =
     SlaveWithConnection
         { swcSlaveId :: !SlaveId
         , swcConn :: !(SlaveConn m key state context input output)
-        , swcCont :: !(IORef (SWCCont m state output))
+        , swcRespReadStatus :: !(IORef RespReadStatus)
         }
 
 data MasterLoopState output = MasterLoopState
@@ -398,7 +435,7 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
           (emControl em (scConnKey conn) ETRead)
           (\() -> emControlDelete em (scConnKey conn))
           (\() -> do
-            contRef <- newIORef =<< doPeekStart conn
+            contRef <- newIORef (RRSReadNothing S.headerLength)
             let swc = SlaveWithConnection slaveId (slaveConnection slave) contRef
             liftIO $ HT.insert connsHashTable (scConnKey conn) swc
             registerSlaves slaves_ cont)
@@ -447,13 +484,13 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
     masterLoop swc@SlaveWithConnection{..} mls@(MasterLoopState statuses outputs nActiveSlaves) = if nActiveSlaves == 0
       then return mls
       else do
-        cont <- readIORef swcCont
-        withProfiling mp mpReceive (runDecodeFreeT (cont S.ReadMoreData)) >>= \case
-          Free cont' -> do
-            writeIORef swcCont cont'
+        rrs <- readIORef swcRespReadStatus
+        mbResp <- withProfiling mp mpReceive (respRead swcConn rrs)
+        case mbResp of
+          Left rrs' -> do
+            writeIORef swcRespReadStatus rrs'
             return mls
-          Pure (S.Message resp) ->
-            handleResponse statuses outputs nActiveSlaves swc resp
+          Right (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
 
     handleResponse statuses outputs nActiveSlaves swc@SlaveWithConnection{..} resp = do
         UpdateSlaveStep requests statuses' newOutputs <- withProfiling mp mpUpdateState $ do
@@ -480,24 +517,13 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
             else evaluate nActiveSlaves
           evaluate (outputs', nActiveSlaves')
         -- see if we can decode another message from the chunk we read
-        withProfiling mp mpReceive (doPeek swcConn) >>= \case
-            Pure (S.Message newResp) -> do
-              handleResponse statuses' outputs' nActiveSlaves' swc newResp
-            Free cont' -> do
-                writeIORef swcCont cont'
-                let mls = MasterLoopState statuses' outputs' nActiveSlaves'
-                return mls
-
-    runDecodeFreeT x =
-      runFreeT x
-      `catch` (\ ex@(S.PeekException _ _) -> throwIO . StatefulConnDecodeFailure . ("updateSlaves: " ++) . show $ ex)
-
-    doPeekStart conn = doPeek conn >>= \case
-      Pure _ -> fail "doPeek: unexpected Pure. This means the byte buffer was not empty when we expected it to be empty."
-      Free f -> return f
-
-    doPeek conn =
-      runDecodeFreeT (fromFT (S.peekMessage (\bs n _ -> withProfiling mp mpReceive (scFillByteBuffer conn bs n ())) (scByteBuffer conn)))
+        mbResp <- withProfiling mp mpReceive (respRead swcConn (RRSReadNothing S.headerLength))
+        case mbResp of
+          Left rrs -> do
+            writeIORef swcRespReadStatus rrs
+            let mls = MasterLoopState statuses' outputs' nActiveSlaves'
+            return mls
+          Right (S.Message newResp) -> handleResponse statuses' outputs' nActiveSlaves' swc newResp
 
     sendRespInit statuses slaveId = do
         UpdateSlaveStep{..} <- withProfiling mp mpUpdateState $ updateSlavesStep maxBatchSize inputMap slaveId USRespInit statuses
