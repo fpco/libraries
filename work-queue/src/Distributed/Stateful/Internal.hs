@@ -51,7 +51,7 @@ data StatefulConn m key req resp = StatefulConn
   , scRead :: !(m BS.ByteString)
 
   , scByteBuffer :: !(BB.ByteBuffer)
-  , scFillByteBuffer :: !(S.FillByteBuffer () m)
+  , scFillByteBuffer :: !(BB.ByteBuffer -> Int -> m ())
 
   , scConnKey :: !key
   }
