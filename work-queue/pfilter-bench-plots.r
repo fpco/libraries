@@ -156,6 +156,20 @@ counts <- gather(
     one_of(unlist(lapply(measurements, function(s) { paste(s, "Count", sep="") }))),
     na.rm = TRUE, factor_key = TRUE)
 
+## Show an overview of all slave profiling times
+qplot(slaves, t, data=wallAndCPUs[wallAndCPUs$action %like% 'Wall$',], colour=commit, alpha = I(1/3)) +
+    scale_x_log10() +
+    scale_y_log10() +
+    geom_smooth() +
+    facet_wrap( ~ action)
+ 
+## Show an overview of all slave profiling counts
+qplot(slaves, t, data=counts, colour=commit, alpha = I(1/3)) +
+    scale_x_log10() +
+    scale_y_log10() +
+    geom_smooth() +
+    facet_wrap( ~ action)
+
 ## Show an overview of each measurement
 plotSingleMeasurement <- function(name) {
     wall <- paste(name, "Wall", sep="")
@@ -168,15 +182,8 @@ plotSingleMeasurement <- function(name) {
     rawTime <- qplot(slaves, t, data=thisWallAndCPUs, colour=commit, alpha = I(1/3)) +
         xlab("Total time") +
         geom_smooth() +
-        facet_wrap(~action) +
-        theme(legend.position='none')
-    rawCount <- qplot(slaves, t, data=thisCounts, colour=commit, alpha = I(1/3)) +
-        xlab("Number of calls") +
-        geom_smooth() +
-        facet_wrap(~action) +
-        theme(legend.position='none')
-    print(rawTime, vp = viewport(layout.pos.row = 1, layout.pos.col = 1:2))
-    print(rawCount, vp = viewport(layout.pos.row = 1, layout.pos.col = 3))
+        facet_wrap(~action)
+    print(rawTime, vp = viewport(layout.pos.row = 1, layout.pos.col = 1:3))
     # Do the average only if some of the elements are non-zero
     if (any(wallAndCPUs[,c(count)] != 0, na.rm = TRUE)) {
         avgTime <- qplot(slaves, t / eval(parse(text=count)), data=thisWallAndCPUs, colour=commit, alpha = I(1/3)) +
@@ -187,6 +194,12 @@ plotSingleMeasurement <- function(name) {
             theme(legend.position='none')
         print(avgTime, vp = viewport(layout.pos.row = 2, layout.pos.col = 1:2))
     }
+    rawCount <- qplot(slaves, t, data=thisCounts, colour=commit, alpha = I(1/3)) +
+        xlab("Number of calls") +
+        geom_smooth() +
+        facet_wrap(~action) +
+        theme(legend.position='none')
+    print(rawCount, vp = viewport(layout.pos.row = 2, layout.pos.col = 3))
 }
 
 for (measurement in measurements) {
