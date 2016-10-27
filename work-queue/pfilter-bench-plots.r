@@ -45,7 +45,6 @@ masterText <- paste("master (", masterHash, ")", sep="")
 library('ggplot2')
 library('plyr')
 library('tidyr')
-library('data.table')
 library('grid')
 require('dplyr')
 
