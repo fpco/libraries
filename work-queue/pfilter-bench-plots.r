@@ -28,7 +28,7 @@
 ##   commit hash you want to compare performance against.
 ##
 masterHash <- "97a909d0"
-masterText <- paste("master (", masterHash, ")")
+masterText <- paste("master (", masterHash, ")", sep="")
 ##
 ## - Use R to run this file, as in
 ##
@@ -46,45 +46,67 @@ library('ggplot2')
 library('plyr')
 library('tidyr')
 library('data.table')
+library('grid')
+require('dplyr')
 
 ## Read in data from benchmark runs
 timings <- read.csv('bench-pfilter.csv')
 summary(timings)
 timings$stepsize <- as.factor(timings$stepsize)
 timings$deltat <- as.factor(timings$deltat)
-timings$particles_as_factor<- as.factor(timings$particles)
+timings$particles_as_factor <- as.factor(timings$particles)
 timings$omega2 <- as.factor(timings$omega2)
 timings$omega2_interval <- as.factor(timings$omega2_interval)
 timings$phi0 <- as.factor(timings$phi0)
 timings$resample_threshold <- as.factor(timings$resample_threshold)
 levels(timings$commit)[levels(timings$commit)==masterHash] <- masterText
-timings$slaveWorkFraction <- timings$spWorkWall/(timings$spWorkWall + timings$spReceiveWall + timings$spSendWall)
-profiling <- gather(timings, action, t, spReceiveWall:mpSendCount
-                  , na.rm = TRUE
-                  , factor_key=TRUE)
+timings$slaveWorkFraction <- timings$spWorkWall / (timings$spWorkWall + timings$spReceiveWall + timings$spSendWall)
+
+sequentialTime0 <- mean(timings[timings$slaves==0,]$time - timings[timings$slaves==0,]$mpUpdateWall)
+updateTime0 <- mean(timings[timings$slaves==0,]$mpUpdateWall)
+
+sequentialTime1 <- mean(timings[timings$slaves==1,]$time - timings[timings$slaves==1,]$mpUpdateWall)
+updateTime1 <- mean(timings[timings$slaves==1,]$mpUpdateWall)
+
+timingsToPlot <- timings
+
+pdf("pfilter-bench-plots.pdf")
 
 ## Draw log/log plot of the wall-time over the slave count.  For
 ## perfect 1/n scaling, this will be a straight line with slope of -1.
-scalingPlot <- qplot(slaves, time/(particles/1000)/steps
-                   , data=timings
-                   , colour=commit
-                   , alpha = I(1/3))
-scalingPlot +
+ggplot(data=timingsToPlot, aes(x = slaves, y = sequentialTime0 + updateTime0/slaves, colour="Perfect scaling, 0 slaves, Amdahl"), linetype="dashed") +
+    geom_smooth(linetype="dashed") +
+    geom_smooth(data=timingsToPlot, aes(x = slaves, y = sequentialTime1 + updateTime1/slaves, colour="Perfect scaling, 1 slave, Amdahl"), linetype="dashed") +
+    geom_smooth(data=timingsToPlot, aes(x = slaves, y = (sequentialTime0 + updateTime0) / slaves, colour="Perfect scaling, 0 slaves"), linetype="dotted") +
+    geom_smooth(data=timingsToPlot, aes(x = slaves, y = (sequentialTime1 + updateTime1) / slaves, colour="Perfect scaling, 1 slave"), linetype="dotted") +
     ggtitle("wall-time of particle filter benchmark") +
-    ylab("time[s] per iteration per 1000 particles") +
-    xlab("number of slaves")+
-    scale_x_log10(breaks = 1:30, minor_breaks = NULL) +
-    scale_y_log10(breaks = c(.1, .2, .4, .8, 1.6, 3.2)
-                , minor_breaks = (1:20)/10) +
-    geom_smooth() +
-    geom_smooth(data=timings,
-                aes(x = slaves, y = (time/(particles/1000)/steps)*slaveWorkFraction/mean(timings[timings$slaves==1,]$slaveWorkFraction, na.rm=TRUE),
-                    colour=commit),
-                linetype="dashed") +
-    geom_abline(intercept = log10(mean(timings[(timings$slaves==1),]$time)/100)
-              , slope=-1
-              , linetype="dotted")
-ggsave("pfilter-scaling.png")
+    ylab("total time") +
+    xlab("number of slaves") +
+    geom_smooth(data=timingsToPlot, aes(x = slaves, y = time, colour=commit), alpha = I(1/3)) +
+    geom_point(data=timingsToPlot, aes(x = slaves, y = time, colour=commit), alpha = I(1/3)) +
+    scale_x_log10() +
+    scale_y_log10()
+
+## Draw plot of the error between a perfect run and the actual run
+getSequentialTime <- function(slaves, commit) {
+    mean(timings[timings$slaves==1 & timings$commit==commit,]$time - timings[timings$slaves==1 & timings$commit==commit,]$mpUpdateWall)
+}
+getUpdateTime <- function(slaves, commit) {
+    mean(timings[timings$slaves==1 & timings$commit==commit,]$mpUpdateWall)
+}
+getTotalTime <- function(slaves, commit) {
+    mean(timings[timings$slaves==1 & timings$commit==commit,]$time)
+}
+perfectTime <- function(slaves, commit) {
+    getSequentialTime(slaves, commit) + getUpdateTime(slaves, commit) / slaves
+}
+qplot(
+    slaves,
+    100 * time / perfectTime(slaves, commit),
+    data=timings[timings$slaves > 0,],
+    colour=commit) +
+    ylab("How much slower we are compared to perfect scaling, 1 slave, Amdahl, in percent") +
+    geom_smooth()
 
 ## Show speedup relative to master branch before optimisations.
 attach(timings)
@@ -99,44 +121,88 @@ qplot(slaves, Ratio, data=normalizedTimings[normalizedTimings$commit != masterTe
     xlab("number of slaves") +
     ylab(paste("time/time(", masterText, ")")) +
     geom_smooth()
-ggsave('pfilter-improvements.png')
+
+measurements <- list(
+    "spReceive",
+    "spWork",
+    "spSend",
+    "spStatefulUpdate",
+    "spUpdate",
+    "spReceiveInit",
+    "spReceiveResetState",
+    "spReceiveAddStates",
+    "spReceiveRemoveStates",
+    "spReceiveUpdate",
+    "spReceiveGetStates",
+    "spReceiveGetProfile",
+    "spReceiveQuit",
+    "mpUpdate",
+    "mpUpdateSlaves",
+    "mpRegisterSlaves",
+    "mpInitializeSlaves",
+    "mpGetSlaveConnection",
+    "mpGetSlave",
+    "mpWait",
+    "mpReceive",
+    "mpUpdateState",
+    "mpUpdateOutputs",
+    "mpSend")
+wallAndCPUs <- gather(
+    timings, action, t,
+    one_of(unlist(lapply(measurements, function(s) { list(paste(s, "Wall", sep=""), paste(s, "CPU", sep="")) }))),
+    na.rm = TRUE, factor_key = TRUE)
+counts <- gather(
+    timings, action, t,
+    one_of(unlist(lapply(measurements, function(s) { paste(s, "Count", sep="") }))),
+    na.rm = TRUE, factor_key = TRUE)
 
 ## Show an overview of all slave profiling times
-qplot(slaves, t, data=profiling[(profiling$action %like% '^sp') & !(profiling$action %like% 'Count$'),]
-    , colour=commit
-    , alpha = I(1/3)) +
+qplot(slaves, t, data=wallAndCPUs[wallAndCPUs$action %like% 'Wall$',], colour=commit, alpha = I(1/3)) +
     scale_x_log10() +
     scale_y_log10() +
     geom_smooth() +
     facet_wrap( ~ action)
-ggsave('pfilter-slave-times.png')
-
+ 
 ## Show an overview of all slave profiling counts
-qplot(slaves, t, data=profiling[(profiling$action %like% '^sp') & (profiling$action %like% 'Count$'),]
-    , colour=commit
-    , alpha = I(1/3)) +
+qplot(slaves, t, data=counts, colour=commit, alpha = I(1/3)) +
     scale_x_log10() +
     scale_y_log10() +
     geom_smooth() +
     facet_wrap( ~ action)
-ggsave('pfilter-slave-counts.png')
 
-## Show an overview of all master profiling times
-qplot(slaves, t, data=profiling[(profiling$action %like% '^mp') & !(profiling$action %like% 'Count$'),]
-    , colour=commit
-    , alpha = I(1/3)) +
-    scale_x_log10() +
-    scale_y_log10() +
-    geom_smooth() +
-    facet_wrap( ~ action)
-ggsave('pfilter-slave-times.png')
+## Show an overview of each measurement
+plotSingleMeasurement <- function(name) {
+    wall <- paste(name, "Wall", sep="")
+    cpu <- paste(name, "CPU", sep="")
+    count <- paste(name, "Count", sep="")
+    thisWallAndCPUs <- wallAndCPUs[(wallAndCPUs$action == wall | wallAndCPUs$action == cpu) & wallAndCPUs$slaves > 0,]
+    thisCounts <- counts[counts$action == count & counts$slaves > 0,]
+    plot.new()
+    pushViewport(viewport(layout = grid.layout(2, 3)))
+    rawTime <- qplot(slaves, t, data=thisWallAndCPUs, colour=commit, alpha = I(1/3)) +
+        xlab("Total time") +
+        geom_smooth() +
+        facet_wrap(~action)
+    print(rawTime, vp = viewport(layout.pos.row = 1, layout.pos.col = 1:3))
+    # Do the average only if some of the elements are non-zero
+    if (any(wallAndCPUs[,c(count)] != 0, na.rm = TRUE)) {
+        avgTime <- qplot(slaves, t / eval(parse(text=count)), data=thisWallAndCPUs, colour=commit, alpha = I(1/3)) +
+            xlab("Average time") +
+            ylab(paste("t /", count)) +
+            geom_smooth() +
+            facet_wrap(~action) +
+            theme(legend.position='none')
+        print(avgTime, vp = viewport(layout.pos.row = 2, layout.pos.col = 1:2))
+    }
+    rawCount <- qplot(slaves, t, data=thisCounts, colour=commit, alpha = I(1/3)) +
+        xlab("Number of calls") +
+        geom_smooth() +
+        facet_wrap(~action) +
+        theme(legend.position='none')
+    print(rawCount, vp = viewport(layout.pos.row = 2, layout.pos.col = 3))
+}
 
-## Show an overview of all master profiling counts
-qplot(slaves, t, data=profiling[(profiling$action %like% '^mp') & (profiling$action %like% 'Count$'),]
-    , colour=commit
-    , alpha = I(1/3)) +
-    scale_x_log10() +
-    scale_y_log10() +
-    geom_smooth() +
-    facet_wrap( ~ action)
-ggsave('pfilter-slave-counts.png')
+for (measurement in measurements) {
+    plotSingleMeasurement(measurement)
+}
+dev.off()
