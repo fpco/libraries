@@ -117,6 +117,8 @@ data Profiling = Profiling
       -- ^ profiling for the master
     , profSlave  :: !(Maybe SlaveProfiling)
       -- ^ summed profiling of all slaves (if there were any)
+    , profNSlaves :: !Int
+      -- ^ number of slaves that were profiled
     } deriving (Eq, Generic, Show, Store)
 $(mkHasTypeHash =<< [t|Maybe Profiling|])
 
@@ -230,6 +232,6 @@ masterProfilingColumns MasterProfiling{..} = concat
     ]
 
 mProfilingColumns :: Maybe Profiling -> ProfilingColumns
-mProfilingColumns Nothing = map (second (const "NA")) $ slaveProfilingColumns emptySlaveProfiling <> masterProfilingColumns emptyMasterProfiling
-mProfilingColumns (Just (Profiling mp Nothing)) = map (second (const "NA")) (slaveProfilingColumns emptySlaveProfiling) <> masterProfilingColumns mp
-mProfilingColumns (Just (Profiling mp (Just sp))) = slaveProfilingColumns sp <> masterProfilingColumns mp
+mProfilingColumns Nothing = map (second (const "NA")) $ slaveProfilingColumns emptySlaveProfiling <> masterProfilingColumns emptyMasterProfiling <> [("slaveCount", "0")]
+mProfilingColumns (Just (Profiling mp Nothing n)) = map (second (const "NA")) (slaveProfilingColumns emptySlaveProfiling) <> masterProfilingColumns mp <> [("slaveCount", tshow n)]
+mProfilingColumns (Just (Profiling mp (Just sp) n)) = slaveProfilingColumns sp <> masterProfilingColumns mp <> [("slaveCount", tshow n)]

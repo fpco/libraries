@@ -712,11 +712,12 @@ getProfiling mhandle@(MasterHandle mhv) = readMVar mhv >>= \mh ->
     case mhProfiling mh of
         Nothing -> return Nothing
         Just mpref -> do
-            sp <- catMaybes . HMS.elems <$> getSlavesProfiling mhandle >>= \case
+            sps <- getSlavesProfiling mhandle
+            sp <- case catMaybes $ HMS.elems sps of
                 [] -> return Nothing
-                sp:sps -> return . Just $ foldl' (<>) sp sps
+                sp:sps' -> return . Just $ foldl' (<>) sp sps'
             mp <- readIORef mpref
-            return . Just $ Profiling mp sp
+            return . Just $ Profiling mp sp (HMS.size sps)
 
 -- | Get the number of slaves connected to a master.
 getNumSlaves ::
