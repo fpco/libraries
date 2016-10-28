@@ -45,8 +45,9 @@ masterText <- paste("master (", masterHash, ")", sep="")
 library('ggplot2')
 library('plyr')
 library('tidyr')
+library('data.table')
 library('grid')
-require('dplyr')
+library('dplyr')
 
 ## Read in data from benchmark runs
 timings <- read.csv('bench-pfilter.csv')
