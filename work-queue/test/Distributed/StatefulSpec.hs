@@ -30,6 +30,7 @@ import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import           Distributed.JobQueue.Client
 import           Distributed.JobQueue.Worker
+import           Distributed.Redis (Redis)
 import           Distributed.RequestSlaves
 import           Distributed.Stateful
 import           Distributed.Stateful.Master
@@ -127,37 +128,8 @@ spec = do
   describe "Pure" (genericSpec runSimplePureStateful)
   describe "NetworkMessage" (genericSpec (runSimpleNMStateful "127.0.0.1"))
   describe "JobQueue" $ do
-    redisIt "gets all slaves available (short)" $ \r -> do
-      let jqc = testJobQueueConfig
-      let ss = CN.serverSettings 0 "*"
-      let nmsma = NMStatefulMasterArgs
-            { nmsmaMinimumSlaves = Nothing
-            , nmsmaMaximumSlaves = Just (workersToSpawn - 1)
-            , nmsmaSlavesWaitingTime = 30 * 1000 * 1000
-            }
-          worker :: forall void m. (MonadConnect m) => m void
-          worker =
-            runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing 5) nmsma $
-              \mh _reqId () -> do
-                nSlaves <- waitForHUnitPass upToAMinute $ do
-                  n <- getNumSlaves mh
-                  n `shouldBe` (workersToSpawn - 1)
-                  return n
-                return $ DontReenqueue nSlaves
-          workersToSpawn = 10
-          client :: forall m. (MonadConnect m) => m ()
-          client = withJobClient jqc $ \(jc :: JobClient (Int, Maybe Profiling)) -> do
-            rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
-            submitRequest jc rid ()
-            void $ waitForResponse_ jc rid
-      raceAgainstVoids
-        (do
-          client
-          -- Check that there are no masters anymore
-          waitForHUnitPass upToAMinute $ do
-            wcis <- getWorkerRequests r
-            wcis `shouldBe` [])
-        (replicate workersToSpawn worker)
+    redisIt "gets all slaves available (short)" $ \r -> testSlaveConnections r 10 9
+    redisIt "does not take more than maxSlaves slaves" $ \r -> testSlaveConnections r 10 5
     stressfulTest $
       redisIt_ "fullfills all requests (short, many)" (void (fullfillsAllRequests Nothing 50 3 300))
     stressfulTest $ redisIt_ "fullfills all requests (long, few)" $ do
@@ -168,6 +140,39 @@ spec = do
               when (shutdown > startup) (modify (+1))
       unless (increased > 10) $
         fail "Didn't get many increases in slaves!"
+
+
+testSlaveConnections :: MonadConnect m => Redis -> Int -> Int -> m ()
+testSlaveConnections r workersToSpawn slavesToAccept = do
+  let jqc = testJobQueueConfig
+  let ss = CN.serverSettings 0 "*"
+  let nmsma = NMStatefulMasterArgs
+        { nmsmaMinimumSlaves = Nothing
+        , nmsmaMaximumSlaves = Just slavesToAccept
+        , nmsmaSlavesWaitingTime = 30 * 1000 * 1000
+        }
+      worker :: forall void m. (MonadConnect m) => m void
+      worker =
+        runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing 5) nmsma $
+          \mh _reqId () -> do
+            nSlaves <- waitForHUnitPass upToAMinute $ do
+              n <- getNumSlaves mh
+              n `shouldBe` slavesToAccept
+              return n
+            return $ DontReenqueue nSlaves
+      client :: forall m. (MonadConnect m) => m ()
+      client = withJobClient jqc $ \(jc :: JobClient (Int, Maybe Profiling)) -> do
+        rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
+        submitRequest jc rid ()
+        void $ waitForResponse_ jc rid
+  raceAgainstVoids
+    (do
+      client
+      -- Check that there are no masters anymore
+      waitForHUnitPass upToAMinute $ do
+        wcis <- getWorkerRequests r
+        wcis `shouldBe` [])
+    (replicate workersToSpawn worker)
 
 fullfillsAllRequests :: (MonadConnect m) => Maybe (Int, Int) -> Int -> Int -> Int -> m (HMS.HashMap RequestId Int, HMS.HashMap RequestId Int)
 fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do

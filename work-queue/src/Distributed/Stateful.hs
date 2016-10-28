@@ -330,7 +330,7 @@ runNMStatefulMaster ma NMStatefulMasterArgs{..} runServer cont = withNMStatefulC
                 slaves <- atomically (readTVar slavesConnectedVar)
                 let shouldAdd = case nmsmaMaximumSlaves of
                         Nothing -> True
-                        Just n -> slaves <= n
+                        Just n -> slaves < n
                 when shouldAdd $ do
                     addSlaveConnection mh (nmStatefulConn ad)
                     atomically (writeTVar slavesConnectedVar (slaves + 1))
