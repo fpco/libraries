@@ -66,6 +66,7 @@ library
                      , stm
                      , stm-containers
                      , store >= 0.2.0.0
+                     , store-core
                      , streaming-commons
                      , text
                      , template-haskell

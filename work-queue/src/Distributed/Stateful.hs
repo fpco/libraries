@@ -188,7 +188,7 @@ runPureStatefulSlave update_ cont = do
                     Nothing -> fail "PureStatefulConn: trying to read on closed chan"
                     Just x -> return x
             , scByteBuffer = pscByteBuffer
-            , scFillByteBuffer = \bb needed () -> do
+            , scFillByteBuffer = \bb needed -> do
                 let go !n = if n >= needed
                         then return ()
                         else do
@@ -263,7 +263,7 @@ nmStatefulConn ad = StatefulConn
     { scWrite = nmRawWrite ad
     , scRead = nmRawRead ad
     , scByteBuffer = nmByteBuffer ad
-    , scFillByteBuffer = \bb needed () -> void (BB.fillFromFd bb (nmFileDescriptor ad) needed)
+    , scFillByteBuffer = \bb needed -> void (BB.fillFromFd bb (nmFileDescriptor ad) needed)
     , scConnKey = NMStatefulConnKey (nmFileDescriptor ad)
     }
 
