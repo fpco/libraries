@@ -75,22 +75,32 @@ masterLog (MasterId mid) msg = "(M" ++ tshow mid ++ ") " ++ msg
 slaveLog :: SlaveId -> Text -> Text
 slaveLog (SlaveId mid) msg = "(S" ++ tshow mid ++ ") " ++ msg
 
-runMaster :: forall m a.
+runMaster_ :: forall m a.
        (MonadConnect m)
-    => Redis -> MVar WorkerIds -> NMApp MasterSends SlaveSends m () -> m a -> m a
-runMaster r wids nm action = do
+    => Redis -> Maybe ByteString -> MVar WorkerIds -> NMApp MasterSends SlaveSends m () -> m a -> m a
+runMaster_ r key wids nm action = do
     wid <- modifyMVar wids $ \WorkerIds{..} -> do
         let wid = WorkerId (BSC8.pack (show wisCount))
         return (WorkerIds{wisCount = wisCount + 1, wisWorkerIds = wid : wisWorkerIds}, wid)
-    acceptSlaveConnections r wid (CN.serverSettings 0 "*") "127.0.0.1" Nothing Nothing nm action
+    acceptSlaveConnections r wid (CN.serverSettings 0 "*") "127.0.0.1" Nothing key nm action
+
+runMaster :: forall m a.
+       (MonadConnect m)
+    => Redis -> MVar WorkerIds -> NMApp MasterSends SlaveSends m () -> m a -> m a
+runMaster r = runMaster_ r Nothing
+
+runSlave_ :: forall m void.
+       (MonadConnect m)
+    => Redis -> Maybe ByteString -> MVar WorkerIds -> NMApp SlaveSends MasterSends m () -> m void
+runSlave_ r key wids cont = connectToMaster r (Milliseconds 100) key (wisWorkerIds <$> readMVar wids) cont
 
 runSlave :: forall m void.
        (MonadConnect m)
     => Redis -> MVar WorkerIds -> NMApp SlaveSends MasterSends m () -> m void
-runSlave r wids cont = connectToMaster r (Milliseconds 100) Nothing (wisWorkerIds <$> readMVar wids) cont
+runSlave r = runSlave_ r Nothing
 
-runMasterCollectResults :: (MonadConnect m) => Redis -> MVar WorkerIds -> MasterId -> Int -> m ()
-runMasterCollectResults r wids mid numSlaves = do
+runMasterCollectResults_ :: (MonadConnect m) => Redis -> Maybe ByteString -> MVar WorkerIds -> MasterId -> Int -> m ()
+runMasterCollectResults_ r key wids mid numSlaves = do
     resultsVar :: TVar (Map.Map SlaveId MasterId) <- liftIO (newTVarIO mempty)
     let whenSlaveConnects nm = do
             nmWrite nm (MasterSends mid)
@@ -105,19 +115,25 @@ runMasterCollectResults r wids mid numSlaves = do
             return results
         $logInfoJ (masterLog mid "Slaves done")
         return res
-    results <- runMaster r wids whenSlaveConnects master
+    results <- runMaster_ r key wids whenSlaveConnects master
     unless (results == Map.fromList [(SlaveId x, mid) | x <- [1..numSlaves]]) $
         fail "Unexpected results"
 
-runEchoSlave :: (MonadConnect m) => Redis -> MVar WorkerIds -> SlaveId -> Int -> m Void
-runEchoSlave r wids slaveId delay = do
+runMasterCollectResults :: (MonadConnect m) => Redis -> MVar WorkerIds -> MasterId -> Int -> m ()
+runMasterCollectResults r = runMasterCollectResults_ r Nothing
+
+runEchoSlave_ :: (MonadConnect m) => Redis -> Maybe ByteString -> MVar WorkerIds -> SlaveId -> Int -> m Void
+runEchoSlave_ r key wids slaveId delay = do
     let slave nm = do
             MasterSends n <- nmRead nm
             liftIO (threadDelay (delay * 1000))
             $logInfoJ (slaveLog slaveId ("Echoing to " ++ tshow n))
             nmWrite nm (SlaveSends slaveId n)
             $logInfoJ (slaveLog slaveId ("Slave done, quitting"))
-    runSlave r wids slave
+    runSlave_ r key wids slave
+
+runEchoSlave :: (MonadConnect m) => Redis -> MVar WorkerIds -> SlaveId -> Int -> m Void
+runEchoSlave r = runEchoSlave_ r Nothing
 
 mapConcurrently_ :: (MonadConnect m, Traversable t) => (a -> m ()) -> t a -> m ()
 mapConcurrently_ f x = void (Async.mapConcurrently f x)
@@ -152,6 +168,16 @@ spec = do
         raceAgainstVoids
             (mapConcurrently_ (\mid -> runMasterCollectResults r wids (MasterId mid) numSlaves) [1..numMasters])
             [runEchoSlave r wids (SlaveId x) 0 | x <- [1..numSlaves]]
+    redisIt "Echo with many masters and many slaves, split keys" $ \r -> do
+        let numSlaves1 :: Int = 10
+        let numSlaves2 :: Int = 20
+        let numMasters :: Int = 10
+        wids <- newWorkerIdsVar
+        raceAgainstVoids
+            (do mapConcurrently_ (\mid -> runMasterCollectResults_ r (Just "1") wids (MasterId mid) numSlaves1) [1..numMasters]
+                mapConcurrently_ (\mid -> runMasterCollectResults_ r (Just "2") wids (MasterId mid) numSlaves2) [1..numMasters])
+            ([runEchoSlave_ r (Just "1") wids (SlaveId x) 0 | x <- [1..numSlaves1]] ++
+             [runEchoSlave_ r (Just "2") wids (SlaveId x) 0 | x <- [1..numSlaves2]])
     stressfulTest $ redisIt "Echo with many masters and many slaves (long)" $ \r -> do
         let numSlaves :: Int = 10
         let numMasters :: Int = 5
