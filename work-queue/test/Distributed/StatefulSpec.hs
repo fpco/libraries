@@ -153,7 +153,7 @@ testSlaveConnections r workersToSpawn slavesToAccept = do
         }
       worker :: forall void m. (MonadConnect m) => m void
       worker =
-        runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs Nothing 5) nmsma $
+        runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing Nothing (testMasterArgs Nothing 5) nmsma $
           \mh _reqId () -> do
             nSlaves <- waitForHUnitPass upToAMinute $ do
               n <- getNumSlaves mh
@@ -187,7 +187,7 @@ fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do
   numSlavesAtShutdownRef :: IORef (HMS.HashMap RequestId Int) <- newIORef mempty
   let worker :: forall void m. (MonadConnect m) => m void
       worker =
-        runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing (testMasterArgs mbDelay 5) nmsma $
+        runJobQueueStatefulWorker jqc ss "127.0.0.1" Nothing Nothing (testMasterArgs mbDelay 5) nmsma $
           \mh reqId () -> do
             numSlaves <- getNumSlaves mh
             atomicModifyIORef' numSlavesAtStartupRef (\sl -> (HMS.insert reqId numSlaves sl, ()))

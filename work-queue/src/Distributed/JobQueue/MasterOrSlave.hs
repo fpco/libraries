@@ -46,6 +46,9 @@ runMasterOrSlave :: forall m request response void.
     => JobQueueConfig
     -> Redis
     -> Heartbeating
+    -> Maybe ByteString
+    -- ^ Optional key to use to tie some master to certain slaves, see
+    -- 'requestSlaves'
     -> (NonEmpty WorkerConnectInfo -> m ())
     -- ^ Slave function. The slave function should try to connect to the master
     -- with 'connectToAMaster', which will do the right thing with the list of
@@ -53,14 +56,14 @@ runMasterOrSlave :: forall m request response void.
     -> (RequestId -> request -> m (Reenqueue response))
     -- ^ Master function.
     -> m void
-runMasterOrSlave config redis hb slaveFunc masterFunc = do
+runMasterOrSlave config redis hb key slaveFunc masterFunc = do
     stateVar <- liftIO (newTVarIO Idle)
     fmap (either id id) $ Async.race
         (handleSlaveRequests stateVar) (handleMasterRequests stateVar)
   where
     handleSlaveRequests :: TVar MasterOrSlave -> m void
     handleSlaveRequests stateVar =
-        withSlaveRequestsWait redis (jqcSlaveRequestsNotificationFailsafeTimeout config) (activeOrUnhandledWorkers redis) (waitToBeIdle stateVar) $ \wcis -> do
+        withSlaveRequestsWait redis (jqcSlaveRequestsNotificationFailsafeTimeout config) key (activeOrUnhandledWorkers redis) (waitToBeIdle stateVar) $ \wcis -> do
             -- If it can't transition to slave, that's fine: all the
             -- other slave candidates will get the connection request anyway.
             -- In fact, this node itself will get it again, since

@@ -82,12 +82,12 @@ runMaster r wids nm action = do
     wid <- modifyMVar wids $ \WorkerIds{..} -> do
         let wid = WorkerId (BSC8.pack (show wisCount))
         return (WorkerIds{wisCount = wisCount + 1, wisWorkerIds = wid : wisWorkerIds}, wid)
-    acceptSlaveConnections r wid (CN.serverSettings 0 "*") "127.0.0.1" Nothing nm action
+    acceptSlaveConnections r wid (CN.serverSettings 0 "*") "127.0.0.1" Nothing Nothing nm action
 
 runSlave :: forall m void.
        (MonadConnect m)
     => Redis -> MVar WorkerIds -> NMApp SlaveSends MasterSends m () -> m void
-runSlave r wids cont = connectToMaster r (Milliseconds 100) (wisWorkerIds <$> readMVar wids) cont
+runSlave r wids cont = connectToMaster r (Milliseconds 100) Nothing (wisWorkerIds <$> readMVar wids) cont
 
 runMasterCollectResults :: (MonadConnect m) => Redis -> MVar WorkerIds -> MasterId -> Int -> m ()
 runMasterCollectResults r wids mid numSlaves = do
