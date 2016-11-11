@@ -65,6 +65,7 @@ instance Store WorkerConnectInfo
 
 data WorkerConnectInfoWithWorkerId = WorkerConnectInfoWithWorkerId
     { wciwwiWorkerId :: !WorkerId
+    , wciwwiKey :: !(Maybe ByteString)
     , wciwwiWci :: !WorkerConnectInfo
     } deriving (Eq, Show, Ord, Generic, Typeable)
 instance Store WorkerConnectInfoWithWorkerId
@@ -77,11 +78,14 @@ requestSlaves
     -> WorkerId
     -> WorkerConnectInfo
     -- ^ This worker's connection information.
+    -> Maybe ByteString
+    -- ^ This key can be used to make sure that only a certain class of slaves
+    -- can connect to a master.
     -> (m () -> m a)
     -- ^ When a slave connects, this continuation will be called.  As soon as it terminates, the master will stop accepting slaves.
     -> m a
-requestSlaves r wid wci0 cont = do
-    let wci = WorkerConnectInfoWithWorkerId wid wci0
+requestSlaves r wid wci0 key cont = do
+    let wci = WorkerConnectInfoWithWorkerId wid key wci0
     let encoded = encode wci
     stoppedVar :: MVar Bool <- newMVar False
     let add = withMVar stoppedVar $ \stopped ->
@@ -116,6 +120,9 @@ withSlaveRequests ::
     -- that slaves are requested.  Since notifications are not
     -- failsafe, it will run after this timeout if no notification was
     -- received.
+    -> Maybe ByteString
+    -- ^ Key to be matched with the one provided on the masters' side in
+    -- 'requestSlaves'.
     -> m [WorkerId]
     -- ^ Function that returns the 'WorkerId's of all workers that are
     -- alive.  Potential masters will be checked against this.  Any
@@ -128,7 +135,7 @@ withSlaveRequests ::
     -- guaranteed that all the masters are still running, the list
     -- should be traversed until a running master is found.
     -> m void
-withSlaveRequests redis failsafeTimeout getLiveWorkers f = withSlaveRequestsWait redis failsafeTimeout getLiveWorkers (return ()) f
+withSlaveRequests redis failsafeTimeout key getLiveWorkers f = withSlaveRequestsWait redis failsafeTimeout key getLiveWorkers (return ()) f
 
 -- | Exactly like 'withSlaveRequests', but allows to delay the loop with the third argument.
 withSlaveRequestsWait ::
@@ -139,6 +146,9 @@ withSlaveRequestsWait ::
     -- that slaves are requested.  Since notifications are not
     -- failsafe, it will run after this timeout if no notification was
     -- received.
+    -> Maybe ByteString
+    -- ^ Key to be matched with the one provided on the masters' side in
+    -- 'requestSlaves'.
     -> m [WorkerId]
     -- ^ Function that indicates whether the worker with a given
     -- 'WorkerId' is still alive.  Potential masters will be checked
@@ -157,19 +167,20 @@ withSlaveRequestsWait ::
     -- guaranteed that all the masters are still running, the list
     -- should be traversed until a running master is found.
     -> m void
-withSlaveRequestsWait redis failsafeTimeout getLiveWorkers wait f = do
+withSlaveRequestsWait redis failsafeTimeout key getLiveWorkers wait f = do
     withSubscribedNotifyChannel (managedConnectInfo (redisConnection redis)) failsafeTimeout (workerRequestsNotify redis) $
         \waitNotification -> forever $ do
             waitNotification
             wait
             reqs <- getWorkerRequestsWithWorkerIds redis
             liveWorkers <- HashSet.fromList <$> getLiveWorkers
-            let (validReqs, invalidReqs) =
+            let (validReqs0, invalidReqs1) =
                     partition (\x -> HashSet.member (wciwwiWorkerId x) liveWorkers) reqs
-            case NE.nonEmpty invalidReqs of
-                 Nothing -> return ()
-                 Just invalidReqs' ->
-                     $logWarnJ ("Ignoring " ++ tshow invalidReqs' ++ " slave requests, since the workers failed their heartbeat.")
+            forM_ (NE.nonEmpty invalidReqs1) $ \invalidReqs' ->
+                $logWarnJ ("Ignoring " ++ tshow invalidReqs' ++ " slave requests, since the workers failed their heartbeat.")
+            let (validReqs, invalidReqs2) = partition (\x -> wciwwiKey x == key) validReqs0
+            forM_ (NE.nonEmpty invalidReqs2) $ \invalidReqs' ->
+                $logDebugJ ("Ignoring " ++ tshow invalidReqs' ++ " slave requests, the key did not match given key " <> tshow key)
             case NE.nonEmpty validReqs of
                 Nothing -> do
                     $logDebugJ ("Tried to get masters to connect to but got none" :: Text)
@@ -260,10 +271,11 @@ connectToMaster :: forall m slaveSends masterSends void.
     => Redis
     -> Milliseconds
     -- ^ Timeout as in 'withSlaveRequests'
+    -> Maybe ByteString
     -> m [WorkerId]
     -> NMApp slaveSends masterSends m () -- ^ What to do when we connect
     -> m void
-connectToMaster r failsafeTimeout getLiveWorkers cont = withSlaveRequests r failsafeTimeout getLiveWorkers (connectToAMaster cont)
+connectToMaster r failsafeTimeout key getLiveWorkers cont = withSlaveRequests r failsafeTimeout key getLiveWorkers (connectToAMaster cont)
 
 -- | Exceptions that we anticipate when trying to connect.
 acceptableException :: SomeException -> Bool
@@ -285,13 +297,15 @@ acceptSlaveConnections :: forall m masterSends slaveSends a.
     -> Maybe Int
     -- ^ The port that will be used by the slaves to connect.
     -- If Nothing, the port the server is locally bound to will be used
+    -> Maybe ByteString
+    -- ^ Key, see 'requestSlaves'
     -> NMApp masterSends slaveSends m ()
     -- ^ What to do when a slave gets added
     -> m a
     -- ^ Continuation, the master will quit when requesting slaves when this
     -- continuation exits
     -> m a
-acceptSlaveConnections r wid ss0 host mbPort contSlaveConnect cont = do
+acceptSlaveConnections r wid ss0 host mbPort key contSlaveConnect cont = do
     nmSettings <- defaultNMSettings
     (ss, getPort) <- liftIO (getPortAfterBind ss0)
     whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
@@ -322,7 +336,7 @@ acceptSlaveConnections r wid ss0 host mbPort contSlaveConnect cont = do
             port <- liftIO getPort
             $logDebugJ ("Master starting on " ++ tshow (CN.serverHost ss, port))
             let wci = WorkerConnectInfo host (fromMaybe port mbPort)
-            requestSlaves r wid wci $ \wsc -> do
+            requestSlaves r wid wci key $ \wsc -> do
                 putMVar whenSlaveConnectsVar wsc
                 cont
     fmap (either absurd id) (Async.race acceptConns runMaster)

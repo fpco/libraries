@@ -172,6 +172,7 @@ runWithNM fp csvInfo jqc spawnWorker pinWorkers masterArgs nSlaves workerFunc ge
                ss
                "127.0.0.1"
                Nothing
+               Nothing
                masterArgs
                (NMStatefulMasterArgs (Just nSlaves) (Just nSlaves) (1000 * 1000))
                (\mh _rid req -> DontReenqueue <$> workerFunc req mh)

@@ -409,10 +409,11 @@ runRequestedStatefulSlave ::
        (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input, NFData input, NFData context)
     => Redis
     -> Milliseconds
+    -> Maybe ByteString
     -> Update m state context input output
     -> m void
-runRequestedStatefulSlave r failsafeTimeout update_ =
-    connectToMaster r failsafeTimeout (activeOrUnhandledWorkers r) (runNMStatefulSlave update_)
+runRequestedStatefulSlave r failsafeTimeout key update_ =
+    connectToMaster r failsafeTimeout key (activeOrUnhandledWorkers r) (runNMStatefulSlave update_)
 
 -- | Run a master node that will automatically request existing slave nodes to join it.
 runRequestingStatefulMaster :: forall m state output context input b.
@@ -427,11 +428,12 @@ runRequestingStatefulMaster :: forall m state output context input b.
     -> Maybe Int
     -- ^ The port that will be used by the slaves to connect.
     -- If Nothing, the port the server is locally bound to will be used
+    -> Maybe ByteString
     -> MasterArgs m state context input output
     -> NMStatefulMasterArgs
     -> (MasterHandle m NMStatefulConnKey state context input output -> m b)
     -> m (Maybe (b, Maybe Profiling))
-runRequestingStatefulMaster r (heartbeatingWorkerId -> wid) ss0 host mbPort ma nmsma cont = do
+runRequestingStatefulMaster r (heartbeatingWorkerId -> wid) ss0 host mbPort key ma nmsma cont = do
     nmSettings <- defaultNMSettings
     (ss, getPort) <- liftIO (getPortAfterBind ss0)
     whenSlaveConnectsVar :: MVar (m ()) <- newEmptyMVar
@@ -458,7 +460,7 @@ runRequestingStatefulMaster r (heartbeatingWorkerId -> wid) ss0 host mbPort ma n
             port <- liftIO getPort
             $logDebugJ ("Master starting on " ++ tshow (CN.serverHost ss, port))
             let wci = WorkerConnectInfo host (fromMaybe port mbPort)
-            requestSlaves r wid wci $ \wsc -> do
+            requestSlaves r wid wci key $ \wsc -> do
                 putMVar whenSlaveConnectsVar wsc
                 takeMVar keepRequestingSlaves
     let stopRequestingSlaves = tryPutMVar keepRequestingSlaves ()
@@ -490,17 +492,18 @@ runJobQueueStatefulWorker ::
     -> Maybe Int
     -- ^ The port that will be used by the slaves to connect.
     -- If Nothing, the port the server is locally bound to will be used
+    -> Maybe ByteString
     -> MasterArgs m state context input output
     -> NMStatefulMasterArgs
     -> (MasterHandle m NMStatefulConnKey state context input output -> RequestId -> request -> m (Reenqueue response))
     -> m void
-runJobQueueStatefulWorker jqc ss host mbPort ma nmsma cont =
+runJobQueueStatefulWorker jqc ss host mbPort key ma nmsma cont =
     withRedis (jqcRedisConfig jqc) $ \redis ->
     withHeartbeats (jqcHeartbeatConfig jqc) redis $ \hb -> do
-        runMasterOrSlave jqc redis hb
+        runMasterOrSlave jqc redis hb key
             (\wcis -> connectToAMaster (runNMStatefulSlave (maUpdate ma)) wcis)
             (\reqId req -> do
-              mbResp <- runRequestingStatefulMaster redis hb ss host mbPort ma nmsma (\mh -> cont mh reqId req)
+              mbResp <- runRequestingStatefulMaster redis hb ss host mbPort key ma nmsma (\mh -> cont mh reqId req)
               case mbResp of
                 Nothing -> liftIO (fail "Timed out waiting for slaves to connect")
                 Just (Reenqueue, _) -> return Reenqueue
