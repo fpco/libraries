@@ -12,7 +12,7 @@ module Distributed.StaleKeySpec (spec) where
 import ClassyPrelude hiding (keys)
 import Control.Concurrent.Mesosync.Lifted.Safe
 import Control.Concurrent.Lifted (threadDelay)
-import Data.Store.TypeHash (mkHasTypeHash)
+import Data.TypeHash (mkHasTypeHash)
 import Data.Void
 import Distributed.Heartbeat
 import Distributed.JobQueue.Client

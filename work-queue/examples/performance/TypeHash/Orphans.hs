@@ -6,7 +6,7 @@
 module TypeHash.Orphans where
 
 import           ClassyPrelude
-import           Data.Store.TypeHash (mkManyHasTypeHash)
+import           Data.TypeHash (mkManyHasTypeHash)
 import qualified Data.Vector as V
 
 $(mkManyHasTypeHash [ [t| ByteString |]

@@ -21,7 +21,7 @@ import qualified Data.ByteString.Char8 as BS8
 import           Data.Store (Store)
 import           Data.Streaming.NetworkMessage (NetworkMessageException)
 import qualified Data.Text as T
-import           Data.Store.TypeHash (TypeHash)
+import           Data.TypeHash (TypeHash)
 import           Control.DeepSeq (NFData)
 
 -- * IDs used in Redis

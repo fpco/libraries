@@ -26,8 +26,7 @@ import qualified Data.HashSet as HS
 import qualified Data.HashTable.IO as HT
 import           Data.Proxy (Proxy(..))
 import           Data.Store (Store)
-import           Data.Store.TypeHash
-import           Data.Store.TypeHash.Orphans ()
+import           Data.TypeHash
 import           Distributed.Stateful.Internal.Profiling
 import           Text.Printf (PrintfArg(..))
 import qualified Data.Store.Streaming as S

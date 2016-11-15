@@ -27,7 +27,7 @@ import Control.DeepSeq
 import Control.Lens
 import Criterion.Measurement
 import Data.Store (Store)
-import Data.Store.TypeHash (mkHasTypeHash)
+import Data.TypeHash (mkHasTypeHash)
 
 -- | Indicate whether to perform profiling or not.
 data DoProfiling = DoProfiling

@@ -63,7 +63,7 @@ import           System.IO.ByteBuffer (ByteBuffer)
 import qualified System.IO.ByteBuffer as BB
 import           Data.Streaming.Network (AppData, appRead, appWrite)
 import           Data.Streaming.Network (ServerSettings, setAfterBind, appRawSocket)
-import           Data.Store.TypeHash
+import           Data.TypeHash
 import           Data.Typeable (Proxy(..))
 import           Network.Socket (socketPort, fdSocket)
 import           System.Executable.Hash (executableHash)

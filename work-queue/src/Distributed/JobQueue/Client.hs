@@ -51,7 +51,7 @@ import           Data.List.NonEmpty (NonEmpty((:|)))
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Store as S
 import           Data.Streaming.NetworkMessage (Sendable)
-import           Data.Store.TypeHash
+import           Data.TypeHash
 import           Data.Time.Clock.POSIX (getPOSIXTime)
 import           Data.Typeable (Proxy(..))
 import           Distributed.Heartbeat (checkHeartbeats, performHeartbeatCheck)

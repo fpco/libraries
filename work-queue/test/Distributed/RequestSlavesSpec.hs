@@ -16,7 +16,7 @@ module Distributed.RequestSlavesSpec (spec) where
 
 import           ClassyPrelude
 import           Test.Hspec hiding (shouldBe)
-import           Data.Store.TypeHash
+import           Data.TypeHash
 import           FP.Redis
 import           Data.Store (Store)
 import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async

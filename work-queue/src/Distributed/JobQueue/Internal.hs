@@ -16,7 +16,7 @@ import Distributed.Redis
 import Distributed.Types
 import Distributed.Heartbeat
 import FP.Redis
-import Data.Store.TypeHash (TypeHash)
+import Data.TypeHash (TypeHash)
 import qualified Data.ByteString.Char8 as BSC8
 
 -- * Redis keys

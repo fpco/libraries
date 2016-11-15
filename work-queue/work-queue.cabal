@@ -15,7 +15,6 @@ cabal-version:       >= 1.10
 
 library
   exposed-modules:     Distributed.Types
-                       Data.Store.TypeHash.Orphans
                        Distributed.JobQueue.Client
                        Distributed.JobQueue.Worker
                        Distributed.JobQueue.MasterOrSlave
@@ -34,6 +33,7 @@ library
                        Data.WorkQueue
                        Control.Concurrent.ThreadPool
                        Control.Exception.Mask
+                       Data.TypeHash
   other-modules:       Data.SimpleSupply
   build-depends:       base
                      , stm-chans

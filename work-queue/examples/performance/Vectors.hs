@@ -24,7 +24,7 @@ import           Control.Exception (evaluate)
 import           Control.Monad.Random
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
-import           Data.Store.TypeHash (mkManyHasTypeHash)
+import           Data.TypeHash (mkManyHasTypeHash)
 import qualified Data.Vector as V
 import           Distributed.JobQueue.Client
 import           Distributed.Stateful

@@ -88,7 +88,7 @@ import qualified Control.Concurrent.STM as STM
 import qualified Data.Conduit.Network as CN
 import           Control.Monad.Trans.Control (control)
 import           Data.Void (absurd)
-import           Data.Store.TypeHash (HasTypeHash)
+import           Data.TypeHash (HasTypeHash)
 import           Distributed.Redis (Redis, withRedis)
 import           Distributed.RequestSlaves
 import qualified Data.Streaming.Network.Internal as CN

@@ -43,7 +43,7 @@ import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Proxy
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Streaming.NetworkMessage
-import Data.Store.TypeHash
+import Data.TypeHash
 import Distributed.Heartbeat
 import Distributed.JobQueue.Internal
 import Distributed.Redis

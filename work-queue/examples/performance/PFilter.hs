@@ -32,7 +32,7 @@ import qualified Data.Map.Strict as M
 import           Data.Number.Erf
 import           Data.Random
 import           Data.Store
-import           Data.Store.TypeHash (mkManyHasTypeHash)
+import           Data.TypeHash (mkManyHasTypeHash)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as UV
 import           Distributed.JobQueue.Client

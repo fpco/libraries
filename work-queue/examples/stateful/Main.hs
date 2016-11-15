@@ -8,7 +8,7 @@ import Control.Monad.IO.Class
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 (pack)
 import Data.Time
-import Data.Store.TypeHash (mkHasTypeHash)
+import Data.TypeHash (mkHasTypeHash)
 import Distributed.JobQueue.Client
 import Distributed.Types
 import Distributed.Redis
