@@ -15,7 +15,7 @@ import           Control.Monad.IO.Class
 import           Data.ByteString (ByteString)
 import           Data.ByteString.Char8 (pack)
 import           Data.Maybe
-import           Data.TypeHash (mkManyHasTypeHash)
+import           Data.Store.TypeHash (mkManyHasTypeHash)
 import           Data.Void
 import           Distributed.Heartbeat
 import           Distributed.JobQueue.Client

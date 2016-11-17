@@ -28,7 +28,7 @@ import qualified Control.Retry as R
 import           Criterion.Measurement
 import qualified Data.Conduit.Network as CN
 import           Data.Store (Store)
-import           Data.TypeHash
+import           Data.Store.TypeHash
 import           Data.Streaming.Process (Inherited(..), ClosedStream(..), streamingProcess, waitForStreamingProcess, streamingProcessHandleRaw)
 import           Distributed.JobQueue.Client
 import           Distributed.JobQueue.Status

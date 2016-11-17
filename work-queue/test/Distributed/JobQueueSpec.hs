@@ -31,7 +31,7 @@ import qualified Control.Concurrent.STM as STM
 import           System.Random (randomRIO)
 import           System.Random.Shuffle (shuffleM)
 
-import Data.TypeHash (mkManyHasTypeHash)
+import Data.Store.TypeHash (mkManyHasTypeHash)
 import Distributed.Heartbeat (deadWorkers)
 import Distributed.JobQueue.Client
 import Distributed.JobQueue.Internal

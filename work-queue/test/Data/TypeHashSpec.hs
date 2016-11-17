@@ -8,8 +8,8 @@ module Data.TypeHashSpec where
 import           ClassyPrelude
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
-import           Data.TypeHash
-import           Data.TypeHash.Orphans ()
+import           Data.Store.TypeHash
+import           Data.Store.TypeHash.Orphans ()
 import           Test.Hspec (Spec)
 
 spec :: Spec

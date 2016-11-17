@@ -32,7 +32,7 @@ import           Data.List (unfoldr)
 import           Data.List.Extra (chunksOf)
 import qualified Data.List.NonEmpty as NE
 import           Data.Store (Store)
-import           Data.TypeHash (mkManyHasTypeHash)
+import           Data.Store.TypeHash (mkManyHasTypeHash)
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as MVector
 import qualified Data.Vector.Unboxed as UV

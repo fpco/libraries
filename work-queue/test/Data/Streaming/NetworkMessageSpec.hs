@@ -24,7 +24,8 @@ import           FP.Redis (MonadConnect)
 import           Control.Monad.Trans.Control (control)
 import           Control.Concurrent (threadDelay)
 import           Data.Void (absurd)
-import           Data.TypeHash (mkManyHasTypeHash)
+import           Data.Store.TypeHash (mkManyHasTypeHash)
+import           Data.Store.TypeHash.Orphans ()
 
 import           TestUtils
 

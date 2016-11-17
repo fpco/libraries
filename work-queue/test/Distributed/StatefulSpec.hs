@@ -25,7 +25,7 @@ import           Control.Monad.State (modify, execState)
 import qualified Data.Conduit.Network as CN
 import qualified Data.HashMap.Strict as HMS
 import           Data.Store (Store)
-import           Data.TypeHash (mkManyHasTypeHash)
+import           Data.Store.TypeHash (mkManyHasTypeHash)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
 import           Distributed.JobQueue.Client
