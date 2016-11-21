@@ -161,7 +161,7 @@ testSlaveConnections r workersToSpawn slavesToAccept = do
               return n
             return $ DontReenqueue nSlaves
       client :: forall m. (MonadConnect m) => m ()
-      client = withJobClient jqc $ \(jc :: JobClient (Int, Maybe Profiling)) -> do
+      client = withJobClient jqc $ \(jc :: JobClient Int) -> do
         rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
         submitRequest jc rid ()
         void $ waitForResponse_ jc rid

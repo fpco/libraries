@@ -507,4 +507,8 @@ runJobQueueStatefulWorker jqc ss host mbPort key ma nmsma cont =
               case mbResp of
                 Nothing -> liftIO (fail "Timed out waiting for slaves to connect")
                 Just (Reenqueue, _) -> return Reenqueue
-                Just (DontReenqueue resp, msp) -> return (DontReenqueue (resp, msp)))
+                -- We throw the profiling away otherwise we get a pretty counter
+                -- intuitive behavior whereby the response type is different
+                -- from the type provided here --  and for example the type
+                -- hash changed too.
+                Just (DontReenqueue resp, _msp) -> return (DontReenqueue resp))
