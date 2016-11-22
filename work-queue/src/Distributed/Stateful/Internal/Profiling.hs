@@ -127,19 +127,7 @@ withProfiling :: forall a b m. MonadIO m
     -> m a
     -> m a
 withProfiling Nothing _ action = action
-withProfiling (Just ref) l action = do
-    tw0 <- liftIO getTime
-    tcpu0 <- liftIO getCPUTime
-    res <- action
-    tw1 <- liftIO getTime
-    tcpu1 <- liftIO getCPUTime
-    liftIO . modifyIORef' ref $ update (tw1 - tw0) (tcpu1 - tcpu0)
-    return res
-  where
-      update :: Double -> Double -> b -> b
-      update tw tcpu sp = sp & l . pcWallTime +~ tw
-                             & l . pcCPUTime +~ tcpu
-                             & l . pcCount +~ 1
+withProfiling (Just ref) l action = error "Profiling should be disabled!"
 {-# INLINE withProfiling #-}
 
 withProfilingCont :: forall b c m. (MonadIO m)
@@ -148,19 +136,7 @@ withProfilingCont :: forall b c m. (MonadIO m)
     -> ((forall a. m a -> m a) -> m c)
     -> m c
 withProfilingCont Nothing _ action = action id
-withProfilingCont (Just ref) l action = do
-    tw0 <- liftIO getTime
-    tcpu0 <- liftIO getCPUTime
-    action $ \cont -> do
-        tw1 <- liftIO getTime
-        tcpu1 <- liftIO getCPUTime
-        liftIO . modifyIORef' ref $ update (tw1 - tw0) (tcpu1 - tcpu0)
-        cont         
-  where
-      update :: Double -> Double -> b -> b
-      update tw tcpu sp = sp & l . pcWallTime +~ tw
-                             & l . pcCPUTime +~ tcpu
-                             & l . pcCount +~ 1
+withProfilingCont (Just ref) l action = error "Profiling should be disabled!"
 {-# INLINE withProfilingCont #-}
 
 withProfilingNamed :: forall a b m. MonadIO m
@@ -168,19 +144,7 @@ withProfilingNamed :: forall a b m. MonadIO m
     -> m (ALens' b ProfilingCounter, a)
     -> m a
 withProfilingNamed Nothing action = snd <$> action
-withProfilingNamed (Just ref) action = do
-    tw0 <- liftIO getTime
-    tcpu0 <- liftIO getCPUTime
-    (l, res) <- action
-    tw1 <- liftIO getTime
-    tcpu1 <- liftIO getCPUTime
-    liftIO . modifyIORef' ref $ update (cloneLens l) (tw1 - tw0) (tcpu1 - tcpu0)
-    return res
-  where
-      update :: Lens' b ProfilingCounter -> Double -> Double -> b -> b
-      update l tw tcpu sp = sp & l . pcWallTime +~ tw
-                               & l . pcCPUTime +~ tcpu
-                               & l . pcCount +~ 1
+withProfilingNamed (Just ref) action = error "Profiling should be disabled!"
 {-# INLINE withProfilingNamed #-}
 
 
