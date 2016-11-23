@@ -463,6 +463,8 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
                       _:_ -> fail "Leftover events even if we're done"
                       [] -> return res
           evts <- withProfiling mp mpWait (emWait em)
+          when (null evts) $
+            $logWarnJ ("Got no events from emWait!" :: Text)
           loop2 mls0 (V.toList evts)
     let mls0 :: MasterLoopState output = MasterLoopState statuses1 HMS.empty (HMS.size slaves)
     loop1 mls0
