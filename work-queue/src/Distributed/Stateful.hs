@@ -253,7 +253,7 @@ withNMStatefulConnEventManager cont = control $ \run -> EPoll.with 1000 $ \epoll
         , emControlDelete = \(NMStatefulConnKey fd) -> liftIO $
             EPoll.control epoll EPoll.controlOpDelete fd EPoll.epollIn
         , emWait = liftIO $ do
-            evts <- EPoll.wait epoll Nothing
+            evts <- EPoll.wait epoll Nothing True
             return $
                 V.fromList (map (\evt -> (NMStatefulConnKey (EPoll.eventFd evt), ETRead)) (VS.toList evts))
         }
