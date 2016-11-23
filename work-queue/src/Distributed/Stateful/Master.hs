@@ -59,7 +59,7 @@ module Distributed.Stateful.Master
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Lens (makeLenses, set, at, _Just, over)
-import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ)
+import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -462,6 +462,7 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
                     Right res -> case evts of
                       _:_ -> fail "Leftover events even if we're done"
                       [] -> return res
+          $logDebugJ ("Waiting for events" :: Text)
           evts <- withProfiling mp mpWait (emWait em)
           when (null evts) $
             $logWarnJ ("Got no events from emWait!" :: Text)
@@ -487,6 +488,7 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
       then return mls
       else do
         rrs <- readIORef swcRespReadStatus
+        $logDebugJ ("Receiving data from slave " ++ tshow swcSlaveId)
         mbResp <- withProfiling mp mpReceive (respRead swcConn rrs)
         case mbResp of
           Left rrs' -> do
@@ -519,6 +521,7 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
             else evaluate nActiveSlaves
           evaluate (outputs', nActiveSlaves')
         -- see if we can decode another message from the chunk we read
+        $logDebugJ ("Receiving data from slave " ++ tshow swcSlaveId)
         mbResp <- withProfiling mp mpReceive (respRead swcConn (RRSReadNothing S.headerLength))
         case mbResp of
           Left rrs -> do
