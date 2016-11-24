@@ -253,7 +253,13 @@ withNMStatefulConnEventManager cont = control $ \run -> EPoll.with 1000 $ \epoll
         , emControlDelete = \(NMStatefulConnKey fd) -> liftIO $
             EPoll.control epoll EPoll.controlOpDelete fd EPoll.epollIn
         , emWait = liftIO $ do
-            evts <- EPoll.wait epoll Nothing
+            -- First try with a non-blocking unsafe call, then with a blocking
+            -- safe call. This pattern is copied from GHC's event manager.
+            evts <- do
+                evts <- EPoll.wait epoll 0 True
+                if VS.null evts
+                    then EPoll.wait epoll (-1) False
+                    else return evts
             return $
                 V.fromList (map (\evt -> (NMStatefulConnKey (EPoll.eventFd evt), ETRead)) (VS.toList evts))
         }

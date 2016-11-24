@@ -38,7 +38,7 @@ packages:
       - store-core
   - location:
       git: git@github.com:fpco/simple-poll.git
-      commit: f6d9f618df8b5845f12c0726350bd053e6b28830
+      commit: 03ee382435895290acb8526e8b9b07da91470973
     extra-dep: true
 
 image:
