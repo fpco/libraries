@@ -196,10 +196,10 @@ fullfillsAllRequests mbDelay numClients requestsPerClient numWorkers = do
             atomicModifyIORef' numSlavesAtShutdownRef (\sl -> (HMS.insert reqId numSlaves' sl, ()))
             return (DontReenqueue ())
       requestLoop :: (MonadConnect m) => Int -> m ()
-      requestLoop _n = withJobClient jqc $ \(jc :: JobClient ((), Maybe Profiling)) -> forM_ [1..requestsPerClient] $ \(_m :: Int) -> do
+      requestLoop _n = withJobClient jqc $ \(jc :: JobClient ()) -> forM_ [1..requestsPerClient] $ \(_m :: Int) -> do
         rid <- liftIO (RequestId . UUID.toASCIIBytes <$> UUID.nextRandom)
         submitRequest jc rid ()
-        Just ((), _) <- waitForResponse_ jc rid
+        Just () <- waitForResponse_ jc rid
         return ()
   raceAgainstVoids
     (void (Async.mapConcurrently requestLoop [(1::Int)..numClients]))
