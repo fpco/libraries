@@ -6,6 +6,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-|
 Module: Distributed.Stateful.Slave
 Description: Configure and run slaves for a distributed stateful computation.
@@ -56,6 +57,7 @@ runSlave SlaveArgs{..} = do
     states <- liftIO HT.new
     let recv :: Maybe (IORef SlaveProfiling) -> m (SlaveReq state context input)
         recv sp = withProfiling sp spReceive $ withProfilingNamed sp $ do
+          debug ("Slave receiving data" :: Text)
           req <- scDecodeAndRead saConn
           let l = case req of
                 SReqInit _ -> spReceiveInit
@@ -68,7 +70,9 @@ runSlave SlaveArgs{..} = do
                 SReqQuit -> spReceiveQuit
           return (l, req)
     let send :: Maybe (IORef SlaveProfiling) -> SlaveResp state output -> m ()
-        send sp x = withProfiling sp spSend (scEncodeAndWrite saConn x)
+        send sp x = withProfiling sp spSend $ do
+          debug ("Slave sending data" :: Text)
+          scEncodeAndWrite saConn x
         -- We're only catching 'SlaveException's here, since they
         -- indicate that something was wrong about the request, and
         -- should be sent back to the master.
