@@ -59,7 +59,7 @@ module Distributed.Stateful.Master
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Lens (makeLenses, set, at, _Just, over)
-import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ)
+import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -462,7 +462,9 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
                     Right res -> case evts of
                       _:_ -> fail "Leftover events even if we're done"
                       [] -> return res
+          $logDebugJ ("Waiting for slave sockets" :: Text)
           evts <- withProfiling mp mpWait (emWait em)
+          $logDebugJ ("Got " <> tshow (V.length evts) <> " ready sockets")
           loop2 mls0 (V.toList evts)
     let mls0 :: MasterLoopState output = MasterLoopState statuses1 HMS.empty (HMS.size slaves)
     loop1 mls0
