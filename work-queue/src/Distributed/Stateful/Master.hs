@@ -514,7 +514,8 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
           outputs' <- evaluate $ HMS.insertWith (<>) swcSlaveId newOutputs outputs
           nActiveSlaves' <- if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
             then do
-              $logInfoJ ("Slave " ++ tshow (unSlaveId swcSlaveId) ++ " is done")
+              let numRemainingUpdates = HMS.size inputMap - HMS.size outputs'
+              $logInfoJ ("Slave " ++ tshow (unSlaveId swcSlaveId) ++ " is done, " <> tshow (nActiveSlaves - 1) <> " slaves left, " <> tshow numRemainingUpdates <> " states left to update")
               evaluate (nActiveSlaves - 1)
             else evaluate nActiveSlaves
           evaluate (outputs', nActiveSlaves')
