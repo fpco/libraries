@@ -34,7 +34,7 @@ library
                        Data.WorkQueue
                        Control.Concurrent.ThreadPool
                        Control.Exception.Mask
-  other-modules:       Data.SimpleSupply
+  other-modules:       Data.SimpleSupply, TcpKeepalive
   build-depends:       base
                      , stm-chans
                      , lens

@@ -105,6 +105,8 @@ import           System.IO.Unsafe (unsafePerformIO)
 import qualified Data.Vector as V
 import qualified Data.Vector.Storable as VS
 
+import TcpKeepalive
+
 -- * Pure version, useful for testing, debugging, etc.
 -----------------------------------------------------------------------
 
@@ -248,7 +250,8 @@ withNMStatefulConnEventManager ::
     => (EventManager m NMStatefulConnKey -> m a) -> m a
 withNMStatefulConnEventManager cont = control $ \run -> EPoll.with 1000 $ \epoll -> run $
     cont EventManager
-        { emControl = \(NMStatefulConnKey fd) ETRead -> liftIO $
+        { emControl = \(NMStatefulConnKey fd) ETRead -> liftIO $ do
+            setTcpKeepalive fd
             EPoll.control epoll EPoll.controlOpAdd fd EPoll.epollIn
         , emControlDelete = \(NMStatefulConnKey fd) -> liftIO $
             EPoll.control epoll EPoll.controlOpDelete fd EPoll.epollIn
