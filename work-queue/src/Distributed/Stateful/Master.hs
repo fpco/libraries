@@ -404,7 +404,7 @@ data SlaveWithConnection m key state context input output =
         }
 
 data MasterLoopState output = MasterLoopState
-  { _mlsSlavesStatus :: !SlavesStatus
+  { mlsSlavesStatus :: !SlavesStatus
   , mlsOutputs :: !(HMS.HashMap SlaveId [(StateId, [(StateId, output)])])
   , mlsNumActiveSlaves :: !Int
   }
@@ -475,9 +475,15 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
       -> m (Either (MasterLoopState output) ([(SlaveId, [(StateId, [(StateId, output)])])]))
     masterLoopEntry swc mls = do
       mls' <- masterLoop swc mls
-      return $ if (mlsNumActiveSlaves mls' == 0)
-        then Right (HMS.toList (mlsOutputs mls'))
-        else Left mls'
+      if (mlsNumActiveSlaves mls' == 0)
+        then return (Right (HMS.toList (mlsOutputs mls')))
+        else do
+          let notDoneSlaves :: [(SlaveId, Int, Int)] = take 10
+                [ (slaveId, _ssWaitingResps ss, length (_ssRemainingStates ss))
+                | (slaveId, ss) <- HMS.toList (mlsSlavesStatus mls')
+                ]
+          $logDebugJ ("Not done yet, here is a sample of slaves for which we're waiting " ++ show notDoneSlaves)
+          return (Left mls')
 
     masterLoop ::
          SlaveWithConnection m key state context input output
