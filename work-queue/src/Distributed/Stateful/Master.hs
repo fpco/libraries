@@ -478,12 +478,12 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
       if (mlsNumActiveSlaves mls' == 0)
         then return (Right (HMS.toList (mlsOutputs mls')))
         else do
-          let notDoneSlaves :: [(SlaveId, Int, Int)] = take 10
-                [ (slaveId, _ssWaitingResps ss, length (_ssRemainingStates ss))
+          let notDoneSlaves :: [(SlaveId, Int, Int, Bool)] = take 10
+                [ (slaveId, _ssWaitingResps ss, length (_ssRemainingStates ss), _ssWaitingForStates ss)
                 | (slaveId, ss) <- HMS.toList (mlsSlavesStatus mls')
-                , _ssWaitingResps ss > 0 || length (_ssRemainingStates ss) > 0
+                , _ssWaitingResps ss > 0 || length (_ssRemainingStates ss) > 0 || _ssWaitingForStates ss
                 ]
-          $logDebugJ ("Not done yet, here is a sample of slaves for which we're waiting " ++ show notDoneSlaves)
+          $logDebugJ ("Not done yet, " ++ show (mlsNumActiveSlaves mls') ++ " active slaves, here is a sample of slaves for which we're waiting " ++ show notDoneSlaves)
           return (Left mls')
 
     masterLoop ::
