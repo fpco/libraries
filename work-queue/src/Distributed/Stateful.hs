@@ -64,6 +64,7 @@ module Distributed.Stateful
     , runRequestingStatefulMaster
       -- * Use a job queue to schedule multiple stateful computations
     , runJobQueueStatefulWorker
+    , runJobQueueStatefulWorkerWithProfiling
       -- * Reference implementation using one process
     , runPureStatefulSlave
     , runSimplePureStateful
@@ -518,3 +519,38 @@ runJobQueueStatefulWorker jqc ss host mbPort key ma nmsma cont =
                 -- from the type provided here --  and for example the type
                 -- hash changed too.
                 Just (DontReenqueue resp, _msp) -> return (DontReenqueue resp))
+
+-- | A version of 'runJobQueueStatefulWorker' that includes profiling information in the result.
+--
+-- Note that this will alter the type of the response to
+--
+-- @
+-- Reenqueue (response, Maybe Profiling)
+-- @
+runJobQueueStatefulWorkerWithProfiling ::
+       (MonadConnect m, NFData state, Sendable state, NFData output, Sendable output, Sendable context, Sendable input, Sendable request, Sendable response, NFData input, NFData context)
+    => JobQueueConfig
+    -> CN.ServerSettings
+    -- ^ The settings used to create the server. You can use 0 as port number to have
+    -- it automatically assigned
+    -> ByteString
+    -- ^ The host that will be used by the slaves to connect
+    -> Maybe Int
+    -- ^ The port that will be used by the slaves to connect.
+    -- If Nothing, the port the server is locally bound to will be used
+    -> Maybe ByteString
+    -> MasterArgs m state context input output
+    -> NMStatefulMasterArgs
+    -> (MasterHandle m NMStatefulConnKey state context input output -> RequestId -> request -> m (Reenqueue response))
+    -> m void
+runJobQueueStatefulWorkerWithProfiling jqc ss host mbPort key ma nmsma cont =
+    withRedis (jqcRedisConfig jqc) $ \redis ->
+    withHeartbeats (jqcHeartbeatConfig jqc) redis $ \hb -> do
+        runMasterOrSlave jqc redis hb key
+            (\wcis -> connectToAMaster (runNMStatefulSlave (maUpdate ma)) wcis)
+            (\reqId req -> do
+              mbResp <- runRequestingStatefulMaster redis hb ss host mbPort key ma nmsma (\mh -> cont mh reqId req)
+              case mbResp of
+                Nothing -> liftIO (fail "Timed out waiting for slaves to connect")
+                Just (Reenqueue, _) -> return Reenqueue
+                Just (DontReenqueue resp, msp) -> return (DontReenqueue (resp, msp)))

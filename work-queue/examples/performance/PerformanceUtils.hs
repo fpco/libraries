@@ -167,7 +167,7 @@ runWithNM fp csvInfo jqc spawnWorker pinWorkers masterArgs nSlaves workerFunc ge
        then do
            $logDebugS logSourceBench "spawning worker"
            let ss = CN.serverSettings 3333 "*"
-           runJobQueueStatefulWorker
+           runJobQueueStatefulWorkerWithProfiling
                jqc
                ss
                "127.0.0.1"
