@@ -481,6 +481,7 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
           let notDoneSlaves :: [(SlaveId, Int, Int)] = take 10
                 [ (slaveId, _ssWaitingResps ss, length (_ssRemainingStates ss))
                 | (slaveId, ss) <- HMS.toList (mlsSlavesStatus mls')
+                , _ssWaitingResps ss > 0 || length (_ssRemainingStates ss) > 0
                 ]
           $logDebugJ ("Not done yet, here is a sample of slaves for which we're waiting " ++ show notDoneSlaves)
           return (Left mls')
