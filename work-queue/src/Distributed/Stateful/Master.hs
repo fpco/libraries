@@ -268,11 +268,11 @@ makeLenses ''SlaveStatus
 
 {-# INLINE _assertEnabled #-}
 _assertEnabled :: Bool
-_assertEnabled = False
+_assertEnabled = True
 
 {-# INLINE updateAssert #-}
 updateAssert :: String -> Bool -> a -> a
-updateAssert s b x = if _assertEnabled || b then x else error s
+updateAssert s b x = if _assertEnabled && b then x else error s
 
 {-# INLINE updateSlavesStep #-}
 updateSlavesStep :: forall m input output.
