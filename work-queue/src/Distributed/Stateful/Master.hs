@@ -389,7 +389,9 @@ respRead StatefulConn{..} = go
       scFillByteBuffer scByteBuffer missing
       mbPtr <- BB.unsafeConsume scByteBuffer s
       case mbPtr of
-        Left missing' -> return (Left (RRSReadHeader s missing'))
+        Left missing' -> if missing == missing'
+          then liftIO (throwIO (MasterException "Got no bytes when receiving, this means that a slave connection died. Please retry."))
+          else return (Left (RRSReadHeader s missing'))
         Right ptr -> Right . S.Message <$> decode ptr s
 
     decode ptr n = catch
