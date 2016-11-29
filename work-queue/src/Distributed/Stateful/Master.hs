@@ -268,7 +268,7 @@ makeLenses ''SlaveStatus
 
 {-# INLINE _assertEnabled #-}
 _assertEnabled :: Bool
-_assertEnabled = True
+_assertEnabled = False
 
 {-# INLINE updateAssert #-}
 updateAssert :: String -> Bool -> a -> a
