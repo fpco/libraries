@@ -152,7 +152,6 @@ data SlaveResp state output
   = SRespInit
   | SRespResetState
   | SRespAddStates
-      ![StateId]
   | SRespRemoveStates
       !SlaveId
       ![(StateId, ByteString)]
@@ -173,7 +172,7 @@ displayReq (SReqInit doProfiling) = "SReqInit (" <> tshow doProfiling <> ")"
 displayReq (SReqResetState mp) = "SReqResetState (" <> tshow (map fst mp) <> ")"
 displayReq (SReqAddStates mp) = "SReqAddStates (" <> tshow (map fst mp) <> ")"
 displayReq (SReqRemoveStates k mp) = "SReqRemoveStates (" <> tshow k <> ") (" <> tshow mp <> ")"
-displayReq (SReqUpdate _ mp) = "SReqUpdate (" <> tshow (map (map fst . snd) mp) <> ")"
+displayReq (SReqUpdate _ mp) = "SReqUpdate (" <> tshow (map (id *** map fst) mp) <> ")"
 displayReq SReqGetStates = "SReqGetStates"
 displayReq SReqGetProfile = "SReqGetProfile"
 displayReq SReqQuit = "SReqQuit"
@@ -181,7 +180,7 @@ displayReq SReqQuit = "SReqQuit"
 displayResp :: SlaveResp state output -> Text
 displayResp SRespInit = "SRespInit"
 displayResp SRespResetState = "SRespResetState"
-displayResp (SRespAddStates states) = "SRespAddStates (" <> tshow states <> ")"
+displayResp SRespAddStates = "SRespAddStates"
 displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> tshow k <> ") (" <> tshow (map fst mp) <> ")"
 displayResp (SRespUpdate mp) = "SRespUpdate (" <> tshow (map (map fst . snd) mp) <> ")"
 displayResp (SRespGetStates mp) = "SRespGetStates (" <> tshow (map fst mp) <> ")"
