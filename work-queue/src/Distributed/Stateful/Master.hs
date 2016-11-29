@@ -58,8 +58,8 @@ module Distributed.Stateful.Master
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
-import           Control.Lens (makeLenses, set, at, _Just, over)
-import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ)
+import           Control.Lens (makeLenses, set, at, _Just)
+import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.HashSet as HS
@@ -247,7 +247,7 @@ instance (NFData output) => NFData (UpdateSlaveResp output)
 data UpdateSlaveReq input
   = USReqUpdate ![(StateId, [(StateId, input)])]
   | USReqAddStates ![(StateId, ByteString)]
-  | USReqRemoveStates !SlaveId !(HS.HashSet StateId)
+  | USReqRemoveStates !SlaveId ![StateId]
   deriving (Eq, Show, Generic)
 instance (NFData input) => NFData (UpdateSlaveReq input)
 
@@ -259,11 +259,9 @@ data UpdateSlaveStep input output = UpdateSlaveStep
 
 type SlavesStatus = HMS.HashMap SlaveId SlaveStatus
 
-data SlaveStatus = SlaveStatus
-  { _ssWaitingResps :: !Int
-  , _ssRemainingStates :: ![StateId]
-  , _ssWaitingForStates :: !Bool
-  }
+newtype SlaveStatus = SlaveStatus
+  { _ssStatesToUpdate :: [StateId]
+  } deriving (Show)
 makeLenses ''SlaveStatus
 
 {-# INLINE updateSlavesStep #-}
@@ -275,24 +273,19 @@ updateSlavesStep :: forall m input output.
   -> UpdateSlaveResp output
   -> SlavesStatus
   -> m (UpdateSlaveStep input output)
-updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
-  let statuses1 = over (at respSlaveId . _Just . ssWaitingResps) (\c -> c - 1) statuses0
+updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
   (statuses2, requests, outputs) <- case resp of
     USRespInit -> do
-      addOutputs_ <$> findSomethingToUpdate respSlaveId statuses1
+      addOutputs_ <$> findSomethingToUpdate respSlaveId statuses1 id
     USRespUpdate outputs -> do
-      addOutputs outputs <$> findSomethingToUpdate respSlaveId statuses1
-    USRespAddStates statesIds -> do
-      let statuses' =
-            over (at respSlaveId . _Just) (over ssRemainingStates (++ statesIds) . set ssWaitingForStates False) $
-            statuses1
-      addOutputs_ <$> findSomethingToUpdate respSlaveId statuses'
+      addOutputs outputs <$> findSomethingToUpdate respSlaveId statuses1 id
+    USRespAddStates stateIds -> do
+      addOutputs_ <$> findSomethingToUpdate respSlaveId statuses1 (set ssStatesToUpdate stateIds)
     USRespRemoveStates requestingSlaveId states -> do
       return (addOutputs_ (statuses1, [(requestingSlaveId, USReqAddStates states)]))
-  let statuses3 = foldl' (\statuses (slaveId, _) -> over (at slaveId . _Just . ssWaitingResps) (+ 1) statuses) statuses2 requests
   return UpdateSlaveStep
     { ussReqs = requests
-    , ussSlavesStatus = statuses3
+    , ussSlavesStatus = statuses2
     , ussOutputs = outputs
     }
   where
@@ -303,12 +296,14 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
     findSomethingToUpdate ::
          SlaveId
       -> SlavesStatus
+      -> (SlaveStatus -> SlaveStatus)
+      -- ^ Some preprocessing step
       -> m (SlavesStatus, [(SlaveId, UpdateSlaveReq input)])
-    findSomethingToUpdate slaveId uss = do
-      -- If we have some states in ssRemaining, just update those. Otherwise,
+    findSomethingToUpdate slaveId uss preProcess = do
+      -- If we have some states in ssStatesToUpdate, just update those. Otherwise,
       -- try to steal from another slave.
-      let ss = uss HMS.! slaveId
-      let (toUpdateInputs, remaining) = takeEnoughStatesToUpdate (_ssRemainingStates ss)
+      let ss = preProcess (uss HMS.! slaveId)
+      let (toUpdateInputs, remaining) = takeEnoughStatesToUpdate (_ssStatesToUpdate ss)
       if null toUpdateInputs
         then do -- Steal slaves
           let mbStolen = stealSlavesFromSomebody slaveId uss
@@ -317,10 +312,11 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
               $logInfoJ ("Tried to get something to do for slave " ++ tshow (unSlaveId slaveId) ++ ", but couldn't find anything")
               return (uss, [])
             Just (uss', stolenFrom, stolenStates) -> do -- Request stolen slaves
-              $logInfoJ ("Stealing " ++ tshow (HS.size stolenStates) ++ " states from slave " ++ tshow (unSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId slaveId))
+              $logInfoJ ("Stealing " ++ tshow (length stolenStates) ++ " states from slave " ++ tshow (unSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId slaveId))
               return (uss', [(stolenFrom, USReqRemoveStates slaveId stolenStates)])
         else do -- Send update command
-          let uss' = set (at slaveId . _Just . ssRemainingStates) remaining uss
+          let uss' =
+                set (at slaveId . _Just . ssStatesToUpdate) remaining uss
           return (uss', [(slaveId, USReqUpdate toUpdateInputs)])
 
     {-# INLINE takeEnoughStatesToUpdate #-}
@@ -341,23 +337,23 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses0 = do
     stealSlavesFromSomebody ::
          SlaveId -- Requesting the slaves
       -> SlavesStatus
-      -> Maybe (SlavesStatus, SlaveId, HS.HashSet StateId)
+      -> Maybe (SlavesStatus, SlaveId, [StateId])
     stealSlavesFromSomebody requestingSlaveId uss = do
       let goodCandidate (slaveId, ss) = do
             guard (slaveId /= requestingSlaveId)
-            guard (not (null (_ssRemainingStates ss)))
-            let (toTransfer, remaining) = takeEnoughStatesToUpdate (_ssRemainingStates ss)
-            return (slaveId, map fst toTransfer, sum (map (length . snd) toTransfer), remaining)
-      let candidates :: [(SlaveId, [StateId], Int, [StateId])]
+            guard (not (null (_ssStatesToUpdate ss)))
+            let (toTransfer, remaining) = takeEnoughStatesToUpdate (_ssStatesToUpdate ss)
+            return (slaveId, map fst toTransfer, sum (map (length . snd) toTransfer), remaining, length remaining)
+      let candidates :: [(SlaveId, [StateId], Int, [StateId], Int)]
           candidates = mapMaybe goodCandidate (HMS.toList uss)
       guard (not (null candidates))
       -- Pick candidate with highest number of states to steal states from
-      let (candidateSlaveId, statesToBeTransferred, _, remainingStates) =
-            maximumByEx (comparing (\(_, _, x, _) -> x)) candidates
+      -- then the remaining
+      let (candidateSlaveId, statesToBeTransferred, _, remainingStates, _) =
+            maximumByEx (comparing (\(_, _, x, _, y) -> (x, y))) candidates
       let uss' =
-            set (at candidateSlaveId . _Just . ssRemainingStates) remainingStates $
-            set (at requestingSlaveId . _Just . ssWaitingForStates) True uss
-      return (uss', candidateSlaveId, HS.fromList statesToBeTransferred)
+            set (at candidateSlaveId . _Just . ssStatesToUpdate) remainingStates uss
+      return (uss', candidateSlaveId, statesToBeTransferred)
 
 data RespReadStatus
   = RRSReadNothing
@@ -389,7 +385,9 @@ respRead StatefulConn{..} = go
       scFillByteBuffer scByteBuffer missing
       mbPtr <- BB.unsafeConsume scByteBuffer s
       case mbPtr of
-        Left missing' -> return (Left (RRSReadHeader s missing'))
+        Left missing' -> if missing == missing'
+          then liftIO (throwIO (MasterException "Got no bytes when receiving, this means that a slave connection died. Please retry."))
+          else return (Left (RRSReadHeader s missing'))
         Right ptr -> Right . S.Message <$> decode ptr s
 
     decode ptr n = catch
@@ -405,8 +403,8 @@ data SlaveWithConnection m key state context input output =
 
 data MasterLoopState output = MasterLoopState
   { _mlsSlavesStatus :: !SlavesStatus
+  , _mlsInFlightReqs :: !Int
   , mlsOutputs :: !(HMS.HashMap SlaveId [(StateId, [(StateId, output)])])
-  , mlsNumActiveSlaves :: !Int
   }
 
 type SlavesHashTable m key state context input output =
@@ -440,14 +438,12 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
             liftIO $ HT.insert connsHashTable (scConnKey conn) swc
             registerSlaves slaves_ cont)
   withProfilingCont mp mpRegisterSlaves $ \regSlavesEnd -> registerSlaves (HMS.toList slaves) $ regSlavesEnd $ do
-    statuses1 <- withProfiling mp mpInitializeSlaves $ do
+    (statuses1, inFlight) <- withProfiling mp mpInitializeSlaves $ do
       let slaveStatus0 slave = SlaveStatus
-            { _ssWaitingResps = 1 -- The init
-            , _ssRemainingStates = HMS.keys (slaveStates slave)
-            , _ssWaitingForStates = False
+            { _ssStatesToUpdate = HMS.keys (slaveStates slave)
             }
       let statuses0 = slaveStatus0 <$> slaves
-      foldM sendRespInit statuses0 (HMS.keys slaves)
+      foldM sendRespInit (statuses0, 0) (HMS.keys slaves)
     let loop1 !mls0 = do
           let loop2 !mls = \case
                 [] -> loop1 mls
@@ -464,7 +460,7 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
                       [] -> return res
           evts <- withProfiling mp mpWait (emWait em)
           loop2 mls0 (V.toList evts)
-    let mls0 :: MasterLoopState output = MasterLoopState statuses1 HMS.empty (HMS.size slaves)
+    let mls0 :: MasterLoopState output = MasterLoopState statuses1 inFlight HMS.empty
     loop1 mls0
   where
     masterLoopEntry ::
@@ -472,27 +468,31 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
       -> MasterLoopState output
       -> m (Either (MasterLoopState output) ([(SlaveId, [(StateId, [(StateId, output)])])]))
     masterLoopEntry swc mls = do
-      mls' <- masterLoop swc mls
-      return $ if (mlsNumActiveSlaves mls' == 0)
+      (mls', done) <- masterLoop swc mls
+      return $ if done
         then Right (HMS.toList (mlsOutputs mls'))
         else Left mls'
 
     masterLoop ::
          SlaveWithConnection m key state context input output
       -> MasterLoopState output
-      -> m (MasterLoopState output)
-    masterLoop swc@SlaveWithConnection{..} mls@(MasterLoopState statuses outputs nActiveSlaves) = if nActiveSlaves == 0
-      then return mls
-      else do
-        rrs <- readIORef swcRespReadStatus
-        mbResp <- withProfiling mp mpReceive (respRead swcConn rrs)
-        case mbResp of
-          Left rrs' -> do
-            writeIORef swcRespReadStatus rrs'
-            return mls
-          Right (S.Message resp) -> handleResponse statuses outputs nActiveSlaves swc resp
+      -> m (MasterLoopState output, Bool)
+    masterLoop swc@SlaveWithConnection{..} mls = do
+      rrs <- readIORef swcRespReadStatus
+      mbResp <- withProfiling mp mpReceive (respRead swcConn rrs)
+      case mbResp of
+        Left rrs' -> do
+          writeIORef swcRespReadStatus rrs'
+          return (mls, False)
+        Right (S.Message resp) -> handleResponse swc mls resp
 
-    handleResponse statuses outputs nActiveSlaves swc@SlaveWithConnection{..} resp = do
+    handleResponse ::
+         SlaveWithConnection m key state context input output
+      -> MasterLoopState output
+      -> SlaveResp state output
+      -> m (MasterLoopState output, Bool)
+    handleResponse swc@SlaveWithConnection{..} (MasterLoopState statuses inFlight outputs) resp = do
+        $logDebugJ ("Received response from slave " <> tshow swcSlaveId <> ": " <> displayResp resp)
         UpdateSlaveStep requests statuses' newOutputs <- withProfiling mp mpUpdateState $ do
           resp' <- case resp of
               SRespInit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
@@ -500,43 +500,46 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
               SRespGetStates _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
               SRespQuit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
               SRespError err -> throwIO (ExceptionFromSlave err)
-              SRespAddStates addedStates -> return (USRespAddStates addedStates)
+              SRespAddStates s -> return (USRespAddStates s)
               SRespRemoveStates requestingSlaveId removedStates ->
                 return (USRespRemoveStates requestingSlaveId removedStates)
               SRespUpdate outputs_ -> return (USRespUpdate outputs_)
               SRespGetProfile _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
           updateSlavesStep maxBatchSize inputMap swcSlaveId resp' statuses
-        forM_ requests sendRequest
-        (outputs', nActiveSlaves') <- withProfiling mp mpUpdateOutputs $ do
-          let status = statuses' HMS.! swcSlaveId
+        let inFlight' = inFlight - 1 + length requests
+        forM_ requests $ \(slaveId, req) -> do
+          $logDebugJ ("Sending request to slave " <> tshow swcSlaveId <> ": " <> displayReq (usReqToReq req))
+          sendRequest (slaveId, req)
+        (outputs', done) <- withProfiling mp mpUpdateOutputs $ do
           outputs' <- evaluate $ HMS.insertWith (<>) swcSlaveId newOutputs outputs
-          nActiveSlaves' <- if _ssWaitingResps status == 0 && not (_ssWaitingForStates status)
-            then do
-              $logInfoJ ("Slave " ++ tshow (unSlaveId swcSlaveId) ++ " is done")
-              evaluate (nActiveSlaves - 1)
-            else evaluate nActiveSlaves
-          evaluate (outputs', nActiveSlaves')
-        -- see if we can decode another message from the chunk we read
-        mbResp <- withProfiling mp mpReceive (respRead swcConn (RRSReadNothing S.headerLength))
-        case mbResp of
-          Left rrs -> do
-            writeIORef swcRespReadStatus rrs
-            let mls = MasterLoopState statuses' outputs' nActiveSlaves'
-            return mls
-          Right (S.Message newResp) -> handleResponse statuses' outputs' nActiveSlaves' swc newResp
+          let noInFlight = inFlight' == 0
+          return (outputs', noInFlight)
+        let mls' = MasterLoopState statuses' inFlight' outputs'
+        if done
+          then return (mls', done)
+          else do
+            -- see if we can decode another message from the chunk we read
+            mbResp <- withProfiling mp mpReceive (respRead swcConn (RRSReadNothing S.headerLength))
+            case mbResp of
+              Left rrs -> do
+                writeIORef swcRespReadStatus rrs
+                return (mls', False)
+              Right (S.Message newResp) -> handleResponse swc mls' newResp
 
-    sendRespInit statuses slaveId = do
+    sendRespInit (statuses, inFlight) slaveId = do
         UpdateSlaveStep{..} <- withProfiling mp mpUpdateState $ updateSlavesStep maxBatchSize inputMap slaveId USRespInit statuses
         forM_ ussReqs sendRequest
-        return ussSlavesStatus
+        return (ussSlavesStatus, inFlight + length ussReqs)
+
+    usReqToReq = \case
+      USReqUpdate inputs -> SReqUpdate context inputs
+      USReqRemoveStates x y -> SReqRemoveStates x y
+      USReqAddStates y -> SReqAddStates y
 
     sendRequest :: (SlaveId, UpdateSlaveReq input) -> m ()
     sendRequest (slaveId, req) = do
         let req' :: SlaveReq state context input
-            req' = case req of
-                      USReqUpdate inputs -> SReqUpdate context inputs
-                      USReqRemoveStates x y -> SReqRemoveStates x y
-                      USReqAddStates y -> SReqAddStates y
+            req' = usReqToReq req
         slave <- withProfiling mp mpGetSlave $ evaluate (slaves HMS.! slaveId)
         withProfiling mp mpSend $ scEncodeAndWrite (slaveConnection slave) req'
 
