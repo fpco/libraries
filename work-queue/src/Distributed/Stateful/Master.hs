@@ -261,7 +261,6 @@ type SlavesStatus = HMS.HashMap SlaveId SlaveStatus
 
 data SlaveStatus = SlaveStatus
   { _ssStatesToUpdate :: ![StateId]
-  , _ssStatesUpdating :: ![StateId]
   , _ssStatesToReceive :: !(HS.HashSet StateId)
   } deriving (Show)
 makeLenses ''SlaveStatus
@@ -287,13 +286,7 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
       -- Starting up, find something to update
       addOutputs_ <$> findSomethingToUpdate respSlaveId statuses1
     USRespUpdate outputs -> do
-      -- Just updated, find something else
-      let removeUpdating updating = updateAssert
-            "updateSlavesStep: got bad updating slaves"
-            (updating == map fst outputs)
-            []
-      let statuses' = over (at respSlaveId . _Just) (over ssStatesUpdating removeUpdating) statuses1
-      addOutputs outputs <$> findSomethingToUpdate respSlaveId statuses'
+      addOutputs outputs <$> findSomethingToUpdate respSlaveId statuses1
     USRespAddStates -> do
       -- The states were added, nothing to do
       return (statuses1, [], [])
@@ -344,8 +337,7 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
               return (uss', [(stolenFrom, USReqRemoveStates slaveId stolenStates)])
         else do -- Send update command
           let uss' =
-                set (at slaveId . _Just . ssStatesToUpdate) remaining $
-                set (at slaveId . _Just . ssStatesUpdating) (map fst toUpdateInputs) uss
+                set (at slaveId . _Just . ssStatesToUpdate) remaining uss
           return (uss', [(slaveId, USReqUpdate toUpdateInputs)])
 
     {-# INLINE takeEnoughStatesToUpdate #-}
@@ -472,7 +464,6 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
     (statuses1, inFlight) <- withProfiling mp mpInitializeSlaves $ do
       let slaveStatus0 slave = SlaveStatus
             { _ssStatesToUpdate = HMS.keys (slaveStates slave)
-            , _ssStatesUpdating = []
             , _ssStatesToReceive = mempty
             }
       let statuses0 = slaveStatus0 <$> slaves
@@ -545,13 +536,8 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
           sendRequest (slaveId, req)
         (outputs', done) <- withProfiling mp mpUpdateOutputs $ do
           outputs' <- evaluate $ HMS.insertWith (<>) swcSlaveId newOutputs outputs
-          let slaveDone SlaveStatus{..} = null _ssStatesToUpdate && null _ssStatesUpdating && HS.null _ssStatesToReceive
           let noInFlight = inFlight' == 0
-          let done = updateAssert
-                "handleResponse: in flight requests and slaves disagree on whether we're done"
-                (noInFlight == all slaveDone statuses')
-                noInFlight
-          return (outputs', done)
+          return (outputs', noInFlight)
         let mls' = MasterLoopState statuses' inFlight' outputs'
         if done
           then return (mls', done)
