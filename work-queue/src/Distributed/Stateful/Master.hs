@@ -237,7 +237,7 @@ assignInputsToSlaves slaveStates inputMap = do
   return slavesIdsAndInputs
 
 data UpdateSlaveResp output
-  = USRespAddStates
+  = USRespAddStates ![StateId]
   | USRespRemoveStates !SlaveId [(StateId, ByteString)]
   | USRespUpdate ![(StateId, [(StateId, output)])]
   | USRespInit
@@ -280,14 +280,10 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
       addOutputs_ <$> findSomethingToUpdate respSlaveId statuses1 id
     USRespUpdate outputs -> do
       addOutputs outputs <$> findSomethingToUpdate respSlaveId statuses1 id
-    USRespAddStates -> do
-      -- The states were added, nothing to do
-      return (statuses1, [], [])
+    USRespAddStates stateIds -> do
+      addOutputs_ <$> findSomethingToUpdate respSlaveId statuses1 (set ssStatesToUpdate stateIds)
     USRespRemoveStates requestingSlaveId states -> do
-      -- Some states we requested arrived, put them in the right place and
-      -- request something new to do
-      (statuses', reqs) <- findSomethingToUpdate requestingSlaveId statuses1 (set ssStatesToUpdate (map fst states))
-      return (statuses', (requestingSlaveId, USReqAddStates states) : reqs, mempty)
+      return (addOutputs_ (statuses1, [(requestingSlaveId, USReqAddStates states)]))
   return UpdateSlaveStep
     { ussReqs = requests
     , ussSlavesStatus = statuses2
@@ -505,7 +501,7 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
               SRespGetStates _ -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
               SRespQuit -> throwIO (UnexpectedResponse "updateSlaves" (displayResp resp))
               SRespError err -> throwIO (ExceptionFromSlave err)
-              SRespAddStates -> return USRespAddStates
+              SRespAddStates s -> return (USRespAddStates s)
               SRespRemoveStates requestingSlaveId removedStates ->
                 return (USRespRemoveStates requestingSlaveId removedStates)
               SRespUpdate outputs_ -> return (USRespUpdate outputs_)

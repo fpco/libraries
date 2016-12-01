@@ -152,6 +152,7 @@ data SlaveResp state output
   = SRespInit
   | SRespResetState
   | SRespAddStates
+      ![StateId]
   | SRespRemoveStates
       !SlaveId
       ![(StateId, ByteString)]
@@ -180,7 +181,7 @@ displayReq SReqQuit = "SReqQuit"
 displayResp :: SlaveResp state output -> Text
 displayResp SRespInit = "SRespInit"
 displayResp SRespResetState = "SRespResetState"
-displayResp SRespAddStates = "SRespAddStates"
+displayResp (SRespAddStates ks) = "SRespAddStates (" <> tshow ks <> ")"
 displayResp (SRespRemoveStates k mp) = "SRespRemoveStates (" <> tshow k <> ") (" <> tshow (map fst mp) <> ")"
 displayResp (SRespUpdate mp) = "SRespUpdate (" <> tshow (map (map fst . snd) mp) <> ")"
 displayResp (SRespGetStates mp) = "SRespGetStates (" <> tshow (map fst mp) <> ")"
