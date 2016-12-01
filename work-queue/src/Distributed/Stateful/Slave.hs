@@ -23,7 +23,6 @@ module Distributed.Stateful.Slave
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
 import           Control.Monad.Logger.JSON.Extra (logDebugNSJ)
-import qualified Data.HashSet as HS
 import qualified Data.HashTable.IO as HT
 import qualified Data.Store as S
 import           Distributed.Stateful.Internal
@@ -128,12 +127,12 @@ runSlave SlaveArgs{..} = do
                         return (sid, isJust mVal))
             unless (null aliased) $ throw (AddingExistingStates $ map fst aliased)
             forM_ newStates $ \(sid, state) -> liftIO (HT.insert states sid state)
-            return (SRespAddStates (fst <$> newStates), Just states)
+            return (SRespAddStates (map fst newStates), Just states)
           SReqRemoveStates requesting stateIdsToDelete -> do
             let eitherLookup sid = liftIO (HT.lookup states sid) >>= \case
                     Nothing -> return $ Left sid
                     Just x -> return $ Right (sid, x)
-            (missing, toSend) <- partitionEithers <$> mapM eitherLookup (HS.toList stateIdsToDelete)
+            (missing, toSend) <- partitionEithers <$> mapM eitherLookup stateIdsToDelete
             unless (null missing) $ throw (MissingStatesToRemove missing)
             forM_ stateIdsToDelete (liftIO . HT.delete states)
             return (SRespRemoveStates requesting (second S.encode <$> toSend), Just states)
