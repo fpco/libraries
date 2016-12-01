@@ -276,7 +276,6 @@ updateSlavesStep :: forall m input output.
 updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
   (statuses2, requests, outputs) <- case resp of
     USRespInit -> do
-      -- Starting up, find something to update
       addOutputs_ <$> findSomethingToUpdate respSlaveId statuses1 id
     USRespUpdate outputs -> do
       addOutputs outputs <$> findSomethingToUpdate respSlaveId statuses1 id
@@ -344,14 +343,14 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
             guard (slaveId /= requestingSlaveId)
             guard (not (null (_ssStatesToUpdate ss)))
             let (toTransfer, remaining) = takeEnoughStatesToUpdate (_ssStatesToUpdate ss)
-            return (slaveId, map fst toTransfer, sum (map (length . snd) toTransfer), remaining)
-      let candidates :: [(SlaveId, [StateId], Int, [StateId])]
+            return (slaveId, map fst toTransfer, sum (map (length . snd) toTransfer), remaining, length remaining)
+      let candidates :: [(SlaveId, [StateId], Int, [StateId], Int)]
           candidates = mapMaybe goodCandidate (HMS.toList uss)
       guard (not (null candidates))
       -- Pick candidate with highest number of states to steal states from
       -- then the remaining
-      let (candidateSlaveId, statesToBeTransferred, _, remainingStates) =
-            maximumByEx (comparing (\(_, _, x, _) -> x)) candidates
+      let (candidateSlaveId, statesToBeTransferred, _, remainingStates, _) =
+            maximumByEx (comparing (\(_, _, x, _, y) -> (x, y))) candidates
       let uss' =
             set (at candidateSlaveId . _Just . ssStatesToUpdate) remainingStates uss
       return (uss', candidateSlaveId, statesToBeTransferred)
