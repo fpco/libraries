@@ -259,17 +259,10 @@ data UpdateSlaveStep input output = UpdateSlaveStep
 
 type SlavesStatus = HMS.HashMap SlaveId SlaveStatus
 
-data SlaveStatus = SlaveStatus
-  { _ssStatesToUpdate :: ![StateId]
-  , _ssStatesToReceive :: !(HS.HashSet StateId)
+newtype SlaveStatus = SlaveStatus
+  { _ssStatesToUpdate :: [StateId]
   } deriving (Show)
 makeLenses ''SlaveStatus
-
-{-# INLINE updateAssert #-}
--- Enable to turn on the asserts
-updateAssert :: String -> Bool -> a -> a
-updateAssert _s _b x = x
--- updateAssert s b x = if b then x else error s
 
 {-# INLINE updateSlavesStep #-}
 updateSlavesStep :: forall m input output.
@@ -294,15 +287,9 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
       -- Some states we requested arrived, put them in the right place and
       -- request something new to do
       let statesIds = map fst states
-      let replaceToUpdate states0 = updateAssert
-            "updateSlavesStep: expecting no update states when adding the removed states"
-            (null states0) statesIds
-      let replaceToReceive states0 = updateAssert
-            "updateSlavesStep: wrong to receive states"
-            (HS.fromList statesIds == states0) HS.empty
       let statuses' = over
             (at requestingSlaveId . _Just)
-            (over ssStatesToUpdate replaceToUpdate . over ssStatesToReceive replaceToReceive)
+            (set ssStatesToUpdate (map fst states))
             statuses1
       (statuses'', reqs) <- findSomethingToUpdate requestingSlaveId statuses'
       return (statuses'', (requestingSlaveId, USReqAddStates states) : reqs, mempty)
@@ -374,8 +361,7 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
             maximumByEx (comparing (\(_, _, x, _) -> x)) candidates
       let statesToBeTransferred = HS.fromList statesToBeTransferred0
       let uss' =
-            set (at candidateSlaveId . _Just . ssStatesToUpdate) remainingStates $
-            over (at requestingSlaveId . _Just . ssStatesToReceive) (<> statesToBeTransferred) uss
+            set (at candidateSlaveId . _Just . ssStatesToUpdate) remainingStates uss
       return (uss', candidateSlaveId, statesToBeTransferred)
 
 data RespReadStatus
@@ -464,7 +450,6 @@ updateSlaves mp em maxBatchSize slaves context inputMap = withProfiling mp mpUpd
     (statuses1, inFlight) <- withProfiling mp mpInitializeSlaves $ do
       let slaveStatus0 slave = SlaveStatus
             { _ssStatesToUpdate = HMS.keys (slaveStates slave)
-            , _ssStatesToReceive = mempty
             }
       let statuses0 = slaveStatus0 <$> slaves
       foldM sendRespInit (statuses0, 0) (HMS.keys slaves)
