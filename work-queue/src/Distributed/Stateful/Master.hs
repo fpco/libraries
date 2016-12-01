@@ -58,7 +58,7 @@ module Distributed.Stateful.Master
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
-import           Control.Lens (makeLenses, set, at, _Just, over)
+import           Control.Lens (makeLenses, set, at, _Just)
 import           Control.Monad.Logger.JSON.Extra (MonadLogger, logWarnJ, logInfoJ, logDebugJ)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.HashMap.Strict as HMS
@@ -247,7 +247,7 @@ instance (NFData output) => NFData (UpdateSlaveResp output)
 data UpdateSlaveReq input
   = USReqUpdate ![(StateId, [(StateId, input)])]
   | USReqAddStates ![(StateId, ByteString)]
-  | USReqRemoveStates !SlaveId !(HS.HashSet StateId)
+  | USReqRemoveStates !SlaveId ![StateId]
   deriving (Eq, Show, Generic)
 instance (NFData input) => NFData (UpdateSlaveReq input)
 
@@ -277,22 +277,17 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
   (statuses2, requests, outputs) <- case resp of
     USRespInit -> do
       -- Starting up, find something to update
-      addOutputs_ <$> findSomethingToUpdate respSlaveId statuses1
+      addOutputs_ <$> findSomethingToUpdate respSlaveId statuses1 id
     USRespUpdate outputs -> do
-      addOutputs outputs <$> findSomethingToUpdate respSlaveId statuses1
+      addOutputs outputs <$> findSomethingToUpdate respSlaveId statuses1 id
     USRespAddStates -> do
       -- The states were added, nothing to do
       return (statuses1, [], [])
     USRespRemoveStates requestingSlaveId states -> do
       -- Some states we requested arrived, put them in the right place and
       -- request something new to do
-      let statesIds = map fst states
-      let statuses' = over
-            (at requestingSlaveId . _Just)
-            (set ssStatesToUpdate (map fst states))
-            statuses1
-      (statuses'', reqs) <- findSomethingToUpdate requestingSlaveId statuses'
-      return (statuses'', (requestingSlaveId, USReqAddStates states) : reqs, mempty)
+      (statuses', reqs) <- findSomethingToUpdate requestingSlaveId statuses1 (set ssStatesToUpdate (map fst states))
+      return (statuses', (requestingSlaveId, USReqAddStates states) : reqs, mempty)
   return UpdateSlaveStep
     { ussReqs = requests
     , ussSlavesStatus = statuses2
@@ -306,11 +301,13 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
     findSomethingToUpdate ::
          SlaveId
       -> SlavesStatus
+      -> (SlaveStatus -> SlaveStatus)
+      -- ^ Some preprocessing step
       -> m (SlavesStatus, [(SlaveId, UpdateSlaveReq input)])
-    findSomethingToUpdate slaveId uss = do
+    findSomethingToUpdate slaveId uss preProcess = do
       -- If we have some states in ssStatesToUpdate, just update those. Otherwise,
       -- try to steal from another slave.
-      let ss = uss HMS.! slaveId
+      let ss = preProcess (uss HMS.! slaveId)
       let (toUpdateInputs, remaining) = takeEnoughStatesToUpdate (_ssStatesToUpdate ss)
       if null toUpdateInputs
         then do -- Steal slaves
@@ -320,7 +317,7 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
               $logInfoJ ("Tried to get something to do for slave " ++ tshow (unSlaveId slaveId) ++ ", but couldn't find anything")
               return (uss, [])
             Just (uss', stolenFrom, stolenStates) -> do -- Request stolen slaves
-              $logInfoJ ("Stealing " ++ tshow (HS.size stolenStates) ++ " states from slave " ++ tshow (unSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId slaveId))
+              $logInfoJ ("Stealing " ++ tshow (length stolenStates) ++ " states from slave " ++ tshow (unSlaveId stolenFrom) ++ " for slave " ++ tshow (unSlaveId slaveId))
               return (uss', [(stolenFrom, USReqRemoveStates slaveId stolenStates)])
         else do -- Send update command
           let uss' =
@@ -345,7 +342,7 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
     stealSlavesFromSomebody ::
          SlaveId -- Requesting the slaves
       -> SlavesStatus
-      -> Maybe (SlavesStatus, SlaveId, HS.HashSet StateId)
+      -> Maybe (SlavesStatus, SlaveId, [StateId])
     stealSlavesFromSomebody requestingSlaveId uss = do
       let goodCandidate (slaveId, ss) = do
             guard (slaveId /= requestingSlaveId)
@@ -357,9 +354,8 @@ updateSlavesStep maxBatchSize inputs respSlaveId resp statuses1 = do
       guard (not (null candidates))
       -- Pick candidate with highest number of states to steal states from
       -- then the remaining
-      let (candidateSlaveId, statesToBeTransferred0, _, remainingStates) =
+      let (candidateSlaveId, statesToBeTransferred, _, remainingStates) =
             maximumByEx (comparing (\(_, _, x, _) -> x)) candidates
-      let statesToBeTransferred = HS.fromList statesToBeTransferred0
       let uss' =
             set (at candidateSlaveId . _Just . ssStatesToUpdate) remainingStates uss
       return (uss', candidateSlaveId, statesToBeTransferred)

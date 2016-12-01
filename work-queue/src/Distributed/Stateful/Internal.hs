@@ -133,7 +133,7 @@ data SlaveReq state context input
       -- forwarded by master.
   | SReqRemoveStates
       !SlaveId
-      !(HS.HashSet StateId) -- States to get
+      ![StateId] -- States to get
   | SReqUpdate
       !context
       ![(StateId, [(StateId, input)])]
