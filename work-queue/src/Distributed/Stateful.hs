@@ -74,7 +74,7 @@ module Distributed.Stateful
 
 import           ClassyPrelude
 import           Control.DeepSeq (NFData)
-import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Distributed.Heartbeat
 import           Distributed.Stateful.Slave
 import           Distributed.Stateful.Internal
@@ -84,7 +84,6 @@ import           Data.Store (Store)
 import           Control.Concurrent.STM.TMChan
 import           Data.Streaming.NetworkMessage
 import           Control.Monad.Logger.JSON.Extra (logErrorJ, logWarnJ, logDebugJ)
-import           Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.STM as STM
 import qualified Data.Conduit.Network as CN
 import           Control.Monad.Trans.Control (control)

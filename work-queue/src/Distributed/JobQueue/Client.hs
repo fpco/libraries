@@ -44,7 +44,6 @@ module Distributed.JobQueue.Client
     ) where
 
 import           ClassyPrelude
-import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.STM (retry, orElse)
 import           Control.Monad.Logger.JSON.Extra
 import           Data.List.NonEmpty (NonEmpty((:|)))
@@ -55,7 +54,7 @@ import           Data.Store.TypeHash
 import           Data.Time.Clock.POSIX (getPOSIXTime)
 import           Data.Typeable (Proxy(..))
 import           Distributed.Heartbeat (checkHeartbeats, performHeartbeatCheck)
-import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Distributed.JobQueue.Internal
 import           Distributed.JobQueue.StaleKeys
 import           Distributed.Redis

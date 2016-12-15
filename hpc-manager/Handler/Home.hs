@@ -1,5 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 module Handler.Home where
 
 import Control.Monad.Logger.JSON.Extra
@@ -168,7 +169,7 @@ getRequestsR = do
 --------------------------------------------------------------------------------
 -- Utilities
 
-withRedis' :: (MonadCatch m, MonadCommand m, MonadMask m)
+withRedis' :: (MonadConnect m, MonadConnect (LoggingT m))
            => Config -> (Redis -> LoggingT m a) -> m a
 withRedis' config =
     handleMismatchedSchema . runStdoutJSONLoggingT . withRedis rc
@@ -178,7 +179,7 @@ withRedis' config =
         , rcPort = redisPort config
         }
 
-handleMismatchedSchema :: (MonadIO m, MonadCatch m, MonadBaseControl IO m) => m a -> m a
+handleMismatchedSchema :: (MonadConnect m) => m a -> m a
 handleMismatchedSchema = flip catch $ \ex ->
     case ex of
         MismatchedRedisSchemaVersion { actualRedisSchemaVersion = "" } ->

@@ -33,7 +33,7 @@ module Data.WorkQueue
 
 import Control.Applicative         ((<|>))
 import Control.Concurrent          (threadDelay)
-import Control.Concurrent.Mesosync (race)
+import Control.Concurrent.Async (race)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM      (STM, STM, TMVar, TVar, atomically, check,
                                     modifyTVar', newEmptyTMVar, newTVar,

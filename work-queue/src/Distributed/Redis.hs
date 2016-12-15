@@ -35,7 +35,7 @@ module Distributed.Redis
     , decodeOrThrow
     ) where
 
-import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Control.Concurrent.Lifted (threadDelay)
 import           Control.Concurrent.MVar.Lifted
 import           Control.Exception.Lifted (throwIO)
@@ -53,6 +53,7 @@ import           FP.Redis
 import           Safe (readMay)
 import           Distributed.Types
 import           Data.Void (absurd)
+import           Data.Monoid ((<>))
 
 -- Types
 -----------------------------------------------------------------------

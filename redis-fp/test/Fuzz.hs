@@ -23,7 +23,7 @@ import Control.Monad.Trans.Reader (ReaderT(..))
 import Control.Monad.Logger (runStdoutLoggingT, LoggingT, MonadLogger)
 import Control.Monad.Base (MonadBase)
 import Prelude (read)
-import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Control.Monad.Reader (asks)
 import System.Environment (lookupEnv)
 import qualified Data.UUID as UUID

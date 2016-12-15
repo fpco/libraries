@@ -47,7 +47,7 @@ library
                       ,deepseq
                       ,exceptions
                       ,dlist
-                      ,mesosync
+                      ,lifted-async
                       ,lifted-base
                       ,monad-control
                       ,monad-extras
@@ -110,7 +110,7 @@ test-suite fuzz-test
                      , semigroups
                      , vector
                      , classy-prelude
-                     , mesosync
+                     , lifted-async
                      , hspec-core
                      , random-fu
                      , random-source

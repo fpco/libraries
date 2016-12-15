@@ -13,16 +13,9 @@ cache:
 
 matrix:
   include:
-  - env: BUILD=stack ARGS="--stack-yaml=stack-lts-3.yaml"
-    compiler: ": #stack lts-3"
+  - env: BUILD=stack ARGS="--stack-yaml=stack.yaml"
+    compiler: ": #stack lts-7"
     addons: {apt: {packages: [libgmp-dev]}}
-#
-#  - env: BUILD=stack ARGS="--stack-yaml=stack-lts-6.yaml"
-#    compiler: ": #stack lts-6"
-#    addons: {apt: {packages: [libgmp-dev]}}
-#
-#  allow_failures:
-#  - env: BUILD=stack ARGS="--stack-yaml=stack-lts-6.yaml"
 
 before_install:
  - unset CC
@@ -31,6 +24,9 @@ before_install:
  - curl -L https://www.stackage.org/stack/linux-x86_64 | tar xz --wildcards --strip-components=1 -C ~/.local/bin '*/stack';
 
 install:
+ # The upgrade cabal is needed otherwise cairo's Setup.hs refers to a different Cabal
+ - stack --no-terminal --install-ghc $ARGS setup --upgrade-cabal
+ - stack --no-terminal --install-ghc $ARGS install gtk2hs-buildtools
  - stack --no-terminal --install-ghc $ARGS test --only-dependencies
 
 services:

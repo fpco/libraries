@@ -20,8 +20,8 @@ module PerformanceUtils ( ProfilingColumns
                         , logErrorsOrBench
                         ) where
 
-import           ClassyPrelude
-import           Control.Concurrent.Mesosync.Lifted.Safe
+import           ClassyPrelude hiding ((<>))
+import           Control.Concurrent.Async.Lifted.Safe
 import           Control.DeepSeq
 import           Control.Monad.Logger
 import qualified Control.Retry as R
@@ -44,6 +44,7 @@ import           System.Exit (ExitCode(..))
 import           System.IO (withFile, IOMode (..))
 import           System.Process
 import           TypeHash.Orphans ()
+import           Data.Monoid ((<>))
 
 -- | Key value pairs to be written to a csv file.
 data CSVInfo = CSVInfo [(Text, Text)]
@@ -104,9 +105,9 @@ withNSlaves nSlaves pinWorkers action = go 0 action
 -- that the master waits for slaves.
 waitForNWorkers :: MonadConnect m => Redis -> Int -> m ()
 waitForNWorkers r n =
-    void $ R.retrying policy retryWhen getNWorkers
+    void $ R.retrying policy retryWhen (\_ -> getNWorkers)
   where
-    policy = R.constantDelay 10000 R.<> R.limitRetries 1000 -- wait for up to ten seconds, in steps of ten milliseconds
+    policy = R.constantDelay 10000 <> R.limitRetries 1000 -- wait for up to ten seconds, in steps of ten milliseconds
     retryWhen _ n' = return $ n' /= n
     getNWorkers = length . jqsWorkers <$> getJobQueueStatus r
 

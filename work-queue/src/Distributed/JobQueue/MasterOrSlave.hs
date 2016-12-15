@@ -22,7 +22,7 @@ import Distributed.JobQueue.Internal
 import Distributed.Redis
 import Distributed.Types
 import FP.Redis
-import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import Distributed.RequestSlaves
 import Distributed.JobQueue.Worker
 import Data.List.NonEmpty (NonEmpty)

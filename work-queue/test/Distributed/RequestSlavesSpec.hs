@@ -19,11 +19,10 @@ import           Test.Hspec hiding (shouldBe)
 import           Data.Store.TypeHash
 import           FP.Redis
 import           Data.Store (Store)
-import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Data.Void (absurd, Void)
 import qualified Data.Map.Strict as Map
 import qualified Control.Concurrent.STM as STM
-import           Control.Concurrent (threadDelay)
 import           Control.Monad.Logger.JSON.Extra
 import qualified Data.Conduit.Network as CN
 import qualified Data.ByteString.Char8 as BSC8

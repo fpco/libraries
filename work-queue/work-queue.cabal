@@ -79,7 +79,8 @@ library
                      , uuid
                      , vector
                      , void
-                     , mesosync
+                     , lifted-async
+                     , async
                      , hashable
                      , monad-unlift
                      , extra
@@ -125,7 +126,8 @@ test-suite wq-test
                      , hspec-expectations
                      , lens
                      , lifted-base
-                     , mesosync
+                     , lifted-async
+                     , async
                      , monad-control
                      , monad-logger-json-extra
                      , mtl
@@ -205,7 +207,8 @@ executable wq-performance
                      , extra
                      , lens
                      , lifted-base
-                     , mesosync
+                     , lifted-async
+                     , async
                      , monad-logger
                      , optparse-applicative
                      , process

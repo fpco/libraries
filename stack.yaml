@@ -1,1 +1,31 @@
-stack-lts-3.yaml
+resolver: lts-7.13
+packages:
+  - ./docker-archive
+  - ./redis-fp
+  - ./thread-file-logger
+  - ./work-queue
+  - ./hpc-manager
+  - ./th-relative-paths
+  - location:
+      git: git@github.com:fpco/store.git
+      commit: e67c7439e7db48bb8879d33a57eb24e104c925c9
+    extra-dep: true
+    subdirs:
+      - '.'
+      - store-core
+  - location:
+      git: git@github.com:fpco/monad-logger-json-extra.git
+      commit: dd40b3c96e67f41da984ba6d203c6c82b1932d00
+    extra-dep: true
+  - location:
+      git: git@github.com:fpco/simple-poll.git
+      commit: 9c2dfff51ffc47e81ad3f6e5fcca35fa8669028b
+    extra-dep: true
+
+image:
+  container:
+    base: "fpco/stack-run"
+    name: "hpc-manager-ui"
+    add:
+      hpc-manager/config/: /usr/local/lib/hpc-manager/config/
+      hpc-manager/static/: /usr/local/lib/hpc-manager/static/

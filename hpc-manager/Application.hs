@@ -1,4 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 module Application
     ( getApplicationDev
@@ -50,7 +51,7 @@ makeFoundation appSettings = do
         (appStaticDir appSettings)
 
     -- Return the foundation
-    return App {..}
+    return App {appLogger, appHttpManager, appStatic}
 
 -- | Convert our foundation to a WAI Application by calling @toWaiAppPlain@ and
 -- applyng some additional middlewares.

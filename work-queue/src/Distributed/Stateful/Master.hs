@@ -188,7 +188,7 @@ closeMaster (MasterHandle mhv) =
 
 {-# INLINE readExpect #-}
 readExpect ::
-     (MonadIO m, MonadBaseControl IO m, S.Store state, S.Store output)
+     (MonadIO m, MonadBaseControl IO m, S.Store state, S.Store output, MonadCatch m)
   => Text
   -> SlaveConn m key state context input output
   -> (SlaveResp state output -> Maybe a)
@@ -626,7 +626,7 @@ addSlaveConnection (MasterHandle mhv) conn = modifyMVar_ mhv $ \mh -> do
       return mh{mhSlaves = Slaves (HMS.insert slaveId (Slave conn mempty) slaves)}
 
 sendStates :: forall m state context input output key.
-       (Monad m, MonadBaseControl IO m, MonadIO m, S.Store state, S.Store context, S.Store input, S.Store output)
+       (Monad m, MonadBaseControl IO m, MonadIO m, S.Store state, S.Store context, S.Store input, S.Store output, MonadCatch m)
     => [(SlaveConn m key state context input output, [(StateId, state)])]
     -> m ()
 sendStates slavesWithStates = do
@@ -645,7 +645,7 @@ sendStates slavesWithStates = do
 -- 'NoSlavesConnectedException'.
 {-# INLINE resetStates #-}
 resetStates :: forall state context input output m key.
-     (MonadBaseControl IO m, MonadIO m, MonadLogger m, S.Store state, S.Store context, S.Store input, S.Store output)
+     (MonadBaseControl IO m, MonadIO m, MonadLogger m, S.Store state, S.Store context, S.Store input, S.Store output, MonadCatch m)
   => MasterHandle m key state context input output
   -> [state]
   -> m (HMS.HashMap StateId state)

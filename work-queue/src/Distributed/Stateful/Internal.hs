@@ -83,7 +83,7 @@ newtype StatefulConnDecodeFailure = StatefulConnDecodeFailure String
   deriving (Typeable, Show)
 instance Exception StatefulConnDecodeFailure
 
-scDecodeAndRead :: (Store resp, MonadIO m, MonadBaseControl IO m) => StatefulConn m key req resp -> m resp
+scDecodeAndRead :: (Store resp, MonadIO m, MonadBaseControl IO m, MonadCatch m) => StatefulConn m key req resp -> m resp
 scDecodeAndRead conn = catch
   (do mbResp <- S.decodeMessageBS (scByteBuffer conn) $ do
         bs <- scRead conn

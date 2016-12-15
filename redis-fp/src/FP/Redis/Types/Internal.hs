@@ -14,13 +14,15 @@ import Control.Monad.Trans.Unlift (MonadBaseUnlift)
 import qualified Data.ByteString.Char8 as BS8
 import Data.Data (Data)
 import qualified Network.Socket as NS
-import Control.Retry (RetryPolicy)
+import Data.Functor.Identity (Identity)
+import Control.Retry (RetryPolicyM)
+import Control.Concurrent.Async.Lifted.Safe (Forall, Pure)
 
 -- | Monads for connecting.
 type MonadConnect m = (MonadCommand m, MonadLogger m, MonadCatch m, MonadMask m)
 
 -- | Monads for running commands.
-type MonadCommand m = (MonadIO m, MonadBaseUnlift IO m)
+type MonadCommand m = (MonadIO m, MonadBaseUnlift IO m, Forall (Pure m))
 
 -- Newtype wrapper for redis top level key names.
 newtype Key = Key { unKey :: ByteString }
@@ -91,7 +93,7 @@ data ConnectInfo = ConnectInfo
     , connectPort                 :: !Int
       -- | Log source string for MonadLogger messages
     , connectLogSource            :: !Text
-    , connectRetryPolicy          :: !(Maybe RetryPolicy)
+    , connectRetryPolicy          :: !(Maybe (RetryPolicyM IO))
     } deriving (Typeable, Generic)
 
 -- | Connection to the Redis server used for regular commands.

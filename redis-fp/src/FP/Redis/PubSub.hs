@@ -25,7 +25,7 @@ import Control.DeepSeq (deepseq)
 import Control.Monad.Logger
 import Data.List.NonEmpty (NonEmpty)
 import Data.Void (absurd, Void)
-import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import qualified Data.HashSet as HS
 
 import FP.Redis.Connection

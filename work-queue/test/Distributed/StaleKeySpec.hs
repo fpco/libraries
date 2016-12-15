@@ -10,7 +10,7 @@
 module Distributed.StaleKeySpec (spec) where
 
 import ClassyPrelude hiding (keys)
-import Control.Concurrent.Mesosync.Lifted.Safe
+import Control.Concurrent.Async.Lifted.Safe
 import Control.Concurrent.Lifted (threadDelay)
 import Data.Store.TypeHash (mkHasTypeHash)
 import Data.Void

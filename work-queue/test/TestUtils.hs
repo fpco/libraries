@@ -30,9 +30,8 @@ module TestUtils
     , shouldMatchList
     ) where
 
-import           ClassyPrelude hiding (keys, (<>))
-import           Control.Concurrent (threadDelay)
-import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import           ClassyPrelude hiding (keys, (<>), Handler)
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Control.Monad.Catch (Handler (..))
 import           Control.Monad.Logger.JSON.Extra
 import           Control.Retry
@@ -49,6 +48,7 @@ import           Test.Hspec (Spec, it)
 import qualified Test.Hspec
 import           Test.Hspec.Core.Spec (SpecM, runIO)
 import qualified Test.QuickCheck as QC
+import           Data.Monoid ((<>))
 
 import           Distributed.Redis
 
@@ -152,10 +152,10 @@ stressfulTest m = do
 -- detected, without waiting a fixed amount of time.
 waitForHUnitPass :: forall m a. (MonadIO m, MonadMask m) => RetryPolicy -> m a -> m a
 waitForHUnitPass policy expectation =
-    recovering policy [handler] expectation
+    recovering policy [handler] (\_ -> expectation)
   where
-    handler :: Int -> Handler m Bool
-    handler _ = Handler $ \(HUnitFailure _) -> return True
+    handler :: RetryStatus -> Handler m Bool
+    handler _ = Handler $ \(HUnitFailure _ _) -> return True
 
 -- | Wiat for up to @n@ seconds, in steps of 1/10th of a second.
 upToNSeconds :: Int -> RetryPolicy

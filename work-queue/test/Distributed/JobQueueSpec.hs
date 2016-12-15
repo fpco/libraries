@@ -18,10 +18,9 @@ module Distributed.JobQueueSpec (spec) where
 import ClassyPrelude
 import qualified Data.List.NonEmpty as NE
 import Data.Store (Store)
-import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           Test.Hspec hiding (shouldBe, shouldSatisfy, shouldMatchList)
 import FP.Redis (MonadConnect, Seconds(..), exists, VKey (..))
-import Control.Concurrent.Lifted (threadDelay)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID.V4
 import Data.Void (absurd)

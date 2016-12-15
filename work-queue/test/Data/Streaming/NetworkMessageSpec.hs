@@ -19,10 +19,9 @@ import           Data.Streaming.Network
 import qualified Data.Conduit.Network as CN
 import           Data.Streaming.NetworkMessage
 import           Test.Hspec hiding (shouldBe)
-import qualified Control.Concurrent.Mesosync.Lifted.Safe as Async
+import qualified Control.Concurrent.Async.Lifted.Safe as Async
 import           FP.Redis (MonadConnect)
 import           Control.Monad.Trans.Control (control)
-import           Control.Concurrent (threadDelay)
 import           Data.Void (absurd)
 import           Data.Store.TypeHash (mkManyHasTypeHash)
 import           Data.Store.TypeHash.Orphans ()
